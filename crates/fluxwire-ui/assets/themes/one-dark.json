@@ -1,0 +1,32 @@
+{
+  "name": "One Dark",
+  "appearance": "dark",
+  "style": {
+    "title_bar.background": "#3b414dff",
+    "surface.background": "#2f343eff",
+    "editor.background": "#282c33ff",
+    "elevated_surface.background": "#2f343eff",
+    "border": "#464b57ff",
+    "border.variant": "#363c46ff",
+    "text": "#dce0e5ff",
+    "text.muted": "#a9afbcff",
+    "text.placeholder": "#878a98ff",
+    "element.hover": "#363c46ff",
+    "element.selected": "#454a56ff",
+    "text.accent": "#74ade8ff",
+    "editor.gutter": "#4e5a5fff",
+    "created": "#a1c181ff",
+    "modified": "#dec184ff",
+    "deleted": "#d07277ff",
+    "syntax": {
+      "function": { "color": "#74ade8ff" },
+      "type": { "color": "#6eb4bfff" },
+      "keyword": { "color": "#b477cfff" },
+      "string": { "color": "#a1c181ff" },
+      "number": { "color": "#bf956aff" },
+      "boolean": { "color": "#bf956aff" },
+      "property": { "color": "#d07277ff" },
+      "punctuation": { "color": "#a9afbcff" }
+    }
+  }
+}

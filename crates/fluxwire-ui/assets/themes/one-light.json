@@ -1,0 +1,32 @@
+{
+  "name": "One Light",
+  "appearance": "light",
+  "style": {
+    "title_bar.background": "#dcdcddff",
+    "surface.background": "#ebebecff",
+    "editor.background": "#fafafaff",
+    "elevated_surface.background": "#f4f4f5ff",
+    "border": "#c9c9caff",
+    "border.variant": "#dfdfe0ff",
+    "text": "#242529ff",
+    "text.muted": "#58585aff",
+    "text.placeholder": "#7e8086ff",
+    "element.hover": "#dfdfe0ff",
+    "element.selected": "#d3d3d5ff",
+    "text.accent": "#5c78e2ff",
+    "editor.gutter": "#b0b1b4ff",
+    "created": "#669f59ff",
+    "modified": "#a48819ff",
+    "deleted": "#d36151ff",
+    "syntax": {
+      "function": { "color": "#5c78e2ff" },
+      "type": { "color": "#3882b7ff" },
+      "keyword": { "color": "#a449abff" },
+      "string": { "color": "#669f59ff" },
+      "number": { "color": "#ad6e25ff" },
+      "boolean": { "color": "#ad6e25ff" },
+      "property": { "color": "#d36151ff" },
+      "punctuation": { "color": "#58585aff" }
+    }
+  }
+}

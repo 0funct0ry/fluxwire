@@ -1,0 +1,14 @@
+[package]
+name = "fluxwire-store"
+description = "History store, retention, redaction."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+fluxwire-model.workspace = true

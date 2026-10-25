@@ -1,0 +1,15 @@
+[package]
+name = "fluxwire-import"
+description = "Postman, Insomnia, OpenAPI, Hurl and .http importers."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+fluxwire-model.workspace = true
+fluxwire-format.workspace = true

@@ -1,0 +1,20 @@
+[package]
+name = "fluxwire"
+description = "The fluxwire binary: CLI dispatch, opens the UI when no subcommand is given."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["gui"]
+gui = ["dep:fluxwire-ui"]
+runtime-shaders = ["fluxwire-ui/runtime-shaders"]
+
+[dependencies]
+fluxwire-cli.workspace = true
+fluxwire-ui = { workspace = true, optional = true }

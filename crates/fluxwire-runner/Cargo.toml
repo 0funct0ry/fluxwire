@@ -1,0 +1,17 @@
+[package]
+name = "fluxwire-runner"
+description = "Request lifecycle, folder and collection runs."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+fluxwire-model.workspace = true
+fluxwire-protocol.workspace = true
+fluxwire-vars.workspace = true
+fluxwire-script.workspace = true

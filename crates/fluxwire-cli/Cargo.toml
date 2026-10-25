@@ -1,0 +1,16 @@
+[package]
+name = "fluxwire-cli"
+description = "clap command tree and reporters (no GPUI)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+fluxwire-model.workspace = true
+fluxwire-format.workspace = true
+fluxwire-runner.workspace = true

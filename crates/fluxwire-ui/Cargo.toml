@@ -1,0 +1,27 @@
+[package]
+name = "fluxwire-ui"
+description = "GPUI application: windows, panels, tabs, editors, palette."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# Compile Metal shaders at runtime so macOS builds work without the Xcode Metal toolchain.
+runtime-shaders = ["gpui/runtime_shaders"]
+
+[dependencies]
+fluxwire-model.workspace = true
+gpui.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tree-sitter = "0.26.13"
+tree-sitter-json = "0.24.8"
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
