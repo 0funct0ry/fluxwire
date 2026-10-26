@@ -3,7 +3,7 @@
 use fluxwire_model::BlockKind;
 use gpui::{
     AnyElement, Context, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
-    ParentElement, StatefulInteractiveElement, Styled, deferred, div, prelude::*, px, relative,
+    ParentElement, StatefulInteractiveElement, Styled, deferred, div, prelude::*, px,
 };
 
 use crate::{
@@ -77,7 +77,7 @@ impl Workspace {
             (Some(tab), Some(ui)) => match &tab.kind {
                 TabKind::Http { .. } => self.render_request(t, tab, ui, cx).into_any_element(),
                 TabKind::WebSocket => self.render_websocket(t, tab, ui, cx).into_any_element(),
-                TabKind::FolderRun => self.render_folder_run(t).into_any_element(),
+                TabKind::FolderRun => self.render_run_tab(t, tab, cx),
                 TabKind::Docs => self.render_docs(t).into_any_element(),
                 TabKind::Environment => self.render_environment(t, tab, cx).into_any_element(),
                 TabKind::History => self.render_history_tab(t, tab, cx),
@@ -1392,78 +1392,6 @@ impl Workspace {
                     .child(title.to_string()),
             )
             .child(div().text_color(t.text_muted).child(subtitle.to_string()))
-    }
-
-    fn render_folder_run(&self, t: &Theme) -> impl IntoElement {
-        let passed = self.mock.run.iter().filter(|r| r.passed).count();
-        let failed = self.mock.run.len() - passed;
-        self.page(t, "Run: payments", "Folder run (mock data)")
-            .child(
-                row()
-                    .gap_2()
-                    .child(pill(t, "Sequential"))
-                    .child(pill(t, "Concurrency 1"))
-                    .child(pill(t, format!("Env: {}", self.env_label())))
-                    .child(pill(t, "Iterations 1"))
-                    .child(button(t, "run-go", "Run", true)),
-            )
-            .child(
-                row()
-                    .gap_3()
-                    .child(
-                        div()
-                            .text_color(t.created)
-                            .child(format!("{passed} passed")),
-                    )
-                    .child(
-                        div()
-                            .text_color(t.deleted)
-                            .child(format!("{failed} failed")),
-                    ),
-            )
-            .children(self.mock.run.iter().map(|r| {
-                row()
-                    .h(px(28.))
-                    .gap_3()
-                    .border_b_1()
-                    .border_color(t.border_variant)
-                    .child(
-                        div()
-                            .text_color(if r.passed { t.created } else { t.deleted })
-                            .child(if r.passed { "✓" } else { "✗" }),
-                    )
-                    .child(
-                        div()
-                            .w(px(50.))
-                            .font_family(BUFFER_FONT)
-                            .text_size(px(11.))
-                            .text_color(t.method_color(r.method))
-                            .child(r.method),
-                    )
-                    .child(div().w(px(160.)).child(r.name))
-                    .child(
-                        div()
-                            .w(px(200.))
-                            .h(px(6.))
-                            .relative()
-                            .bg(t.element_hover)
-                            .child(
-                                div()
-                                    .absolute()
-                                    .top_0()
-                                    .h_full()
-                                    .w(relative(r.ms as f32 / 200.0))
-                                    .rounded(px(2.))
-                                    .bg(if r.passed { t.created } else { t.deleted }),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .font_family(BUFFER_FONT)
-                            .text_color(t.text_muted)
-                            .child(format!("{} ms", r.ms)),
-                    )
-            }))
     }
 
     fn render_docs(&self, t: &Theme) -> impl IntoElement {

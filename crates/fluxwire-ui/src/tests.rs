@@ -1683,3 +1683,49 @@ fn save_as_message_inserts_a_block_with_a_span_edit(cx: &mut TestAppContext) {
         );
     });
 }
+
+#[gpui::test]
+fn folder_run_runs_every_request_and_tags_history(cx: &mut TestAppContext) {
+    let (view, cx, root) = setup_with(cx, "payments-api", "folderrun");
+    let port = test_server(false);
+    for i in 0..3 {
+        let dir = root.join("bulk");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(format!("r{i}.flux.md")),
+            format!(
+                "---\nname: R{i}\nseq: {i}\n---\n\n# R{i}\n\n```http\nGET http://127.0.0.1:{port}/x\n```\n\n```http expect\nHTTP 201\n```\n"
+            ),
+        )
+        .unwrap();
+    }
+    view.update(cx, |w, cx| {
+        w.open_run_tab("bulk", cx);
+        let id = w.tabs.active_id().unwrap();
+        w.start_run(id, cx);
+    });
+    wait_until(&view, cx, "the run to finish", |w| {
+        w.runs.values().any(|r| r.result.is_some())
+    });
+    view.read_with(cx, |w, _| {
+        let r = w.runs.values().next().unwrap();
+        let res = r.result.as_ref().unwrap();
+        let s = res.summary();
+        assert_eq!((s.passed, s.failed), (3, 0), "{s:?}");
+        assert_eq!(r.entries.len(), 3);
+        let cmd = w.run_cli_command(w.tabs.active_id().unwrap()).unwrap();
+        assert!(cmd.starts_with("fluxwire run bulk"), "{cmd}");
+    });
+    // every request of the run wrote a history entry tagged with its run id
+    let run_id = view.read_with(cx, |w, _| w.runs.values().next().unwrap().run_id.clone());
+    wait_until(&view, cx, "run history", |w| {
+        let (Some(store), Some(ws)) = (&w.history.store, &w.history.ws_key) else {
+            return false;
+        };
+        let f = fluxwire_store::Filter {
+            run_id: run_id.clone(),
+            ..Default::default()
+        };
+        store.list(ws, &f).map(|l| l.len() == 3).unwrap_or(false)
+    });
+}

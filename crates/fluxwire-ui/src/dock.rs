@@ -597,6 +597,7 @@ impl Workspace {
                 items.push(("New folder", |w, k, win, cx| {
                     w.start_new_in(k, false, true, win, cx)
                 }));
+                items.push(("Run folder", |w, k, _win, cx| w.open_run_tab(k, cx)));
             }
             MenuKind::Request => {
                 items.push(("Open", |w, k, win, cx| w.open_request(k, true, win, cx)))

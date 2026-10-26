@@ -9,6 +9,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::SystemTime;
 
+mod folder;
+mod report;
+pub use folder::*;
+pub use report::{to_json, to_junit};
+
 use fluxwire_model::{BlockData, BlockKind, Diagnostic, Edit, FluxDoc, FmValue};
 pub use fluxwire_protocol::{
     CancellationToken, EnvState, ExecCtx, ExecError, ExecSettings, Frame, NetConfig, Outcome,
@@ -131,6 +136,32 @@ pub struct VarChange {
 }
 
 impl RunResult {
+    /// A result for a request that was not run (`fw.skip`, bail, cancel).
+    pub(crate) fn skipped(label: String, reason: &str) -> Self {
+        Self {
+            label,
+            started_at: SystemTime::now(),
+            outcome: None,
+            error: None,
+            tests: Vec::new(),
+            history: None,
+            phases: Vec::new(),
+            warnings: Vec::new(),
+            secrets: Vec::new(),
+            console: Vec::new(),
+            var_changes: Vec::new(),
+            env_persist: Vec::new(),
+            script_errors: Vec::new(),
+            skipped: Some(reason.to_string()),
+        }
+    }
+
+    /// True when nothing went wrong: no error, no failed test, no script failure.
+    /// A skipped request passes.
+    pub fn passed(&self) -> bool {
+        self.error.is_none() && self.script_errors.is_empty() && self.tests.iter().all(|t| t.passed)
+    }
+
     /// Replace secret values with `‹secret:name›` (SPEC §8.3). Use for logs and the Console.
     pub fn redact(&self, text: &str) -> String {
         redact_with(&self.secrets, text)
@@ -286,6 +317,7 @@ impl Runner {
                 scripts: opts.scripts,
                 depth: 0,
                 started_at,
+                ancestors: None,
             };
             let result = exec(job, Some(&tx)).await;
             let _ = tx.send(RunEvent::Finished(Box::new(result)));
@@ -384,6 +416,9 @@ struct Job {
     scripts: ScriptOptions,
     depth: u32,
     started_at: SystemTime,
+    /// Collection and folder docs above the request, when the caller has them cached
+    /// (folder runs); `None` reads them from disk.
+    ancestors: Option<Arc<Vec<(String, FluxDoc)>>>,
 }
 
 const MAX_NESTING: u32 = 3;
@@ -669,6 +704,7 @@ impl ScriptHost for NestedHost {
             scripts,
             depth: self.depth + 1,
             started_at: SystemTime::now(),
+            ancestors: None,
         };
         let result = self.handle.block_on(exec(job, None));
         if let Some(err) = result.error {
@@ -720,6 +756,7 @@ async fn exec(job: Job, tx: Option<&UnboundedSender<RunEvent>>) -> RunResult {
         scripts: sopts,
         depth,
         started_at,
+        ancestors,
     } = job;
     let mut result = RunResult {
         label: String::new(),
@@ -755,9 +792,10 @@ async fn exec(job: Job, tx: Option<&UnboundedSender<RunEvent>>) -> RunResult {
     };
 
     // ---- script setup ---------------------------------------------------------------
-    let ancestors = match (&sopts.collection_root, &sopts.file) {
-        (Some(root), Some(file)) => fluxwire_format::ancestor_docs(root, file),
-        _ => Vec::new(),
+    let ancestors = match (ancestors, &sopts.collection_root, &sopts.file) {
+        (Some(a), _, _) => a,
+        (None, Some(root), Some(file)) => Arc::new(fluxwire_format::ancestor_docs(root, file)),
+        _ => Arc::new(Vec::new()),
     };
     let own_label = rel_label(
         sopts.collection_root.as_deref(),

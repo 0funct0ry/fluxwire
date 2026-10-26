@@ -1,5 +1,5 @@
-//! Mock data for views that later milestones replace: sync (M12),
-//! and folder runs (M9). The tree, request and workspace mocks were removed in M2.
+//! Mock data for views that later milestones replace: sync (M12).
+//! M9 removed the folder-run mock. The tree, request and workspace mocks were removed in M2.
 
 #[derive(Clone, Debug)]
 pub struct Kv {
@@ -38,16 +38,9 @@ pub struct SyncChange {
     pub field: &'static str,
 }
 
-pub struct RunRow {
-    pub name: &'static str,
-    pub method: &'static str,
-    pub passed: bool,
-    pub ms: u32,
-}
 pub struct Mock {
     pub response: MockResponse,
     pub sync: Vec<SyncChange>,
-    pub run: Vec<RunRow>,
 }
 
 const PAYMENT_JSON: &str = r#"{
@@ -129,32 +122,6 @@ pub fn payments_api() -> Mock {
                 arrow: "↑",
                 operation: "PATCH /v1/payments/{id}",
                 field: "request renamed: Update payment",
-            },
-        ],
-        run: vec![
-            RunRow {
-                name: "Log in",
-                method: "POST",
-                passed: true,
-                ms: 120,
-            },
-            RunRow {
-                name: "Create payment",
-                method: "POST",
-                passed: true,
-                ms: 142,
-            },
-            RunRow {
-                name: "Get payment",
-                method: "GET",
-                passed: true,
-                ms: 88,
-            },
-            RunRow {
-                name: "Cancel payment",
-                method: "DELETE",
-                passed: false,
-                ms: 64,
             },
         ],
     }

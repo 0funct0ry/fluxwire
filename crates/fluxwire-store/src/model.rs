@@ -34,6 +34,8 @@ pub struct Summary {
     pub env: Option<String>,
     pub dirty: bool,
     pub summary: String,
+    /// The folder run this send belonged to (SPEC §12).
+    pub run_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]

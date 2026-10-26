@@ -73,6 +73,8 @@ pub struct HistoryState {
     pub method: Option<&'static str>,
     pub class: Option<u8>,
     pub text: TextEdit,
+    /// Show only the sends of this folder run.
+    pub run: Option<String>,
     pub cache: HashMap<i64, Arc<Entry>>,
     pub diffs: HashMap<(i64, i64), Arc<DiffSet>>,
     /// First entry picked for "Diff with…".
@@ -111,6 +113,7 @@ impl HistoryState {
             method: None,
             class: None,
             text: TextEdit::default(),
+            run: None,
             cache: HashMap::new(),
             diffs: HashMap::new(),
             pick: None,
@@ -126,6 +129,7 @@ impl HistoryState {
             method: self.method.map(String::from),
             status_class: self.class,
             text: Some(self.text.text().to_string()).filter(|s| !s.is_empty()),
+            run_id: self.run.clone(),
             limit: Some(PAGE),
             ..Default::default()
         }
@@ -187,7 +191,7 @@ fn short_method(m: &str) -> &str {
     if m == "DELETE" { "DEL" } else { m }
 }
 
-fn blocking<T: Send + 'static>(
+pub(crate) fn blocking<T: Send + 'static>(
     f: impl FnOnce() -> T + Send + 'static,
 ) -> impl std::future::Future<Output = Option<T>> {
     let h = runner().handle().spawn_blocking(f);
@@ -716,6 +720,17 @@ impl Workspace {
                 this.history_reload(cx);
             }))
         }));
+        let run_pill = self.history.run.clone().map(|id| {
+            chip(
+                "hist-run".into(),
+                &format!("run {} ×", id.split('-').next_back().unwrap_or(&id)),
+                true,
+            )
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.history.run = None;
+                this.history_reload(cx);
+            }))
+        });
         let search = row()
             .id("history-search")
             .track_focus(&self.history_focus)
@@ -794,7 +809,8 @@ impl Workspace {
                     .border_color(t.border_variant)
                     .child(search)
                     .child(methods)
-                    .child(classes),
+                    .child(classes)
+                    .children(run_pill),
             )
             .child(list)
             .child(

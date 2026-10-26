@@ -28,7 +28,8 @@ impl From<rusqlite::Error> for StoreError {
 type Result<T> = std::result::Result<T, StoreError>;
 
 /// Ordered migrations; index + 1 is the schema version.
-const MIGRATIONS: &[&str] = &["
+const MIGRATIONS: &[&str] = &[
+    "
 CREATE TABLE entries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     workspace TEXT NOT NULL,
@@ -50,7 +51,11 @@ CREATE TABLE entries (
 );
 CREATE INDEX entries_ws_ts ON entries (workspace, ts_ms DESC);
 CREATE INDEX entries_ws_req ON entries (workspace, request_path, id DESC);
-"];
+",
+    "
+CREATE INDEX entries_ws_run ON entries (workspace, run_id);
+",
+];
 
 /// The user data dir (`FLUXWIRE_DATA_DIR` overrides it, for tests and demos).
 pub fn data_dir() -> Option<PathBuf> {
@@ -166,7 +171,7 @@ impl Store {
     pub fn list(&self, workspace: &str, f: &Filter) -> Result<Vec<Summary>> {
         let mut sql = String::from(
             "SELECT id, ts_ms, collection, request_path, request_name, protocol, method, url,
-                    status, total_ms, env, dirty, summary FROM entries WHERE workspace = ?",
+                    status, total_ms, env, dirty, summary, run_id FROM entries WHERE workspace = ?",
         );
         let mut args: Vec<Sql> = vec![workspace.to_string().into()];
         let like = |s: &str| {
@@ -227,11 +232,12 @@ impl Store {
         let conn = self.lock();
         let mut st = conn.prepare(
             "SELECT id, ts_ms, collection, request_path, request_name, protocol, method, url,
-                    status, total_ms, env, dirty, summary, truncated, payload
+                    status, total_ms, env, dirty, summary, truncated, payload, run_id
              FROM entries WHERE id = ?",
         )?;
         let mut rows = st.query_map([id], |r| {
-            let summary = row_summary(r)?;
+            let mut summary = row_summary(r)?;
+            summary.run_id = r.get(15)?;
             let payload: String = r.get(14)?;
             Ok(Entry {
                 summary,
@@ -304,6 +310,7 @@ fn row_summary(r: &rusqlite::Row<'_>) -> rusqlite::Result<Summary> {
         env: r.get(10)?,
         dirty: r.get(11)?,
         summary: r.get(12)?,
+        run_id: r.get(13).unwrap_or(None),
     })
 }
 
@@ -341,6 +348,32 @@ mod tests {
         drop(s);
         let s = Store::open(&p).unwrap();
         assert_eq!(s.schema_version().unwrap(), MIGRATIONS.len() as i64);
+    }
+
+    #[test]
+    fn run_id_is_stored_listed_and_filterable() {
+        let s = Store::open_in_memory().unwrap();
+        let r = Redactor::default();
+        let mut e = entry("a", "GET", Some(200), 1);
+        e.run_id = Some("run1".into());
+        s.insert("w", e, &r).unwrap();
+        s.insert("w", entry("b", "GET", Some(200), 2), &r).unwrap();
+        let f = Filter {
+            run_id: Some("run1".into()),
+            ..Default::default()
+        };
+        let rows = s.list("w", &f).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].run_id.as_deref(), Some("run1"));
+        assert_eq!(
+            s.get(rows[0].id)
+                .unwrap()
+                .unwrap()
+                .summary
+                .run_id
+                .as_deref(),
+            Some("run1")
+        );
     }
 
     #[test]

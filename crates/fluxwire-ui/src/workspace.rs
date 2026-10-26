@@ -267,6 +267,8 @@ pub struct Workspace {
     pub log_focus: FocusHandle,
     /// Transcripts of WebSocket History entries opened this session.
     pub history_logs: HashMap<i64, crate::session_log::SessionLog>,
+    /// Folder run tabs by tab id (SPEC §12).
+    pub runs: HashMap<u64, crate::runs::RunTab>,
 }
 
 impl Workspace {
@@ -360,6 +362,7 @@ impl Workspace {
             composer_bounds: Rc::new(Cell::new(Bounds::default())),
             log_focus: cx.focus_handle(),
             history_logs: HashMap::new(),
+            runs: HashMap::new(),
         };
         this.envs.settings = settings;
         this.recent_ids = this
@@ -1281,10 +1284,7 @@ impl Render for Workspace {
             TrustCollection => |this, _w, c| this.set_collection_trust(true, c),
             RevokeCollectionTrust => |this, _w, c| this.set_collection_trust(false, c),
             RegenerateFwTypes => |this, _w, c| this.regenerate_fw_types(true, c),
-            RunFolder => |this, _w, _c| {
-                let folder = this.selected_folder_name();
-                this.open_tab(&format!("run/{folder}"), &format!("Run: {folder}"), TabKind::FolderRun, true)
-            },
+            RunFolder => |this, _w, c| this.run_selected_folder(c),
             OpenDocs => |this, _w, _c| {
                 let folder = this.selected_folder_name();
                 this.open_tab(&format!("docs/{folder}"), &format!("Docs: {folder}"), TabKind::Docs, true)
