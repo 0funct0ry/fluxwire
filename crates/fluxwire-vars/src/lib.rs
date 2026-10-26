@@ -113,6 +113,12 @@ impl VarScope {
         );
     }
 
+    /// Remove a variable from every layer (`fw.vars.unset`).
+    pub fn remove(&mut self, name: &str) {
+        self.layers.remove(name);
+        self.vars.remove(name);
+    }
+
     pub fn get(&self, name: &str) -> Option<&str> {
         self.vars.get(name).map(|v| v.value.as_str())
     }

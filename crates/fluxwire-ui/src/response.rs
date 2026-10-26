@@ -133,6 +133,30 @@ fn fmt_ms(ms: f64) -> String {
     }
 }
 
+/// `fw.env.persist`: write `name=value` to the active environment's `.local.env`.
+fn persist_env_value(
+    root: &std::path::Path,
+    env: &str,
+    name: &str,
+    value: &str,
+) -> std::io::Result<()> {
+    let secrets = fluxwire_format::load_config(root)
+        .map(|c| c.secrets.names)
+        .unwrap_or_default();
+    let mut e = fluxwire_format::load_environment(root, env, &secrets);
+    match e.rows.iter_mut().find(|r| r.name == name && r.local) {
+        Some(r) => r.value = value.to_string(),
+        None => e.rows.push(fluxwire_format::EnvRow {
+            name: name.to_string(),
+            value: value.to_string(),
+            secret: true,
+            local: true,
+            line: 0,
+        }),
+    }
+    fluxwire_format::save_environment(root, &e)
+}
+
 fn clock(t: SystemTime) -> String {
     let s = t
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -260,8 +284,56 @@ impl Workspace {
             cx.notify();
             return;
         }
+        let limits = coll
+            .map(|c| {
+                let s = &c.collection.config.scripts;
+                let mut l = fluxwire_runner::Limits::default();
+                if let Some(ms) = s.timeout_ms {
+                    l.timeout_ms = ms;
+                }
+                if let Some(mb) = s.memory_mb {
+                    l.memory_mb = mb as usize;
+                }
+                l
+            })
+            .unwrap_or_default();
+
         let env = root.as_deref().and_then(|r| self.env_state(r));
 
+        // Scripts run only in trusted collections (SPEC §21); the first send asks.
+        let has_scripts = {
+            let own = parsed.blocks.iter().any(|b| {
+                matches!(
+                    b.kind,
+                    fluxwire_model::BlockKind::Pre
+                        | fluxwire_model::BlockKind::Post
+                        | fluxwire_model::BlockKind::Test
+                )
+            });
+            own || root.as_deref().is_some_and(|r| {
+                fluxwire_format::ancestor_docs(r, &abs)
+                    .iter()
+                    .any(|(_, d)| {
+                        d.blocks.iter().any(|b| {
+                            matches!(
+                                b.kind,
+                                fluxwire_model::BlockKind::Pre
+                                    | fluxwire_model::BlockKind::Post
+                                    | fluxwire_model::BlockKind::Test
+                            )
+                        })
+                    })
+            })
+        };
+        let trusted = root
+            .as_deref()
+            .is_some_and(|r| self.collection_trusted(r, cx));
+        if has_scripts && !trusted {
+            self.trust_prompt = Some(tab_id);
+            cx.notify();
+            return;
+        }
+        self.trust_prompt = None;
         let handle = runner().send(
             &parsed,
             SendOptions {
@@ -269,6 +341,20 @@ impl Workspace {
                 settings,
                 net,
                 env,
+                scripts: fluxwire_runner::ScriptOptions {
+                    trusted,
+                    limits,
+                    collection_root: root.clone(),
+                    file: Some(abs.clone()),
+                    globals: self
+                        .envs
+                        .settings
+                        .globals
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect(),
+                    allow_process_env: self.envs.settings.allow_process_env,
+                },
             },
         );
         let seq = self.responses.get(&tab_id).map_or(0, |r| r.seq) + 1;
@@ -325,6 +411,137 @@ impl Workspace {
             }
         })
         .detach();
+        cx.notify();
+    }
+
+    /// Whether scripts may run in the collection at `root` (SPEC §21).
+    pub fn collection_trusted(&self, root: &std::path::Path, cx: &Context<Self>) -> bool {
+        if self.session_trust.contains(root) {
+            return true;
+        }
+        cx.try_global::<crate::envs::ConfigDir>()
+            .is_some_and(|d| fluxwire_format::is_trusted(&d.0, root))
+    }
+
+    /// Write `.fluxwire/types/fw.d.ts` for every open collection (SPEC §11.3). `announce`
+    /// reports the result in the status bar (the palette action); opening stays quiet.
+    pub fn regenerate_fw_types(&mut self, announce: bool, cx: &mut Context<Self>) {
+        let Some(project) = self.project.as_ref() else {
+            return;
+        };
+        let mut written = 0;
+        for c in &project.collections {
+            let dir = c.root.join(".fluxwire").join("types");
+            let path = dir.join("fw.d.ts");
+            let want = fluxwire_runner::fw_dts();
+            if std::fs::read_to_string(&path).is_ok_and(|have| have == want) {
+                continue;
+            }
+            if std::fs::create_dir_all(&dir)
+                .and_then(|_| std::fs::write(&path, want))
+                .is_ok()
+            {
+                written += 1;
+            }
+        }
+        if announce {
+            self.notice = Some(if written == 0 {
+                "fw.d.ts is up to date.".into()
+            } else {
+                format!("Wrote fw.d.ts for {written} collection(s) under .fluxwire/types/.")
+            });
+        }
+        cx.notify();
+    }
+
+    fn active_collection_root(&self) -> Option<std::path::PathBuf> {
+        let key = self.active_key()?;
+        self.collection_root_of(&key)
+    }
+
+    /// Trust (or revoke) the scripts of the active request's collection, then resume a
+    /// send that was waiting on the prompt.
+    pub fn set_collection_trust(&mut self, trusted: bool, cx: &mut Context<Self>) {
+        let Some(root) = self.active_collection_root() else {
+            return;
+        };
+        let stored = cx
+            .try_global::<crate::envs::ConfigDir>()
+            .map(|d| fluxwire_format::set_trusted(&d.0, &root, trusted));
+        match stored {
+            Some(Err(e)) => {
+                self.notice = Some(format!("Could not save the trust decision: {e}"));
+            }
+            Some(Ok(())) => {}
+            None => {
+                if trusted {
+                    self.session_trust.insert(root.clone());
+                }
+            }
+        }
+        if !trusted {
+            self.session_trust.remove(&root);
+        }
+        let resume = trusted && self.trust_prompt.take().is_some();
+        self.notice = Some(if trusted {
+            "Scripts in this collection are trusted.".into()
+        } else {
+            "Scripts in this collection are no longer trusted.".into()
+        });
+        cx.notify();
+        if resume {
+            self.send_request(cx);
+        }
+    }
+
+    /// Fold what a send's scripts and captures did into the workspace: runtime variables,
+    /// persisted environment values, the Console and Problems.
+    fn absorb_script_results(&mut self, tab_id: u64, res: &RunResult, cx: &mut Context<Self>) {
+        let root = self
+            .tabs
+            .all()
+            .iter()
+            .find(|t| t.id == tab_id)
+            .and_then(|t| self.collection_root_of(&t.key));
+        if !res.var_changes.is_empty() {
+            for c in &res.var_changes {
+                match &c.value {
+                    Some(v) => {
+                        self.envs
+                            .runtime
+                            .insert(c.name.clone(), (v.clone(), c.secret));
+                    }
+                    None => {
+                        self.envs.runtime.remove(&c.name);
+                    }
+                }
+            }
+            self.envs.invalidate();
+        }
+        if let (Some(root), Some(env)) = (&root, self.envs.active.clone()) {
+            for (name, value) in &res.env_persist {
+                if let Err(e) = persist_env_value(root, &env, name, value) {
+                    self.notice = Some(format!("Could not write {name} to {env}.local.env: {e}"));
+                }
+            }
+            if !res.env_persist.is_empty() {
+                self.envs.invalidate();
+            }
+        }
+        for l in &res.console {
+            let line = format!("[{}] {}", log_glyph(l.level), l.text);
+            self.log(line);
+        }
+        for e in res.script_errors.iter().chain(match &res.error {
+            Some(fluxwire_runner::RunError::Script(es)) => es.iter(),
+            _ => [].iter(),
+        }) {
+            let line = format!("✗ {} {} ({})", e.kind.code(), e.message, e.location());
+            self.log(res.redact(&line));
+        }
+        if let Some(reason) = &res.skipped {
+            self.log(format!("↷ skipped by a script: {reason}"));
+        }
         cx.notify();
     }
 
@@ -407,6 +624,7 @@ impl Workspace {
         };
         // Secrets never reach the Console (SPEC §8.3).
         self.log(res.redact(&line));
+        self.absorb_script_results(tab_id, &res, cx);
         self.history_record(tab_id, &res, cx);
         if let Some(root) = self
             .tabs
@@ -492,6 +710,11 @@ impl Workspace {
             history: None,
             warnings: Vec::new(),
             secrets: Vec::new(),
+            console: Vec::new(),
+            var_changes: Vec::new(),
+            env_persist: Vec::new(),
+            script_errors: Vec::new(),
+            skipped: None,
         };
         let resp = self
             .responses
@@ -911,7 +1134,10 @@ impl Workspace {
                 .error
                 .as_ref()
                 .map(|e| e.describe())
-                .unwrap_or_else(|| ("No response.".into(), None));
+                .unwrap_or_else(|| match &res.skipped {
+                    Some(reason) => (format!("Skipped by a script: {reason}"), None),
+                    None => ("No response.".into(), None),
+                });
             let cancelled = res.error.as_ref().is_some_and(|e| e.is_cancelled());
             let head = res
                 .error
@@ -920,6 +1146,8 @@ impl Workspace {
                     "cancelled" => "Cancelled".into(),
                     "plan" => "Cannot send".into(),
                     "requires" => "Cannot send".into(),
+                    "trust" => "Scripts are not trusted".into(),
+                    "pre script" => "A pre script failed".into(),
                     p => format!("Failed in the {p} phase"),
                 });
             return shell(vec![
@@ -953,6 +1181,10 @@ impl Workspace {
                             .map(|p| p.start_ms + p.duration_ms)
                             .fold(1.0, f64::max);
                         d.child(self.timeline(t, &res.phases, total, &[]))
+                    })
+                    .when(!res.console.is_empty() || !res.tests.is_empty(), |d| {
+                        d.child(tests_view(t, &res))
+                            .child(script_console_view(t, &res))
                     })
                     .into_any_element(),
             ]);
@@ -1000,7 +1232,7 @@ impl Workspace {
                             + self.jar_rows(&o.final_url).len()
                     }
                     4 => res.tests.len(),
-                    5 => 0,
+                    5 => res.console.len() + res.script_errors.len(),
                     _ => 0,
                 };
                 ((*s).to_string(), n)
@@ -1058,59 +1290,13 @@ impl Workspace {
                 .id("resp-scroll")
                 .flex_1()
                 .overflow_y_scroll()
-                .flex()
-                .flex_col()
-                .p_2()
-                .when(res.tests.is_empty(), |d| {
-                    d.child(
-                        div()
-                            .p_1()
-                            .text_color(t.text_placeholder)
-                            .child("No tests. Add an `http expect` block to check this response."),
-                    )
-                })
-                .children(res.tests.iter().map(|test| {
-                    div()
-                        .flex()
-                        .flex_col()
-                        .py_1()
-                        .child(
-                            row()
-                                .gap_2()
-                                .child(
-                                    div()
-                                        .text_color(if test.passed { t.created } else { t.deleted })
-                                        .child(if test.passed { "✓" } else { "✗" }),
-                                )
-                                .child(test.name.clone()),
-                        )
-                        .when(!test.passed, |d| {
-                            d.child(
-                                div()
-                                    .pl_6()
-                                    .font_family(BUFFER_FONT)
-                                    .text_size(px(12.))
-                                    .text_color(t.text_muted)
-                                    .child(format!(
-                                        "expected {}, got {}",
-                                        test.expected.as_deref().unwrap_or("?"),
-                                        test.actual.as_deref().unwrap_or("nothing")
-                                    )),
-                            )
-                        })
-                }))
+                .child(tests_view(t, &res))
                 .into_any_element(),
             _ => div()
                 .id("resp-scroll")
                 .flex_1()
                 .overflow_y_scroll()
-                .flex()
-                .flex_col()
-                .p_2()
-                .font_family(BUFFER_FONT)
-                .text_size(px(12.))
-                .text_color(t.text_muted)
-                .child("Script output arrives with scripting (M7).")
+                .child(script_console_view(t, &res))
                 .into_any_element(),
         };
         shell(vec![
@@ -1516,6 +1702,144 @@ impl Workspace {
             .children(self.console.iter().map(|l| div().child(l.clone())))
             .into_any_element()
     }
+}
+
+/// Pass/fail list for `expect` and script tests, with expected vs actual for failures.
+fn tests_view(t: &Theme, res: &RunResult) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .p_2()
+        .when(res.tests.is_empty(), |d| {
+            d.child(div().p_1().text_color(t.text_placeholder).child(
+                "No tests. Add an `http expect` block or a `ts test` block to check this response.",
+            ))
+        })
+        .when(!res.tests.is_empty(), |d| {
+            let passed = res.tests.iter().filter(|x| x.passed).count();
+            d.child(
+                div()
+                    .pb_1()
+                    .text_size(px(11.))
+                    .text_color(t.text_placeholder)
+                    .child(format!("{passed} of {} passed", res.tests.len())),
+            )
+        })
+        .children(res.tests.iter().map(|test| {
+            div()
+                .flex()
+                .flex_col()
+                .py_1()
+                .child(
+                    row()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_color(if test.passed { t.created } else { t.deleted })
+                                .child(if test.passed { "✓" } else { "✗" }),
+                        )
+                        .child(test.name.clone()),
+                )
+                .when(!test.passed, |d| {
+                    d.children(test.message.clone().map(|m| {
+                        div()
+                            .pl_6()
+                            .font_family(BUFFER_FONT)
+                            .text_size(px(12.))
+                            .text_color(t.text_muted)
+                            .child(m)
+                    }))
+                    .when(
+                        test.expected.is_some() || test.actual.is_some(),
+                        |d| {
+                            d.child(
+                                div()
+                                    .pl_6()
+                                    .font_family(BUFFER_FONT)
+                                    .text_size(px(12.))
+                                    .text_color(t.text_muted)
+                                    .child(format!(
+                                        "expected {}, got {}",
+                                        test.expected.as_deref().unwrap_or("?"),
+                                        test.actual.as_deref().unwrap_or("nothing")
+                                    )),
+                            )
+                        },
+                    )
+                })
+        }))
+        .into_any_element()
+}
+
+fn log_glyph(level: fluxwire_runner::LogLevel) -> &'static str {
+    use fluxwire_runner::LogLevel::*;
+    match level {
+        Debug => "debug",
+        Log => "log",
+        Info => "info",
+        Warn => "warn",
+        Error => "error",
+    }
+}
+
+/// `console.*` output of one send, plus script errors with their `.flux.md` locations.
+fn script_console_view(t: &Theme, res: &RunResult) -> AnyElement {
+    let errors: Vec<_> = res
+        .script_errors
+        .iter()
+        .chain(match &res.error {
+            Some(fluxwire_runner::RunError::Script(e)) => e.iter(),
+            _ => [].iter(),
+        })
+        .collect();
+    div()
+        .flex()
+        .flex_col()
+        .p_2()
+        .font_family(BUFFER_FONT)
+        .text_size(px(12.))
+        .text_color(t.text_muted)
+        .when(res.console.is_empty() && errors.is_empty(), |d| {
+            d.child(
+                div()
+                    .text_color(t.text_placeholder)
+                    .child("No script output for this send."),
+            )
+        })
+        .children(res.console.iter().map(|l| {
+            let color = match l.level {
+                fluxwire_runner::LogLevel::Error => t.deleted,
+                fluxwire_runner::LogLevel::Warn => t.modified,
+                _ => t.text_muted,
+            };
+            row()
+                .gap_2()
+                .child(
+                    div()
+                        .flex_none()
+                        .text_color(t.text_placeholder)
+                        .child(clock(
+                            SystemTime::UNIX_EPOCH + Duration::from_millis(l.ts_ms),
+                        )),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .w(px(40.))
+                        .text_color(color)
+                        .child(log_glyph(l.level)),
+                )
+                .child(div().flex_1().child(l.text.clone()))
+        }))
+        .children(errors.into_iter().map(|e| {
+            div().text_color(t.deleted).child(format!(
+                "{} {} ({})",
+                e.kind.code(),
+                e.message,
+                e.location()
+            ))
+        }))
+        .into_any_element()
 }
 
 fn owned_table(

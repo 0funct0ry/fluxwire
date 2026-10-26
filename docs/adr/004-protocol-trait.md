@@ -11,7 +11,7 @@ Status: accepted (M3)
 - `Outcome` is protocol-neutral: `final_url`, `timings: Vec<PhaseTiming>`, `redirects`, `connection_reused`, and for exchange protocols an `Exchange` (status, status text, version label, headers as pairs, `Body`, wire and decoded size). Session protocols (M8) will use `Frame` events and leave `exchange` empty.
 - `Body` is `Memory(Bytes)` up to 16 MiB and `File { TempPath, len }` above; the temp file is deleted when the last clone drops. The hard cap defaults to 2 GiB (`ExecSettings::max_body`).
 - `ExecError { phase, message, fix }` names the failed phase and a fix (SPEC §17.8).
-- `check(outcome, expect) -> Vec<TestResult>` implements the status, version and header parts of `http expect` now; JSON and text body matching arrives with M7.
+- `check(outcome, expect, cx) -> Vec<TestResult>` implements `http expect` (status, version, headers, JSON and text bodies since M7; see ADR-007).
 - Two optional hooks, `to_curl(plan, mask_secrets)` and `edits_from_paste(text, doc)`, default to `None`. They let "Copy as cURL" and "paste cURL" work through the registry without the UI or runner knowing about HTTP. (`edits_from_paste` rather than `from_pasted` because clippy reserves `from_*` for constructors.)
 - `fluxwire_protocol::conformance::run` is the shared conformance suite: deterministic planning, event ordering, terminal event, history record shape, `check` pass and fail, and prompt cancellation. `fluxwire-http` runs it against an in-process axum server.
 

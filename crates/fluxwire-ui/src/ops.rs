@@ -94,6 +94,7 @@ impl Workspace {
                 }
                 if self.watch_enabled {
                     self.start_watching(path, cx);
+                    self.regenerate_fw_types(false, cx);
                 }
                 self.restore_session(window, cx);
             }
@@ -592,17 +593,107 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Add `kind` block (e.g. a pre script) through the span editor and focus it.
+    /// Add `kind` block (e.g. a pre script) through the span editor and focus it. New scripts
+    /// use the collection's `script_language` default (SPEC §6.1).
     pub fn add_block(&mut self, kind: BlockKind, info: &str, cx: &mut Context<Self>) {
         let Some(key) = self.active_key() else { return };
+        let default_js = self
+            .collection_root_of(&key)
+            .and_then(|r| fmt::load_config(&r).ok())
+            .is_some_and(|c| c.defaults.script_language.as_deref() == Some("js"));
+        let info = match info.strip_prefix("ts ") {
+            Some(rest) if default_js => format!("js {rest}"),
+            _ => info.to_string(),
+        };
         let Some(doc) = self.project.as_mut().and_then(|p| p.doc_mut(&key)) else {
             return;
         };
-        let edits = fmt::insert_block(&doc.parsed, kind.clone(), info, "");
+        let edits = fmt::insert_block(&doc.parsed, kind.clone(), &info, "");
         if doc.apply(&edits) {
             if let Some(i) = doc.find_block(kind, None) {
                 self.target = Target::Block(i);
             }
+            self.after_edit(&key, cx);
+        }
+    }
+
+    /// Switch the first `kind` block between `ts` and `js` by rewriting only its info string.
+    pub fn toggle_block_language(&mut self, kind: BlockKind, cx: &mut Context<Self>) {
+        let Some(key) = self.active_key() else { return };
+        let Some(doc) = self.project.as_mut().and_then(|p| p.doc_mut(&key)) else {
+            return;
+        };
+        let Some(i) = doc.find_block(kind, None) else {
+            return;
+        };
+        let b = &doc.parsed.blocks[i];
+        let to = if b.info.language == "ts" { "js" } else { "ts" };
+        let info = b.info_span.slice(&doc.parsed.source).to_string();
+        let new = match info.trim_start().strip_prefix(b.info.language.as_str()) {
+            Some(rest) => format!("{to}{rest}"),
+            None => return,
+        };
+        let edit = fluxwire_model::Edit::replace(b.info_span, new);
+        if doc.apply(&[edit]) {
+            self.after_edit(&key, cx);
+        }
+    }
+
+    /// Insert an `http expect` block, pre-filled from the last response when there is one.
+    pub fn add_expect(&mut self, from_response: bool, cx: &mut Context<Self>) {
+        let Some(key) = self.active_key() else { return };
+        let mut content = "HTTP 2xx".to_string();
+        if from_response
+            && let Some(x) = self
+                .tabs
+                .active_id()
+                .and_then(|id| self.responses.get(&id))
+                .and_then(|r| r.result.as_ref())
+                .and_then(|r| r.outcome.as_ref())
+                .and_then(|o| o.exchange.as_ref())
+        {
+            content = format!("HTTP {}", x.status);
+            if let Some(ct) = x.header("content-type") {
+                content.push_str(&format!("\nContent-Type: {ct}"));
+            }
+        }
+        let Some(doc) = self.project.as_mut().and_then(|p| p.doc_mut(&key)) else {
+            return;
+        };
+        if doc.find_block(BlockKind::Expect, None).is_some() {
+            return;
+        }
+        let edits = fmt::insert_block(&doc.parsed, BlockKind::Expect, "http expect", &content);
+        if doc.apply(&edits) {
+            if let Some(i) = doc.find_block(BlockKind::Expect, None) {
+                self.target = Target::Block(i);
+            }
+            self.after_edit(&key, cx);
+        }
+    }
+
+    /// Replace the status line of the `http expect` block (`201`, `2xx`, `*`).
+    pub fn set_expect_status(&mut self, status: &str, cx: &mut Context<Self>) {
+        let Some(key) = self.active_key() else { return };
+        let Some(doc) = self.project.as_mut().and_then(|p| p.doc_mut(&key)) else {
+            return;
+        };
+        let Some(i) = doc.find_block(BlockKind::Expect, None) else {
+            return;
+        };
+        let content = doc.parsed.blocks[i].content;
+        let text = content.slice(&doc.parsed.source);
+        let first = text.find('\n').unwrap_or(text.len());
+        let line = text[..first].trim_end_matches('\r');
+        let new = match line.trim().strip_prefix("HTTP/") {
+            Some(rest) => {
+                let ver = rest.split_whitespace().next().unwrap_or("1.1");
+                format!("HTTP/{ver} {status}")
+            }
+            None => format!("HTTP {status}"),
+        };
+        let span = fluxwire_model::Span::new(content.start, content.start + line.len());
+        if doc.apply(&[fluxwire_model::Edit::replace(span, new)]) {
             self.after_edit(&key, cx);
         }
     }

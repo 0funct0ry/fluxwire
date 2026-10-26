@@ -79,10 +79,15 @@ pub async fn run(p: &dyn Protocol, f: Fixture<'_>) {
         body: DocBody::None,
     };
     let ok = expect(f.fast_status);
-    let res = p.check(outcome, &ok);
+    let scope = fluxwire_vars::VarScope::default();
+    let cx = crate::CheckCtx {
+        doc: None,
+        scope: &scope,
+    };
+    let res = p.check(outcome, &ok, &cx);
     assert!(!res.is_empty() && res.iter().all(|t| t.passed), "{res:?}");
     let wrong = expect(if f.fast_status == 599 { 598 } else { 599 });
-    assert!(p.check(outcome, &wrong).iter().any(|t| !t.passed));
+    assert!(p.check(outcome, &wrong, &cx).iter().any(|t| !t.passed));
 
     // cancellation ends the stream with Failed, promptly
     let token = CancellationToken::new();

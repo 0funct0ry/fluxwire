@@ -102,6 +102,36 @@ fn apply_context(
     }
 }
 
+/// `collection.flux.md` then each `folder.flux.md` down to `file`'s directory (outermost first),
+/// with a collection-relative label for each. Missing files are skipped.
+pub fn ancestor_docs(collection_root: &Path, file: &Path) -> Vec<(String, FluxDoc)> {
+    let reg = ProtocolRegistry::builtin();
+    let mut out = Vec::new();
+    if let Some(c) = load(
+        &collection_root.join("collection.flux.md"),
+        FileKind::Collection,
+        &reg,
+    ) {
+        out.push(("collection.flux.md".to_string(), c));
+    }
+    if let Ok(rel) = file.parent().unwrap_or(file).strip_prefix(collection_root) {
+        let mut dir = collection_root.to_path_buf();
+        for comp in rel.components() {
+            dir.push(comp);
+            if let Some(f) = load(&dir.join("folder.flux.md"), FileKind::Folder, &reg) {
+                let label = dir
+                    .join("folder.flux.md")
+                    .strip_prefix(collection_root)
+                    .unwrap_or(&dir)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                out.push((label, f));
+            }
+        }
+    }
+    out
+}
+
 pub fn build_scope(i: &ScopeInputs) -> VarScope {
     let reg = ProtocolRegistry::builtin();
     let secret_names = load_config(i.collection_root)

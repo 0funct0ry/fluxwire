@@ -5,17 +5,19 @@ mod body;
 mod curl;
 mod engine;
 mod error;
+mod expect;
 mod history;
 pub mod oauth2;
 mod plan;
+mod script;
 mod tls;
 
 use std::sync::OnceLock;
 
-use fluxwire_model::{Diagnostic, Edit, ExpectBlock, FluxDoc, StatusMatch};
+use fluxwire_model::{Diagnostic, Edit, ExpectBlock, FluxDoc};
 use fluxwire_protocol::{
-    Event, ExecCtx, HistoryRecord, Interaction, Outcome, Plan, Protocol, ProtocolRegistry,
-    RoleSpec, TestResult,
+    CheckCtx, Event, ExecCtx, HistoryRecord, Interaction, Outcome, Plan, Protocol,
+    ProtocolRegistry, RoleSpec, TestResult,
 };
 use fluxwire_vars::VarScope;
 use futures::StreamExt;
@@ -84,7 +86,7 @@ impl Protocol for HttpProtocol {
         .boxed()
     }
 
-    fn check(&self, result: &Outcome, expect: &ExpectBlock) -> Vec<TestResult> {
+    fn check(&self, result: &Outcome, expect: &ExpectBlock, cx: &CheckCtx<'_>) -> Vec<TestResult> {
         let Some(x) = &result.exchange else {
             return vec![TestResult {
                 name: "response received".into(),
@@ -94,54 +96,28 @@ impl Protocol for HttpProtocol {
                 message: Some("There was no response to check.".into()),
             }];
         };
-        let mut out = Vec::new();
-        let status_ok = match expect.status {
-            StatusMatch::Exact(c) => (x.status == c, format!("status is {c}")),
-            StatusMatch::Class(c) => (x.status / 100 == c as u16, format!("status is {c}xx")),
-            StatusMatch::Any => (true, "status is any".to_string()),
-        };
-        out.push(TestResult {
-            name: status_ok.1.clone(),
-            passed: status_ok.0,
-            expected: Some(status_ok.1.trim_start_matches("status is ").to_string()),
-            actual: Some(x.status.to_string()),
-            message: None,
-        });
-        if let Some(v) = &expect.version {
-            let want = v.trim_start_matches("HTTP/").trim_end_matches(".0");
-            let have = x.version.trim_start_matches("HTTP/");
-            out.push(TestResult {
-                name: format!("version is {v}"),
-                passed: want == have,
-                expected: Some(v.clone()),
-                actual: Some(x.version.clone()),
-                message: None,
-            });
-        }
-        for h in &expect.headers {
-            let actual = x.header(&h.name);
-            let passed = match actual {
-                None => false,
-                Some(_) if h.value.trim() == "{{*}}" => true,
-                Some(a) => match h
-                    .value
-                    .trim()
-                    .strip_prefix("~/")
-                    .and_then(|r| r.strip_suffix('/'))
-                {
-                    Some(re) => regex::Regex::new(re).is_ok_and(|re| re.is_match(a)),
-                    None => a.trim() == h.value.trim(),
-                },
-            };
-            out.push(TestResult {
-                name: format!("header {} matches", h.name),
-                passed,
-                expected: Some(h.value.clone()),
-                actual: actual.map(str::to_string),
-                message: None,
-            });
-        }
-        out
+        expect::check(x, expect, cx)
+    }
+
+    fn script_request(
+        &self,
+        doc: &FluxDoc,
+        scope: &VarScope,
+        plan: Option<&Plan>,
+    ) -> Option<serde_json::Value> {
+        script::request_view(doc, scope, plan)
+    }
+
+    fn apply_script_ops(&self, plan: &Plan, ops: &[serde_json::Value]) -> Result<Plan, String> {
+        script::apply_ops(plan, ops)
+    }
+
+    fn script_response(&self, result: &Outcome) -> Option<serde_json::Value> {
+        script::response_view(result)
+    }
+
+    fn capture(&self, result: &Outcome, expr: &str) -> Result<Option<String>, String> {
+        script::capture(result, expr)
     }
 
     fn history_record(&self, r: &Outcome) -> HistoryRecord {

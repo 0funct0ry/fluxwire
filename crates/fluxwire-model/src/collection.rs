@@ -13,6 +13,15 @@ pub struct CollectionConfig {
     pub secrets: Secrets,
     #[serde(default)]
     pub openapi: Vec<OpenApiLink>,
+    #[serde(default)]
+    pub scripts: ScriptLimits,
+}
+
+/// `[scripts]`: per-execution limits (SPEC §11.1). Unset keys use the built-in 5 s / 64 MiB.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScriptLimits {
+    pub timeout_ms: Option<u64>,
+    pub memory_mb: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

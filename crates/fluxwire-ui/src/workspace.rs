@@ -157,6 +157,8 @@ pub struct TabUi {
     pub resp: usize,
     pub method: usize,
     pub post_script: bool,
+    /// Tests tab: false shows the Expect editor, true the `test` script.
+    pub tests_script: bool,
     pub connected: bool,
     /// Saved scroll offset of the editor area while this tab is not showing.
     pub scroll: f32,
@@ -169,6 +171,7 @@ impl TabUi {
             resp: 0,
             method: 0,
             post_script: false,
+            tests_script: false,
             connected: false,
             scroll: 0.0,
         }
@@ -194,6 +197,10 @@ pub struct Workspace {
     pub responses: HashMap<u64, crate::response::TabResponse>,
     /// Send log shown in the bottom dock.
     pub console: Vec<String>,
+    /// Tab whose send waits on the script trust prompt (SPEC §21).
+    pub trust_prompt: Option<u64>,
+    /// Collections trusted this session when there is no config dir to store the decision in.
+    pub session_trust: HashSet<PathBuf>,
     pub left_open: bool,
     pub left_width: f32,
     pub panel: Panel,
@@ -286,6 +293,8 @@ impl Workspace {
             tab_ui: HashMap::new(),
             responses: HashMap::new(),
             console: Vec::new(),
+            trust_prompt: None,
+            session_trust: HashSet::new(),
             left_open: true,
             left_width: 260.0,
             panel: Panel::Project,
@@ -1254,6 +1263,9 @@ impl Render for Workspace {
             ReloadKeymap => |this, _w, c| this.reload_keymap(c),
             OpenKeymapFile => |this, _w, c| this.open_config_file("keymap.toml", KEYMAP_TEMPLATE, c),
             OpenSettingsFile => |this, _w, c| this.open_config_file("settings.toml", SETTINGS_TEMPLATE, c),
+            TrustCollection => |this, _w, c| this.set_collection_trust(true, c),
+            RevokeCollectionTrust => |this, _w, c| this.set_collection_trust(false, c),
+            RegenerateFwTypes => |this, _w, c| this.regenerate_fw_types(true, c),
             RunFolder => |this, _w, _c| {
                 let folder = this.selected_folder_name();
                 this.open_tab(&format!("run/{folder}"), &format!("Run: {folder}"), TabKind::FolderRun, true)

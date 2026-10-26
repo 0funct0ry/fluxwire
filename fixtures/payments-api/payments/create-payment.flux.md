@@ -41,6 +41,7 @@ Content-Type: application/json
 ```ts pre
 import { sign } from "lib/sign.ts";
 fw.vars.set("idemKey", crypto.randomUUID());
+fw.request.headers.set("X-Signature", sign(fw.request.body.text(), fw.env.get("hmacKey") ?? "dev-hmac-key"));
 ```
 
 Every payment gets an id we can use in later requests:

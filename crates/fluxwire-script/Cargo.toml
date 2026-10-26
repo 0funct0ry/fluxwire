@@ -12,3 +12,20 @@ workspace = true
 
 [dependencies]
 fluxwire-model.workspace = true
+serde = { workspace = true }
+serde_json = { workspace = true }
+rquickjs = { version = "0.14", default-features = false, features = ["futures", "loader", "classes", "properties"] }
+oxc_allocator = "0.100"
+oxc_parser = "0.100"
+oxc_span = "0.100"
+oxc_semantic = "0.100"
+oxc_transformer = "0.100"
+oxc_codegen = "0.100"
+jsonschema = { version = "0.30", default-features = false }
+serde_json_path = "0.7"
+regex = "1"
+sha2 = "0.10"
+hmac = "0.12"
+base64 = "0.22"
+hex = "0.4"
+uuid = { version = "1", features = ["v4"] }

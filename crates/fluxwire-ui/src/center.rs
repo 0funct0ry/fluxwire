@@ -593,6 +593,30 @@ impl Workspace {
                 .into_any_element(),
             );
         }
+        if self.trust_prompt.is_some() && self.trust_prompt == self.tabs.active_id() {
+            out.push(
+                self.banner(
+                    t,
+                    "This collection contains scripts. Scripts can send requests and read variables. Trust this collection?".into(),
+                    t.modified,
+                )
+                .child(div().flex_1())
+                .child(
+                    button(t, "trust-yes", "Trust", true).on_click(
+                        cx.listener(|this, _, _, cx| this.set_collection_trust(true, cx)),
+                    ),
+                )
+                .child(
+                    button(t, "trust-no", "Not now", false).on_click(cx.listener(
+                        |this, _, _, cx| {
+                            this.trust_prompt = None;
+                            cx.notify();
+                        },
+                    )),
+                )
+                .into_any_element(),
+            );
+        }
         if doc.conflict.is_some() {
             out.push(
                 self.banner(t, "File changed on disk.".into(), t.deleted)
@@ -1004,6 +1028,95 @@ impl Workspace {
         }
     }
 
+    /// Tests tab: the declarative `http expect` block, or the `test` script (SPEC §7.7, §11).
+    fn render_tests_tab(
+        &self,
+        t: &Theme,
+        doc: &OpenDoc,
+        ui: &TabUi,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let scripts = ui.tests_script;
+        let toggle = row().gap_2().p_2().flex_none().children(
+            [("Expect", false), ("Test script", true)].map(|(l, s)| {
+                button(
+                    t,
+                    if s { "tests-script" } else { "tests-expect" },
+                    l,
+                    scripts == s,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(ui) = this.active_ui() {
+                        ui.tests_script = s;
+                    }
+                    cx.notify();
+                }))
+            }),
+        );
+        let body: AnyElement = if scripts {
+            self.block_editor(t, doc, BlockKind::Test, "ts test", "add-test", cx)
+        } else if doc.find_block(BlockKind::Expect, None).is_some() {
+            let status_chips = row()
+                .gap_2()
+                .px_2()
+                .pb_2()
+                .flex_none()
+                .child(
+                    div()
+                        .text_color(t.text_placeholder)
+                        .text_size(px(12.))
+                        .child("Status"),
+                )
+                .children(["200", "201", "204", "2xx", "4xx", "5xx", "*"].map(|c| {
+                    button(t, c, c, false)
+                        .on_click(cx.listener(move |this, _, _, cx| this.set_expect_status(c, cx)))
+                }));
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_h_0()
+                .child(status_chips)
+                .child(self.block_editor(
+                    t,
+                    doc,
+                    BlockKind::Expect,
+                    "http expect",
+                    "add-expect",
+                    cx,
+                ))
+                .into_any_element()
+        } else {
+            div()
+                .p_3()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .items_start()
+                .text_color(t.text_muted)
+                .child("No `http expect` block. It lists what the response must contain: status, headers, and a partial JSON body.")
+                .child(
+                    row()
+                        .gap_2()
+                        .child(button(t, "add-expect", "Add expect", true).on_click(
+                            cx.listener(|this, _, _, cx| this.add_expect(false, cx)),
+                        ))
+                        .child(button(t, "add-expect-last", "From last response", false).on_click(
+                            cx.listener(|this, _, _, cx| this.add_expect(true, cx)),
+                        )),
+                )
+                .into_any_element()
+        };
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .child(toggle)
+            .child(body)
+            .into_any_element()
+    }
+
     fn request_sub_content(
         &self,
         t: &Theme,
@@ -1060,13 +1173,21 @@ impl Workspace {
                                     }),
                                 )
                             }))
-                            .child(pill(
-                                t,
-                                doc.find_block(kind.clone(), None)
-                                    .map_or("ts".to_string(), |i| {
-                                        doc.parsed.blocks[i].info.language.clone()
+                            .child(div().flex_1())
+                            .when_some(doc.find_block(kind.clone(), None), |d, i| {
+                                let lang: &'static str =
+                                    if doc.parsed.blocks[i].info.language == "js" {
+                                        "js"
+                                    } else {
+                                        "ts"
+                                    };
+                                let k = kind.clone();
+                                d.child(button(t, "script-lang", lang, false).on_click(
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.toggle_block_language(k.clone(), cx)
                                     }),
-                            )),
+                                ))
+                            }),
                     )
                     .child(self.block_editor(
                         t,
@@ -1082,7 +1203,7 @@ impl Workspace {
                     ))
                     .into_any_element()
             }
-            5 => self.block_editor(t, doc, BlockKind::Test, "ts test", "add-test", cx),
+            5 => self.render_tests_tab(t, doc, ui, cx),
             6 => {
                 let prose = prose_of(doc);
                 div()
@@ -1422,7 +1543,7 @@ impl Workspace {
     fn render_docs(&self, t: &Theme) -> impl IntoElement {
         self.page(t, "payments", "Folder documentation")
             .child("The payments folder creates, reads, updates and cancels payments. Authenticate with a bearer token from the auth folder first.")
-            .child(row().gap_2().child(pill(t, "POST /v1/payments")).child(pill(t, "3 tests")))
+            .child(row().gap_2().child(pill(t, "POST /v1/payments")))
             .child(
                 div().rounded(px(4.)).border_1().border_color(t.border_variant).child(code_view(
                     "{\n  \"amount\": 4200,\n  \"currency\": \"usd\"\n}",

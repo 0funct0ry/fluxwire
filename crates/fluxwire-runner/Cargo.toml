@@ -15,8 +15,9 @@ fluxwire-model.workspace = true
 fluxwire-protocol.workspace = true
 fluxwire-vars.workspace = true
 fluxwire-script.workspace = true
+fluxwire-format.workspace = true
 fluxwire-http = { workspace = true, optional = true }
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
 futures = "0.3"
 toml = "0.8"
 serde = { workspace = true }
@@ -28,5 +29,4 @@ http = ["dep:fluxwire-http"]
 
 [dev-dependencies]
 axum = "0.8"
-fluxwire-format.workspace = true
 tokio = { version = "1", features = ["full"] }

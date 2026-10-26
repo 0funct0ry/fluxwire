@@ -18,6 +18,7 @@ mod schema;
 mod scope;
 mod settings;
 mod template;
+mod trust;
 mod watch;
 
 pub use collection::*;
@@ -31,7 +32,8 @@ pub use keymap::{Keymap, KeymapEntry, load_keymap, parse_keymap};
 pub use lines::{Line, lines};
 pub use parse::{parse, parse_with};
 pub use schema::front_matter_schema_json;
-pub use scope::{ScopeInputs, build_scope};
+pub use scope::{ScopeInputs, ancestor_docs, build_scope};
 pub use settings::{UserSettings, load_settings, parse_settings};
 pub use template::*;
+pub use trust::{is_trusted, set_trusted, trusted_collections};
 pub use watch::{DEBOUNCE, WatchHandle, watch};

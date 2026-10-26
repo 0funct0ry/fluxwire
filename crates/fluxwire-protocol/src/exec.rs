@@ -284,7 +284,15 @@ pub struct TestResult {
     pub message: Option<String>,
 }
 
-/// Names a protocol exposes to scripts; filled in by M7.
+/// What `Protocol::check` needs beyond the outcome.
+pub struct CheckCtx<'a> {
+    /// The document the expect block was parsed from; body spans index its source.
+    pub doc: Option<&'a FluxDoc>,
+    /// Scope for `{{var}}` interpolation inside the block.
+    pub scope: &'a VarScope,
+}
+
+/// Names a protocol exposes to scripts.
 #[derive(Debug, Clone, Default)]
 pub struct ScriptBindings {
     pub names: Vec<&'static str>,
@@ -309,9 +317,38 @@ pub trait Protocol: Send + Sync {
     /// Must be called inside a Tokio runtime. The stream ends with exactly one
     /// `Done` or `Failed`, preceded only by `Phase`/`Redirect`/`Frame` events.
     fn execute(&self, plan: Plan, ctx: ExecCtx) -> BoxStream<'static, Event>;
-    fn check(&self, result: &Outcome, expect: &ExpectBlock) -> Vec<TestResult>;
+    /// Declarative checks for the `expect` block (SPEC §7.7). `cx` carries the document the
+    /// block came from (for body spans) and the scope used to interpolate its values.
+    fn check(&self, result: &Outcome, expect: &ExpectBlock, cx: &CheckCtx<'_>) -> Vec<TestResult>;
     fn script_bindings(&self) -> ScriptBindings {
         ScriptBindings::default()
+    }
+
+    /// The request as scripts see it (`fw.request`), as JSON:
+    /// `{method, url, headers: [[name, value]], body, name, path}`. Built from `plan` once
+    /// planning succeeded, else best effort from `doc` and `scope` (unresolved variables stay
+    /// as text). `None` if the protocol has no request view.
+    fn script_request(
+        &self,
+        _doc: &FluxDoc,
+        _scope: &VarScope,
+        _plan: Option<&Plan>,
+    ) -> Option<serde_json::Value> {
+        None
+    }
+    /// Apply the edits a `pre` script recorded (`fw.request.*` setters) to a planned request.
+    fn apply_script_ops(&self, _plan: &Plan, _ops: &[serde_json::Value]) -> Result<Plan, String> {
+        Err("this protocol does not support request edits from scripts".into())
+    }
+    /// The response as scripts see it (`fw.response`): `{status, statusText, headers, text, time,
+    /// size, timings}`.
+    fn script_response(&self, _result: &Outcome) -> Option<serde_json::Value> {
+        None
+    }
+    /// Evaluate a front matter `capture` expression (`$.json.path`, `header Name`,
+    /// `cookie name`, `status`). `Ok(None)` when it matches nothing.
+    fn capture(&self, _result: &Outcome, _expr: &str) -> Result<Option<String>, String> {
+        Err("this protocol does not support capture".into())
     }
     fn history_record(&self, result: &Outcome) -> HistoryRecord;
 

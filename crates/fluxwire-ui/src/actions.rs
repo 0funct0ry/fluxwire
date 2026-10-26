@@ -87,6 +87,9 @@ actions!(
         ReloadKeymap,
         OpenKeymapFile,
         OpenSettingsFile,
+        TrustCollection,
+        RevokeCollectionTrust,
+        RegenerateFwTypes,
         OpenResultBeside,
     ]
 );
@@ -289,6 +292,19 @@ pub static ACTIONS: &[ActionInfo] = &[
     a!("keymap: reload", ReloadKeymap, None, None),
     a!("keymap: open keymap.toml", OpenKeymapFile, None, None),
     a!("settings: open settings.toml", OpenSettingsFile, None, None),
+    a!(
+        "scripts: trust this collection",
+        TrustCollection,
+        None,
+        None
+    ),
+    a!(
+        "scripts: revoke trust for this collection",
+        RevokeCollectionTrust,
+        None,
+        None
+    ),
+    a!("scripts: regenerate fw.d.ts", RegenerateFwTypes, None, None),
     a!(
         "quick search: open result beside",
         OpenResultBeside,

@@ -520,6 +520,15 @@ fn test_server(stall: bool) -> u16 {
     port
 }
 
+/// Scripts only run in trusted collections (SPEC §21); tests that send a scripted request
+/// trust the collection of `key` for the session.
+fn trust_collection_of(view: &Entity<Workspace>, cx: &mut VisualTestContext, key: &str) {
+    view.update(cx, |w, _| {
+        let root = w.collection_root_of(key).expect("collection root");
+        w.session_trust.insert(root);
+    });
+}
+
 fn set_doc_text(view: &Entity<Workspace>, cx: &mut VisualTestContext, key: &str, text: String) {
     view.update(cx, |w, _| {
         w.project
@@ -551,6 +560,68 @@ fn get_doc_text(port: u16) -> String {
     format!(
         "---\nname: Local\n---\n\n# Local\n\nProse stays.\n\n```http\nGET http://127.0.0.1:{port}/v1/payments\nAccept: application/json\n```\n"
     )
+}
+
+fn scripted_doc_text(port: u16) -> String {
+    format!(
+        "---\nname: Scripted\ncapture:\n  paymentId: $.id\n---\n\n```http\nGET http://127.0.0.1:{port}/v1/payments\n```\n\n```http expect\nHTTP 201\n\n{{ \"amount\": 4200 }}\n```\n\n```ts pre\nfw.vars.set(\"stamp\", \"s1\");\nconsole.log(\"before send\");\n```\n\n```ts test\nfw.test(\"has an id\", () => fw.expect(fw.response.json()).toHaveProperty(\"id\"));\n```\n"
+    )
+}
+
+#[gpui::test]
+fn scripts_wait_for_trust_then_run_and_feed_runtime_variables(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "scripts");
+    let port = test_server(false);
+    set_doc_text(&view, cx, CREATE, scripted_doc_text(port));
+
+    cx.simulate_keystrokes("secondary-enter");
+    view.read_with(cx, |w, _| {
+        assert_eq!(w.trust_prompt, w.tabs.active_id(), "the first send asks");
+        assert!(w.responses.values().all(|r| r.result.is_none()));
+    });
+
+    view.update(cx, |w, cx| w.set_collection_trust(true, cx));
+    wait_until(&view, cx, "the scripted send", |w| {
+        w.responses.values().any(|r| r.result.is_some())
+    });
+    view.read_with(cx, |w, _| {
+        assert!(w.trust_prompt.is_none());
+        let res = w
+            .responses
+            .values()
+            .next()
+            .unwrap()
+            .result
+            .as_ref()
+            .unwrap();
+        assert!(res.error.is_none(), "{:?}", res.error);
+        let tests: Vec<_> = res
+            .tests
+            .iter()
+            .map(|t| (t.name.as_str(), t.passed))
+            .collect();
+        assert_eq!(
+            tests,
+            [
+                ("expect status", true),
+                ("expect body $.amount", true),
+                ("has an id", true)
+            ]
+        );
+        assert_eq!(w.envs.runtime["paymentId"].0, "pay_1");
+        assert_eq!(w.envs.runtime["stamp"].0, "s1");
+        assert!(
+            w.console.iter().any(|l| l.contains("before send")),
+            "{:?}",
+            w.console
+        );
+    });
+
+    view.update(cx, |w, cx| w.set_collection_trust(false, cx));
+    view.read_with(cx, |w, _| {
+        let root = w.collection_root_of(CREATE).unwrap();
+        assert!(!w.session_trust.contains(&root));
+    });
 }
 
 #[gpui::test]
@@ -643,6 +714,7 @@ fn files_that_cannot_run_are_not_sent(cx: &mut TestAppContext) {
 #[gpui::test]
 fn unresolved_variables_warn_once_then_send_anyway(cx: &mut TestAppContext) {
     let (view, cx, _root) = setup_with(cx, "payments-api", "vars");
+    trust_collection_of(&view, cx, CREATE);
     // create-payment uses {{idemKey}}, which no environment defines.
     cx.simulate_keystrokes("secondary-enter");
     view.read_with(cx, |w, _| {
@@ -812,6 +884,7 @@ fn picker_labels(view: &Entity<Workspace>, cx: &mut VisualTestContext) -> Vec<St
 #[gpui::test]
 fn switching_environment_changes_the_resolved_url_and_the_request_sent(cx: &mut TestAppContext) {
     let (view, cx, root) = setup_with(cx, "payments-api", "env-switch");
+    trust_collection_of(&view, cx, CREATE);
     let (p_local, p_staging) = (test_server(false), test_server(false));
     write_env(
         &view,

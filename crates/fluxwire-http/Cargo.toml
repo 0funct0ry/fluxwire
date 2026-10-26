@@ -23,7 +23,8 @@ http-body-util = "0.1.5"
 bytes = "1.12.1"
 futures = "0.3.34"
 tempfile = "3.27.0"
-serde_json.workspace = true
+# Expect tests are reported in the order the block lists its keys.
+serde_json = { workspace = true, features = ["preserve_order"] }
 base64 = "0.23.1"
 url = "2.5.8"
 md-5 = "0.11.0"
@@ -35,6 +36,7 @@ rustls-platform-verifier = "0.7.1"
 rustls-pemfile = "2.2.0"
 async-compression = { version = "0.4.51", features = ["tokio", "gzip", "zlib", "brotli", "zstd"] }
 regex = "1.13.1"
+serde_json_path = "0.7"
 
 [dev-dependencies]
 axum = "0.8.9"

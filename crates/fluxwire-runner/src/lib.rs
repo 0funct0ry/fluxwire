@@ -4,17 +4,25 @@
 //! This crate contains no protocol-specific code; protocols are registered as
 //! `Arc<dyn Protocol>` and spoken to only through `Plan`/`Event`/`Outcome`.
 
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::SystemTime;
 
-use fluxwire_model::{BlockData, Diagnostic, Edit, FluxDoc};
+use fluxwire_model::{BlockData, BlockKind, Diagnostic, Edit, FluxDoc, FmValue};
 pub use fluxwire_protocol::{
     CancellationToken, EnvState, ExecCtx, ExecError, ExecSettings, NetConfig, Outcome, PhaseTiming,
     RedirectHop, TestResult,
 };
-use fluxwire_protocol::{Event, HistoryRecord, Plan, Protocol};
+use fluxwire_protocol::{CheckCtx, Event, HistoryRecord, Plan, Protocol};
+pub use fluxwire_script::{
+    ConsoleLine, ErrorKind as ScriptErrorKind, Limits, LogLevel, ScriptError, fw_dts,
+};
+use fluxwire_script::{Role, RunEnv, ScriptBlock, ScriptHost, ScriptState, VarEntry};
 pub use fluxwire_vars::VarScope;
+use fluxwire_vars::{Layer, Source, Var};
 use futures::StreamExt;
+use serde_json::Value;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 /// Why a run produced no outcome.
@@ -29,6 +37,10 @@ pub enum RunError {
     /// Planning failed (bad URL, missing file, unresolved variable…).
     Plan(Vec<Diagnostic>),
     Exec(ExecError),
+    /// The collection has scripts and has not been trusted (SPEC §21).
+    Untrusted,
+    /// A `pre` script failed, so nothing was sent.
+    Script(Vec<ScriptError>),
 }
 
 impl RunError {
@@ -59,6 +71,17 @@ impl RunError {
                 None,
             ),
             RunError::Exec(e) => (e.message.clone(), e.fix.clone()),
+            RunError::Untrusted => (
+                "This collection contains scripts, and it is not trusted yet.".into(),
+                Some("Trust the collection to run its scripts.".into()),
+            ),
+            RunError::Script(errs) => (
+                errs.iter()
+                    .map(|e| format!("{} {} ({})", e.kind.code(), e.message, e.location()))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                None,
+            ),
         }
     }
 
@@ -67,6 +90,8 @@ impl RunError {
             RunError::Exec(e) => &e.phase,
             RunError::Plan(_) | RunError::NoRequest | RunError::NoProtocol(_) => "plan",
             RunError::Unsupported(_) => "requires",
+            RunError::Untrusted => "trust",
+            RunError::Script(_) => "pre script",
         }
     }
 }
@@ -85,6 +110,24 @@ pub struct RunResult {
     pub warnings: Vec<Diagnostic>,
     /// `(name, value)` of secret variables in scope when the run started.
     pub secrets: Vec<(String, String)>,
+    /// `console.*` output of every script phase, secrets redacted.
+    pub console: Vec<ConsoleLine>,
+    /// Net runtime-variable changes made by scripts and `capture`, in order.
+    pub var_changes: Vec<VarChange>,
+    /// `fw.env.persist(name)` requests, with the value to write.
+    pub env_persist: Vec<(String, String)>,
+    /// Failures of `post`/`test` scripts (a failing `pre` script is `RunError::Script`).
+    pub script_errors: Vec<ScriptError>,
+    /// `fw.skip(reason)` from a `pre` script: nothing was sent.
+    pub skipped: Option<String>,
+}
+
+/// A runtime variable a script or `capture` set (`value: None` = unset).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VarChange {
+    pub name: String,
+    pub value: Option<String>,
+    pub secret: bool,
 }
 
 impl RunResult {
@@ -133,10 +176,26 @@ pub struct SendOptions {
     pub net: NetConfig,
     /// Cookie jar and token cache of the active environment.
     pub env: Option<EnvState>,
+    pub scripts: ScriptOptions,
+}
+
+/// Everything the script phases need beyond the document (SPEC §11, §21).
+#[derive(Clone, Default)]
+pub struct ScriptOptions {
+    /// Scripts run only in trusted collections; `fluxwire run` trusts by definition.
+    pub trusted: bool,
+    pub limits: Limits,
+    /// Collection root: enables folder/collection scripts, `lib/` imports and `fw.sendRequest`.
+    pub collection_root: Option<PathBuf>,
+    /// Absolute path of the request file (need not exist on disk).
+    pub file: Option<PathBuf>,
+    /// `[globals]` from settings.toml, for `fw.globals` and nested requests.
+    pub globals: Vec<(String, String)>,
+    pub allow_process_env: bool,
 }
 
 pub struct Runner {
-    protocols: Vec<Arc<dyn Protocol>>,
+    protocols: Arc<Vec<Arc<dyn Protocol>>>,
     rt: tokio::runtime::Runtime,
 }
 
@@ -160,7 +219,10 @@ impl Runner {
             .enable_all()
             .build()
             .expect("tokio runtime");
-        Self { protocols, rt }
+        Self {
+            protocols: Arc::new(protocols),
+            rt,
+        }
     }
 
     pub fn handle(&self) -> &tokio::runtime::Handle {
@@ -190,8 +252,19 @@ impl Runner {
         let proto = self.protocol_for(doc).cloned();
         let doc = doc.clone();
         let started_at = SystemTime::now();
+        let shared = self.protocols.clone();
         self.rt.spawn(async move {
-            let result = run(proto, doc, opts.scope, ctx, &tx, started_at).await;
+            let job = Job {
+                shared,
+                proto,
+                doc,
+                scope: opts.scope,
+                ctx,
+                scripts: opts.scripts,
+                depth: 0,
+                started_at,
+            };
+            let result = exec(job, Some(&tx)).await;
             let _ = tx.send(RunEvent::Finished(Box::new(result)));
         });
         RunHandle { events: rx, cancel }
@@ -273,14 +346,349 @@ impl Runner {
     }
 }
 
-async fn run(
+/// One run of one request (the unit `fw.sendRequest` nests).
+struct Job {
+    shared: Arc<Vec<Arc<dyn Protocol>>>,
     proto: Result<Arc<dyn Protocol>, RunError>,
     doc: FluxDoc,
     scope: VarScope,
     ctx: ExecCtx,
-    tx: &UnboundedSender<RunEvent>,
+    scripts: ScriptOptions,
+    depth: u32,
     started_at: SystemTime,
-) -> RunResult {
+}
+
+const MAX_NESTING: u32 = 3;
+
+fn rel_label(root: Option<&Path>, file: Option<&Path>, doc: &FluxDoc) -> String {
+    match (root, file) {
+        (Some(r), Some(f)) => f
+            .strip_prefix(r)
+            .unwrap_or(f)
+            .to_string_lossy()
+            .replace('\\', "/"),
+        (_, Some(f)) => f
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        _ => doc.name().unwrap_or("request").to_string(),
+    }
+}
+
+/// The three script lists for one request, in SPEC §11.2 order.
+struct Scripts {
+    pre: Vec<ScriptBlock>,
+    post: Vec<ScriptBlock>,
+    tests: Vec<ScriptBlock>,
+}
+
+fn collect_scripts(doc: &FluxDoc, ancestors: &[(String, FluxDoc)], own_label: &str) -> Scripts {
+    let blocks = |d: &FluxDoc, label: &str, role| fluxwire_script::blocks_from_doc(d, label, role);
+    let mut pre = Vec::new();
+    let mut post = Vec::new();
+    let mut tests = Vec::new();
+    // collection → folders (outer → inner) → request
+    for (label, d) in ancestors {
+        pre.extend(blocks(d, label, Role::Pre));
+        tests.extend(blocks(d, label, Role::Test));
+    }
+    pre.extend(blocks(doc, own_label, Role::Pre));
+    tests.extend(blocks(doc, own_label, Role::Test));
+    // request → folders (inner → outer) → collection
+    post.extend(blocks(doc, own_label, Role::Post));
+    for (label, d) in ancestors.iter().rev() {
+        post.extend(blocks(d, label, Role::Post));
+    }
+    Scripts { pre, post, tests }
+}
+
+fn script_state(
+    scope: &VarScope,
+    opts: &ScriptOptions,
+    request: Option<Value>,
+    response: Option<Value>,
+) -> ScriptState {
+    ScriptState {
+        request,
+        response,
+        vars: scope
+            .vars
+            .iter()
+            .map(|(k, v)| {
+                (
+                    k.clone(),
+                    VarEntry {
+                        value: v.value.clone(),
+                        secret: v.secret,
+                    },
+                )
+            })
+            .collect(),
+        env_vars: scope
+            .vars
+            .iter()
+            .map(|(k, v)| (k.clone(), v.value.clone()))
+            .collect(),
+        env_name: scope.env_name.clone().unwrap_or_default(),
+        globals: opts.globals.iter().cloned().collect(),
+        ..Default::default()
+    }
+}
+
+fn runtime_var(value: String, secret: bool) -> Var {
+    Var {
+        value,
+        secret,
+        source: Source::new("runtime", None),
+    }
+}
+
+/// Fold what a script phase changed into the scope and the run result.
+fn absorb(scope: &mut VarScope, st: &mut ScriptState, result: &mut RunResult) {
+    for (name, change) in std::mem::take(&mut st.vars_changed) {
+        match change {
+            Some(e) => {
+                if e.secret {
+                    result.secrets.push((name.clone(), e.value.clone()));
+                }
+                scope.set(
+                    Layer::Runtime,
+                    name.clone(),
+                    runtime_var(e.value.clone(), e.secret),
+                );
+                result.var_changes.push(VarChange {
+                    name,
+                    value: Some(e.value),
+                    secret: e.secret,
+                });
+            }
+            None => {
+                scope.remove(&name);
+                result.var_changes.push(VarChange {
+                    name,
+                    value: None,
+                    secret: false,
+                });
+            }
+        }
+    }
+    for (name, value) in std::mem::take(&mut st.env_set) {
+        let secret = scope.var(&name).is_some_and(|v| v.secret);
+        scope.set(
+            Layer::Runtime,
+            name.clone(),
+            runtime_var(value.clone(), secret),
+        );
+        result.var_changes.push(VarChange {
+            name,
+            value: Some(value),
+            secret,
+        });
+    }
+    for name in std::mem::take(&mut st.persist) {
+        if let Some(v) = scope.get(&name) {
+            result.env_persist.push((name, v.to_string()));
+        }
+    }
+    result.console.append(&mut st.console);
+}
+
+fn to_test_result(t: fluxwire_script::TestOutcome) -> TestResult {
+    TestResult {
+        name: t.name,
+        passed: t.passed,
+        expected: t.expected,
+        actual: t.actual,
+        message: t.message,
+    }
+}
+
+/// Runs one phase's blocks on the blocking pool.
+async fn run_phase(
+    blocks: Vec<ScriptBlock>,
+    state: ScriptState,
+    env: RunEnv,
+) -> (ScriptState, Vec<ScriptError>) {
+    if blocks.is_empty() {
+        return (state, Vec::new());
+    }
+    let fallback = blocks[0].clone();
+    tokio::task::spawn_blocking(move || fluxwire_script::run_blocks(&blocks, state, &env))
+        .await
+        .unwrap_or_else(|e| {
+            (
+                ScriptState::default(),
+                vec![ScriptError {
+                    kind: fluxwire_script::ErrorKind::Throw,
+                    message: format!("the script runtime crashed: {e}"),
+                    file: fallback.file,
+                    line: fallback.first_line,
+                    col: 0,
+                    stack: String::new(),
+                }],
+            )
+        })
+}
+
+/// `fw.sendRequest` and `pm.sendRequest`: sends another request through the same engine.
+struct NestedHost {
+    shared: Arc<Vec<Arc<dyn Protocol>>>,
+    handle: tokio::runtime::Handle,
+    scope: VarScope,
+    ctx: ExecCtx,
+    opts: ScriptOptions,
+    depth: u32,
+}
+
+impl NestedHost {
+    fn load(&self, target: &Value) -> Result<(FluxDoc, Option<PathBuf>), String> {
+        match target {
+            Value::String(rel) => {
+                let root = self
+                    .opts
+                    .collection_root
+                    .as_ref()
+                    .ok_or("fw.sendRequest needs a collection")?;
+                let joined = root.join(rel);
+                let (canon, canon_root) = (
+                    joined.canonicalize().map_err(|e| format!("{rel}: {e}"))?,
+                    root.canonicalize().map_err(|e| e.to_string())?,
+                );
+                if !canon.starts_with(&canon_root) || !rel.ends_with(".flux.md") {
+                    return Err(format!(
+                        "{rel}: only .flux.md files inside the collection can be sent"
+                    ));
+                }
+                let text = std::fs::read_to_string(&canon).map_err(|e| format!("{rel}: {e}"))?;
+                Ok((fluxwire_format::parse(&text), Some(joined)))
+            }
+            Value::Object(o) => {
+                let get = |k: &str| o.get(k).and_then(Value::as_str).unwrap_or_default();
+                let method = if get("method").is_empty() {
+                    "GET"
+                } else {
+                    get("method")
+                };
+                let mut text = format!("```http\n{method} {}\n", get("url"));
+                if let Some(hs) = o.get("headers").and_then(Value::as_array) {
+                    for h in hs {
+                        if let (Some(k), Some(v)) = (
+                            h.get(0).and_then(Value::as_str),
+                            h.get(1).and_then(Value::as_str),
+                        ) {
+                            text.push_str(&format!("{k}: {v}\n"));
+                        }
+                    }
+                }
+                if let Some(b) = o.get("body").and_then(Value::as_str) {
+                    text.push_str(&format!("\n{b}\n"));
+                }
+                text.push_str("```\n");
+                Ok((fluxwire_format::parse(&text), None))
+            }
+            _ => Err("fw.sendRequest expects a .flux.md path".into()),
+        }
+    }
+}
+
+impl ScriptHost for NestedHost {
+    fn send_request(
+        &self,
+        target: &Value,
+        vars: &BTreeMap<String, String>,
+    ) -> Result<Value, String> {
+        if self.depth >= MAX_NESTING {
+            return Err("fw.sendRequest is nested too deeply".into());
+        }
+        let (doc, file) = self.load(target)?;
+        let mut scope = match (&self.opts.collection_root, &file) {
+            (Some(root), Some(file)) => {
+                let runtime: BTreeMap<String, (String, bool)> = self
+                    .scope
+                    .vars
+                    .iter()
+                    .filter(|(_, v)| v.source.label == "runtime")
+                    .map(|(k, v)| (k.clone(), (v.value.clone(), v.secret)))
+                    .collect();
+                fluxwire_format::build_scope(&fluxwire_format::ScopeInputs {
+                    collection_root: root,
+                    file,
+                    doc: &doc,
+                    env: self.scope.env_name.as_deref(),
+                    runtime: &runtime,
+                    globals: &self.opts.globals,
+                    allow_process_env: self.opts.allow_process_env,
+                })
+            }
+            _ => self.scope.clone(),
+        };
+        for (k, v) in vars {
+            scope.set(Layer::Runtime, k.clone(), runtime_var(v.clone(), false));
+        }
+        let proto = pick_protocol(&self.shared, &doc);
+        let mut scripts = self.opts.clone();
+        scripts.file = file;
+        let job = Job {
+            shared: self.shared.clone(),
+            proto: proto.clone(),
+            doc,
+            scope,
+            ctx: self.ctx.clone(),
+            scripts,
+            depth: self.depth + 1,
+            started_at: SystemTime::now(),
+        };
+        let result = self.handle.block_on(exec(job, None));
+        if let Some(err) = result.error {
+            let (msg, _) = err.describe();
+            return Err(msg);
+        }
+        let outcome = result.outcome.ok_or("the request produced no response")?;
+        proto
+            .ok()
+            .and_then(|p| p.script_response(&outcome))
+            .ok_or_else(|| "the response is not available to scripts".to_string())
+    }
+}
+
+fn pick_protocol(
+    protocols: &[Arc<dyn Protocol>],
+    doc: &FluxDoc,
+) -> Result<Arc<dyn Protocol>, RunError> {
+    let i = doc.request_index().ok_or(RunError::NoRequest)?;
+    let lang = &doc.blocks[i].info.language;
+    protocols
+        .iter()
+        .find(|p| p.request_languages().contains(&lang.as_str()))
+        .cloned()
+        .ok_or_else(|| RunError::NoProtocol(lang.clone()))
+}
+
+fn capture_exprs(doc: &FluxDoc) -> Vec<(String, String)> {
+    match doc.front.get("capture").map(|e| &e.value) {
+        Some(FmValue::Map(m)) => m.clone(),
+        _ => Vec::new(),
+    }
+}
+
+fn redact_console(result: &mut RunResult) {
+    let secrets = result.secrets.clone();
+    for line in &mut result.console {
+        line.text = redact_with(&secrets, &line.text);
+    }
+}
+
+async fn exec(job: Job, tx: Option<&UnboundedSender<RunEvent>>) -> RunResult {
+    let Job {
+        shared,
+        proto,
+        doc,
+        mut scope,
+        ctx,
+        scripts: sopts,
+        depth,
+        started_at,
+    } = job;
     let mut result = RunResult {
         label: String::new(),
         started_at,
@@ -296,6 +704,11 @@ async fn run(
             .filter(|(_, v)| v.secret)
             .map(|(n, v)| (n.clone(), v.value.clone()))
             .collect(),
+        console: Vec::new(),
+        var_changes: Vec::new(),
+        env_persist: Vec::new(),
+        script_errors: Vec::new(),
+        skipped: None,
     };
     if !doc.unsupported.is_empty() {
         result.error = Some(RunError::Unsupported(doc.unsupported.clone()));
@@ -308,44 +721,107 @@ async fn run(
             return result;
         }
     };
-    let plan: Plan = match proto.plan(&doc, &scope) {
+
+    // ---- script setup ---------------------------------------------------------------
+    let ancestors = match (&sopts.collection_root, &sopts.file) {
+        (Some(root), Some(file)) => fluxwire_format::ancestor_docs(root, file),
+        _ => Vec::new(),
+    };
+    let own_label = rel_label(
+        sopts.collection_root.as_deref(),
+        sopts.file.as_deref(),
+        &doc,
+    );
+    let scripts = collect_scripts(&doc, &ancestors, &own_label);
+    let has_scripts =
+        !(scripts.pre.is_empty() && scripts.post.is_empty() && scripts.tests.is_empty());
+    if has_scripts && !sopts.trusted {
+        result.error = Some(RunError::Untrusted);
+        return result;
+    }
+    let script_env = |scope: &VarScope| RunEnv {
+        limits: sopts.limits,
+        lib_dir: sopts.collection_root.as_ref().map(|r| r.join("lib")),
+        host: Some(Arc::new(NestedHost {
+            shared: shared.clone(),
+            handle: tokio::runtime::Handle::current(),
+            scope: scope.clone(),
+            ctx: ctx.clone(),
+            opts: sopts.clone(),
+            depth,
+        })),
+    };
+
+    // ---- pre ------------------------------------------------------------------------
+    let mut request_ops: Vec<Value> = Vec::new();
+    if !scripts.pre.is_empty() {
+        let plan = proto.plan(&doc, &scope).ok();
+        let view = proto.script_request(&doc, &scope, plan.as_ref());
+        let state = script_state(&scope, &sopts, view, None);
+        let (mut st, errors) = run_phase(scripts.pre, state, script_env(&scope)).await;
+        request_ops = std::mem::take(&mut st.request_ops);
+        result.tests.extend(st.tests.drain(..).map(to_test_result));
+        let skip = st.skip.take();
+        absorb(&mut scope, &mut st, &mut result);
+        redact_console(&mut result);
+        if !errors.is_empty() {
+            result.error = Some(RunError::Script(errors));
+            return result;
+        }
+        if let Some(reason) = skip {
+            result.skipped = Some(reason);
+            return result;
+        }
+    }
+
+    let mut plan: Plan = match proto.plan(&doc, &scope) {
         Ok(p) => p,
         Err(d) => {
             result.error = Some(RunError::Plan(d));
             return result;
         }
     };
+    if !request_ops.is_empty() {
+        plan = match proto.apply_script_ops(&plan, &request_ops) {
+            Ok(p) => p,
+            Err(msg) => {
+                result.error = Some(RunError::Exec(ExecError {
+                    phase: "pre script".into(),
+                    message: msg,
+                    fix: None,
+                }));
+                return result;
+            }
+        };
+    }
     result.label = result.redact(&plan.label);
     result.warnings = plan.warnings.clone();
     let request = proto.history_request(&plan);
     let protocol = plan.protocol;
     result.secrets.extend(proto.history_secrets(&plan));
-    let mut stream = proto.execute(plan, ctx);
+    let request_view = if scripts.post.is_empty() && scripts.tests.is_empty() {
+        None
+    } else {
+        proto.script_request(&doc, &scope, Some(&plan))
+    };
+    let mut stream = proto.execute(plan, ctx.clone());
+    let mut done: Option<Box<Outcome>> = None;
     while let Some(ev) = stream.next().await {
         match ev {
             Event::Phase(p) => {
                 result.phases.push(p.clone());
-                let _ = tx.send(RunEvent::Phase(p));
+                if let Some(tx) = tx {
+                    let _ = tx.send(RunEvent::Phase(p));
+                }
             }
             Event::Redirect(r) => {
-                let _ = tx.send(RunEvent::Redirect(r));
+                if let Some(tx) = tx {
+                    let _ = tx.send(RunEvent::Redirect(r));
+                }
             }
             Event::Frame(_) => {}
             Event::Done(o) => {
-                if let Some(i) = doc
-                    .blocks
-                    .iter()
-                    .position(|b| b.kind == fluxwire_model::BlockKind::Expect)
-                    && let Some(BlockData::Expect(e)) = doc.data.get(i)
-                {
-                    result.tests = proto.check(&o, e);
-                }
-                let mut rec = proto.history_record(&o);
-                if let Some(m) = rec.payload.as_object_mut() {
-                    m.insert("request".into(), request.clone());
-                }
-                result.history = Some(rec);
-                result.outcome = Some(o);
+                done = Some(o);
                 break;
             }
             Event::Failed(e) => {
@@ -363,6 +839,73 @@ async fn run(
             }
         }
     }
+    drop(stream);
+    let Some(o) = done else {
+        return result;
+    };
+
+    // ---- capture --------------------------------------------------------------------
+    for (name, expr) in capture_exprs(&doc) {
+        match proto.capture(&o, &expr) {
+            Ok(Some(v)) => {
+                let secret = scope.var(&name).is_some_and(|x| x.secret);
+                scope.set(Layer::Runtime, name.clone(), runtime_var(v.clone(), secret));
+                result.var_changes.push(VarChange {
+                    name,
+                    value: Some(v),
+                    secret,
+                });
+            }
+            Ok(None) => result.warnings.push(Diagnostic::new(
+                "P110",
+                fluxwire_model::Severity::Warning,
+                fluxwire_model::Span::at(0),
+                format!("capture `{name}`: `{expr}` matched nothing in the response."),
+            )),
+            Err(msg) => result.warnings.push(Diagnostic::new(
+                "P111",
+                fluxwire_model::Severity::Warning,
+                fluxwire_model::Span::at(0),
+                format!("capture `{name}`: {msg}"),
+            )),
+        }
+    }
+
+    // ---- post -----------------------------------------------------------------------
+    let response_view = proto.script_response(&o);
+    if !scripts.post.is_empty() {
+        let state = script_state(&scope, &sopts, request_view.clone(), response_view.clone());
+        let (mut st, errors) = run_phase(scripts.post, state, script_env(&scope)).await;
+        result.tests.extend(st.tests.drain(..).map(to_test_result));
+        absorb(&mut scope, &mut st, &mut result);
+        result.script_errors.extend(errors);
+    }
+
+    // ---- expect, then test blocks -----------------------------------------------------
+    if let Some(i) = doc.blocks.iter().position(|b| b.kind == BlockKind::Expect)
+        && let Some(BlockData::Expect(e)) = doc.data.get(i)
+    {
+        let cx = CheckCtx {
+            doc: Some(&doc),
+            scope: &scope,
+        };
+        result.tests.extend(proto.check(&o, e, &cx));
+    }
+    if !scripts.tests.is_empty() {
+        let state = script_state(&scope, &sopts, request_view, response_view);
+        let (mut st, errors) = run_phase(scripts.tests, state, script_env(&scope)).await;
+        result.tests.extend(st.tests.drain(..).map(to_test_result));
+        absorb(&mut scope, &mut st, &mut result);
+        result.script_errors.extend(errors);
+    }
+    redact_console(&mut result);
+
+    let mut rec = proto.history_record(&o);
+    if let Some(m) = rec.payload.as_object_mut() {
+        m.insert("request".into(), request.clone());
+    }
+    result.history = Some(rec);
+    result.outcome = Some(o);
     result
 }
 

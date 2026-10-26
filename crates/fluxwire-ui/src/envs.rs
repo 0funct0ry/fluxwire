@@ -516,6 +516,45 @@ impl Workspace {
                 });
             }
         }
+        // Script failures of each open request's latest send (S001…), at their `.flux.md` line.
+        for t in self.tabs.all() {
+            let Some(res) = self.responses.get(&t.id).and_then(|r| r.result.as_ref()) else {
+                continue;
+            };
+            let Some(doc) = p.doc(&t.key) else { continue };
+            let pre = match &res.error {
+                Some(fluxwire_runner::RunError::Script(es)) => es.as_slice(),
+                _ => &[],
+            };
+            for e in res.script_errors.iter().chain(pre) {
+                let own = t.key.ends_with(e.file.as_str());
+                let (start, end, line) = if own && e.line > 0 {
+                    let mut start = 0;
+                    for _ in 1..e.line {
+                        match doc.text[start..].find('\n') {
+                            Some(n) => start += n + 1,
+                            None => break,
+                        }
+                    }
+                    let end = doc.text[start..]
+                        .find('\n')
+                        .map_or(doc.text.len(), |n| start + n);
+                    (start, end, e.line as usize)
+                } else {
+                    (0, 0, e.line.max(1) as usize)
+                };
+                out.push(crate::project::Problem {
+                    key: if own { t.key.clone() } else { e.file.clone() },
+                    file: e.file.clone(),
+                    line,
+                    col: 1,
+                    span: fluxwire_model::Span { start, end },
+                    code: e.kind.code(),
+                    severity: fluxwire_model::Severity::Error,
+                    message: e.message.clone(),
+                });
+            }
+        }
         for i in &self.keymap_issues {
             out.push(crate::project::Problem {
                 key: "keymap.toml".into(),

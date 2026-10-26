@@ -673,7 +673,7 @@ impl Workspace {
                         .px_2()
                         .text_size(px(12.))
                         .text_color(t.text_placeholder)
-                        .child("None. Scripts set these in M7."),
+                        .child("None. Scripts and captures set these."),
                 )
             })
     }
@@ -773,6 +773,7 @@ impl Workspace {
             settings: defaults,
             net: net_config_from_dir(&root),
             env: Some(env),
+            ..Default::default()
         };
         let Some((rx, _cancel)) = runner().fetch_token(&parsed, opts, true) else {
             self.notice = Some("This request does not use OAuth2.".into());
