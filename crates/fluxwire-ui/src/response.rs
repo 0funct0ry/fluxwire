@@ -9,8 +9,8 @@ use std::{
 };
 
 use fluxwire_runner::{
-    CancellationToken, PhaseTiming, RunEvent, RunResult, SendOptions, VarScope,
-    net_config_from_dir, runner, settings_from_defaults,
+    CancellationToken, PhaseTiming, RunEvent, RunResult, SendOptions, net_config_from_dir, runner,
+    settings_from_defaults,
 };
 use gpui::{
     AnyElement, ClipboardItem, Context, ElementId, InteractiveElement, IntoElement, ParentElement,
@@ -163,6 +163,39 @@ fn extension_for(kind: BodyKind) -> &'static str {
 }
 
 impl Workspace {
+    /// Cookies of the active environment's jar that apply to `url`'s host, as table rows.
+    fn jar_rows(&self, url: &str) -> Vec<(String, String)> {
+        let host = url
+            .split("://")
+            .nth(1)
+            .and_then(|r| r.split(['/', '?', '#']).next())
+            .map(|a| a.rsplit('@').next().unwrap_or(a))
+            .map(|a| {
+                a.rsplit_once(':')
+                    .filter(|(_, p)| p.chars().all(|c| c.is_ascii_digit()))
+                    .map_or(a, |(h, _)| h)
+            })
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let jar = (|| {
+            let key = self.active_key()?;
+            let root = self.collection_root_of(&key)?;
+            let env = self.envs.active.clone()?;
+            Some(self.envs.states.get(&(root, env))?.cookies.list())
+        })()
+        .unwrap_or_default();
+        jar.into_iter()
+            .filter(|c| {
+                if c.host_only {
+                    host == c.domain
+                } else {
+                    host == c.domain || host.ends_with(&format!(".{}", c.domain))
+                }
+            })
+            .map(|c| (format!("{} · jar", c.name), c.value))
+            .collect()
+    }
+
     // ---- sending ----------------------------------------------------------------------------
 
     pub fn is_sending(&self) -> bool {
@@ -202,14 +235,34 @@ impl Workspace {
         let settings = coll
             .map(|c| settings_from_defaults(&c.collection.config.defaults))
             .unwrap_or_default();
-        let scope = VarScope::with_base_dir(abs.parent().unwrap_or(&project.root));
+        let root = coll.map(|c| c.root.clone());
+        let Some(scope) = self.scope_for(&key) else {
+            return;
+        };
+        // Unresolved variables warn once per tab; sending again goes ahead (SPEC §8.4).
+        let unresolved = self.unresolved_in(&key);
+        if !unresolved.is_empty() && self.envs.warned.insert(tab_id) {
+            self.notice = Some(format!(
+                "Unresolved variable{}: {}. Send again to send anyway.",
+                if unresolved.len() == 1 { "" } else { "s" },
+                unresolved
+                    .iter()
+                    .map(|v| format!("{{{{{v}}}}}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+            cx.notify();
+            return;
+        }
+        let env = root.as_deref().and_then(|r| self.env_state(r));
 
         let handle = runner().send(
             &parsed,
             SendOptions {
-                scope,
+                scope: (*scope).clone(),
                 settings,
                 net,
+                env,
             },
         );
         let seq = self.responses.get(&tab_id).map_or(0, |r| r.seq) + 1;
@@ -320,6 +373,10 @@ impl Workspace {
     }
 
     fn finish_run(&mut self, tab_id: u64, seq: u64, res: RunResult, cx: &mut Context<Self>) {
+        for w in &res.warnings {
+            let line = res.redact(&format!("⚠ {}", w.message));
+            self.log(line);
+        }
         let line = match (&res.outcome, &res.error) {
             (Some(o), _) => {
                 let x = o.exchange.as_ref();
@@ -342,7 +399,17 @@ impl Workspace {
             }
             _ => res.label.clone(),
         };
-        self.log(line);
+        // Secrets never reach the Console (SPEC §8.3).
+        self.log(res.redact(&line));
+        if let Some(root) = self
+            .tabs
+            .all()
+            .iter()
+            .find(|t| t.id == tab_id)
+            .and_then(|t| self.collection_root_of(&t.key))
+        {
+            self.persist_cookies(&root);
+        }
         let Some(r) = self.responses.get_mut(&tab_id) else {
             return;
         };
@@ -597,9 +664,11 @@ impl Workspace {
             return;
         };
         let Some(doc) = project.doc(&key) else { return };
-        let abs = project.abs_of(&key);
-        let scope = VarScope::with_base_dir(abs.parent().unwrap_or(&project.root));
-        match runner().export_curl(&doc.parsed, &scope, !with_secrets) {
+        let parsed = doc.parsed.clone();
+        let Some(scope) = self.scope_for(&key) else {
+            return;
+        };
+        match runner().export_curl(&parsed, &scope, !with_secrets) {
             Ok(cmd) => {
                 cx.write_to_clipboard(ClipboardItem::new_string(cmd));
                 self.notice = Some(if with_secrets {
@@ -836,11 +905,13 @@ impl Workspace {
             .map(|(i, s)| {
                 let n = match i {
                     1 => x.headers.len(),
-                    2 => x
-                        .headers
-                        .iter()
-                        .filter(|(k, _)| k.eq_ignore_ascii_case("set-cookie"))
-                        .count(),
+                    2 => {
+                        x.headers
+                            .iter()
+                            .filter(|(k, _)| k.eq_ignore_ascii_case("set-cookie"))
+                            .count()
+                            + self.jar_rows(&o.final_url).len()
+                    }
                     4 => res.tests.len(),
                     5 => 0,
                     _ => 0,
@@ -873,6 +944,8 @@ impl Workspace {
                         )
                     })
                     .collect();
+                let mut rows = rows;
+                rows.extend(self.jar_rows(&o.final_url));
                 div()
                     .id("resp-scroll")
                     .flex_1()

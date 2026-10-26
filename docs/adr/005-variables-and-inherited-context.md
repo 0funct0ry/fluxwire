@@ -1,0 +1,25 @@
+# ADR-005: Variables, inherited context, per-environment state, OAuth2
+
+Status: accepted (M4)
+
+## Decision
+
+**Resolver (`fluxwire-vars`).** `VarScope` holds `name -> Var { value, secret, source }` assembled in the SPEC §8.2 order by `Layer` (global, collection, env, local env, folder, request, CLI, runtime; a higher layer is never overwritten by a lower one, whatever the order of `set` calls). `interpolate(text, scope)` handles `{{name}}`, dynamic variables (`$uuid`, `$timestamp`, `$isoTimestamp`, `$randomInt[(a,b)]`, `$randomString(n)`, `$base64(x)`), `{{process.env.X}}` (only when `allow_process_env`; the CLI will always allow it), and the `\{{literal}}` escape. `{{scheme:ref}}` goes through a resolver registry that is empty in v1.0: such a reference is reported and left in the text, and planning turns it into error `P105`, so it is never sent literally. `refs(text)` returns the `{{…}}` ranges for the editor. The dotenv parser is hand-written because provenance needs line numbers ("staging.local.env, line 4").
+
+**Scope assembly (`fluxwire-format::build_scope`).** One function builds the scope for a request: `[globals]` from `settings.toml`, `collection.flux.md` and each `folder.flux.md` on the way down (front matter `vars`, `http defaults`, `auth`, `settings`, `path`), the active environment's `.env` and `.local.env`, the request's own `vars`, then runtime variables. The GUI and (M10) the CLI share it. Values from `*.local.env`, names in `[secrets] names` and runtime `setSecret` values are secret.
+
+**Inherited context without a trait change.** `Protocol::plan(doc, scope)` keeps its signature. Folder and collection `http defaults`, `auth`, `settings` and `path` are merged into `VarScope::inherited` (inner wins; headers compare case-insensitively) and the protocol applies them *under* what the request states itself. For HTTP: inherited headers sit beneath request headers; an absent or `inherit` request `auth` resolves to the nearest ancestor's auth, `auth: none` stops the chain; `settings` apply collection `[defaults]` < collection file < folders < request; `:name` path segments take `path` front matter (request, then ancestors) and fall back to a variable of the same name, percent-encoded.
+
+**Unresolved variables.** Planning no longer fails on them (SPEC §8.4): `P101` becomes a warning, the text stays literal, and the runner passes `Plan::warnings` through `RunResult::warnings`. If the URL itself cannot be built the same diagnostic is an error. The UI warns once per tab (the first Send only shows the message, the second sends) and lists each name in Problems as `V101`.
+
+**Secrets in output.** `HttpPlan` and `RunResult` carry the `(name, value)` pairs of secret variables in scope. `to_curl(mask)` and the Console redact by value (`‹secret:name›`, longest first, also the URL-encoded form), so a secret that ended up in a query string or body is masked, not only the auth header.
+
+**Per-environment state (`fluxwire-protocol::EnvState`).** A cookie jar and an OAuth2 token cache per (collection, environment), shared by every send in that environment and carried in `ExecCtx::env`. They are protocol-neutral types so WebSocket handshakes can reuse them. The jar is hand-written (domain, path, `Secure`, `Max-Age`/`Expires`, host-only vs `Domain` cookies; a host cannot set cookies for a sibling domain) and applied on every hop of the redirect loop. `persist_cookies = true` stores persistent cookies as JSON under the data dir; the token cache is memory only.
+
+**OAuth2 (`fluxwire-http::oauth2`).** Built on the existing engine (`engine::run` for the token request) rather than the `oauth2` crate: client_credentials, password, refresh_token and authorization_code with S256 PKCE. The authorization-code flow binds `127.0.0.1:<redirect_port>` (0 = random), opens the system browser, accepts one `code`/`error` redirect and gives up after five minutes; a wrong `state` is refused. Client authentication is HTTP Basic when a secret is set, `client_id` in the body otherwise. Tokens refresh automatically 30 s before expiry; a failed refresh falls back to a full grant. Because `plan` is pure, `Auth::OAuth2` reaches `execute`, which fetches or refreshes the token before the first hop and sends it as `Authorization`. Extra auth fields beyond SPEC §9.4: `username`, `password` (password grant) and `refresh_token`. The trait gained two optional methods, `token_info(plan, env)` and `fetch_token(plan, ctx, force)`, so the Auth tab can show status and "Fetch new token" without the UI or runner naming HTTP.
+
+## Consequences
+
+- `VarScope::vars` changed from `BTreeMap<String, String>` to `BTreeMap<String, Var>`; tests use `set_literal`.
+- Environment files are rewritten line by line (`rewrite_dotenv`): comments, blank lines and unchanged assignments survive byte for byte. Secret rows are written to `.local.env`.
+- Variables inside variable values are not expanded (one level), matching SPEC §8.1's `{{name}}` substitution; revisit if a use case appears.

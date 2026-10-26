@@ -377,7 +377,7 @@ fn plan_reports_unresolved_variables_and_bad_urls() {
     let e = p.plan(&d, &Default::default()).unwrap_err();
     assert!(e[0].message.contains("{{baseUrl}}"));
     let mut scope = fluxwire_vars::VarScope::default();
-    scope.vars.insert("baseUrl".into(), "http://x.test".into());
+    scope.set_literal("baseUrl", "http://x.test");
     assert!(p.plan(&d, &scope).is_ok());
     let d = doc("---\nname: t\n---\n\n```http\nGET not a url\n```\n");
     assert!(p.plan(&d, &Default::default()).is_err());

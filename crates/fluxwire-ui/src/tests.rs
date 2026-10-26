@@ -641,23 +641,18 @@ fn files_that_cannot_run_are_not_sent(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn unresolved_variables_report_a_plan_error(cx: &mut TestAppContext) {
+fn unresolved_variables_warn_once_then_send_anyway(cx: &mut TestAppContext) {
     let (view, cx, _root) = setup_with(cx, "payments-api", "vars");
+    // create-payment uses {{idemKey}}, which no environment defines.
     cx.simulate_keystrokes("secondary-enter");
-    wait_until(&view, cx, "the plan error", |w| {
-        w.responses.values().any(|r| r.result.is_some())
-    });
     view.read_with(cx, |w, _| {
-        let res = w
-            .responses
-            .values()
-            .next()
-            .unwrap()
-            .result
-            .as_ref()
-            .unwrap();
-        let (msg, _) = res.error.as_ref().unwrap().describe();
-        assert!(msg.contains("{{baseUrl}}"), "{msg}");
+        let n = w.notice.clone().unwrap_or_default();
+        assert!(n.contains("{{idemKey}}") && n.contains("Send again"), "{n}");
+        assert!(w.responses.is_empty(), "the first send only warns");
+    });
+    cx.simulate_keystrokes("secondary-enter");
+    wait_until(&view, cx, "the second send to finish", |w| {
+        w.responses.values().any(|r| r.result.is_some())
     });
 }
 
@@ -778,4 +773,348 @@ fn url_selection_is_replaced_copied_and_deleted(cx: &mut TestAppContext) {
         let d = w.project.as_ref().unwrap().doc(CREATE).unwrap();
         assert_eq!(d.parsed.request().unwrap().method, "GET");
     });
+}
+
+// ---- M4: environments, variables, secrets ---------------------------------------------------
+
+fn write_env(
+    view: &Entity<Workspace>,
+    cx: &mut VisualTestContext,
+    root: &Path,
+    file: &str,
+    text: &str,
+) {
+    let p = root.join("environments").join(file);
+    std::fs::write(&p, text).unwrap();
+    view.update(cx, |w, _| w.on_env_fs_change(&[p]));
+}
+
+fn last_url(view: &Entity<Workspace>, cx: &mut VisualTestContext) -> String {
+    view.read_with(cx, |w, _| {
+        let r = w
+            .responses
+            .values()
+            .next()
+            .unwrap()
+            .result
+            .as_ref()
+            .unwrap();
+        r.outcome.as_ref().unwrap().final_url.clone()
+    })
+}
+
+fn picker_labels(view: &Entity<Workspace>, cx: &mut VisualTestContext) -> Vec<String> {
+    view.read_with(cx, |w, _| {
+        w.modal_items().into_iter().map(|i| i.label).collect()
+    })
+}
+
+#[gpui::test]
+fn switching_environment_changes_the_resolved_url_and_the_request_sent(cx: &mut TestAppContext) {
+    let (view, cx, root) = setup_with(cx, "payments-api", "env-switch");
+    let (p_local, p_staging) = (test_server(false), test_server(false));
+    write_env(
+        &view,
+        cx,
+        &root,
+        "local.env",
+        &format!("baseUrl=http://127.0.0.1:{p_local}\nidemKey=k\ncustomerId=c\n"),
+    );
+    write_env(
+        &view,
+        cx,
+        &root,
+        "staging.env",
+        &format!("baseUrl=http://127.0.0.1:{p_staging}\nidemKey=k\ncustomerId=c\n"),
+    );
+
+    view.update(cx, |w, cx| w.set_active_env(Some("local".into()), cx));
+    cx.simulate_keystrokes("secondary-enter");
+    wait_until(&view, cx, "the local send", |w| {
+        w.responses.values().any(|r| r.result.is_some())
+    });
+    assert!(
+        last_url(&view, cx).contains(&format!(":{p_local}/")),
+        "{}",
+        last_url(&view, cx)
+    );
+
+    // The hover text shows the resolved value and where it came from.
+    let tip = view.read_with(cx, |w, _| w.var_look(CREATE)("baseUrl"));
+    assert!(
+        tip.resolved && tip.tip.contains("local.env, line 1"),
+        "{tip:?}"
+    );
+
+    view.update(cx, |w, cx| w.set_active_env(Some("staging".into()), cx));
+    let tip = view.read_with(cx, |w, _| w.var_look(CREATE)("baseUrl"));
+    assert!(
+        tip.tip.contains(&format!(":{p_staging}")) && tip.tip.contains("staging.env"),
+        "{tip:?}"
+    );
+    cx.simulate_keystrokes("secondary-enter");
+    wait_until(&view, cx, "the staging send", |w| {
+        w.responses.values().all(|r| r.sending.is_none())
+            && w.responses.values().any(|r| {
+                r.result
+                    .as_ref()
+                    .and_then(|x| x.outcome.as_ref())
+                    .is_some_and(|o| o.final_url.contains(&format!(":{p_staging}/")))
+            })
+    });
+}
+
+#[gpui::test]
+fn environment_picker_lists_real_environments_and_switches(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "env-picker");
+    cx.simulate_keystrokes("secondary-e");
+    assert_eq!(
+        picker_labels(&view, cx),
+        ["local", "staging", "No environment"]
+    );
+    cx.simulate_input("stag");
+    cx.simulate_keystrokes("enter");
+    view.read_with(cx, |w, _| {
+        assert_eq!(w.envs.active.as_deref(), Some("staging"))
+    });
+    assert_eq!(view.read_with(cx, |w, _| w.env_label()), "staging");
+}
+
+#[gpui::test]
+fn environment_files_can_be_created_renamed_duplicated_and_deleted(cx: &mut TestAppContext) {
+    let (view, cx, root) = setup_with(cx, "payments-api", "env-ops");
+    view.update_in(cx, |w, window, cx| w.start_new_env(window, cx));
+    cx.simulate_input("qa");
+    cx.simulate_keystrokes("enter");
+    assert!(root.join("environments/qa.env").exists());
+    assert_eq!(
+        view.read_with(cx, |w, _| w.envs.active.clone()).as_deref(),
+        Some("qa")
+    );
+    view.update_in(cx, |w, window, cx| w.start_rename_env("qa", window, cx));
+    cx.simulate_keystrokes("backspace backspace");
+    cx.simulate_input("uat");
+    cx.simulate_keystrokes("enter");
+    assert!(
+        root.join("environments/uat.env").exists() && !root.join("environments/qa.env").exists()
+    );
+    view.update(cx, |w, cx| w.duplicate_env("uat", cx));
+    assert!(root.join("environments/uat-copy.env").exists());
+    // Invalid names are refused with a message.
+    view.update_in(cx, |w, window, cx| w.start_new_env(window, cx));
+    cx.simulate_input("a.b");
+    cx.simulate_keystrokes("enter");
+    assert!(!root.join("environments/a.b.env").exists());
+    view.read_with(cx, |w, _| {
+        assert!(w.notice.as_deref().unwrap_or("").contains("one word"))
+    });
+}
+
+#[gpui::test]
+fn secrets_are_masked_revealed_for_a_while_and_never_leak(cx: &mut TestAppContext) {
+    let (view, cx, root) = setup_with(cx, "payments-api", "secrets");
+    let port = test_server(false);
+    write_env(
+        &view,
+        cx,
+        &root,
+        "local.env",
+        "baseUrl=http://127.0.0.1:1\n",
+    );
+    write_env(&view, cx, &root, "local.local.env", "tok=hunter2-value\n");
+    view.update(cx, |w, cx| w.set_active_env(Some("local".into()), cx));
+    set_doc_text(
+        &view,
+        cx,
+        CREATE,
+        format!(
+            "---\nname: X\n---\n\n```http\nGET http://127.0.0.1:{port}/v1/payments?k={{{{tok}}}}\nX-T: {{{{tok}}}}\n```\n"
+        ),
+    );
+
+    // Hover is masked until revealed; reveal expires.
+    let tip = view.read_with(cx, |w, _| w.var_look(CREATE)("tok"));
+    assert!(
+        !tip.tip.contains("hunter2-value") && tip.tip.contains("secret"),
+        "{tip:?}"
+    );
+    view.update(cx, |w, cx| w.reveal_secret("tok", cx));
+    assert!(view.read_with(cx, |w, _| w.envs.is_revealed("tok")));
+    view.update(cx, |w, _| {
+        w.envs.reveal.insert(
+            "tok".into(),
+            std::time::Instant::now() - std::time::Duration::from_secs(1),
+        );
+    });
+    assert!(!view.read_with(cx, |w, _| w.envs.is_revealed("tok")));
+
+    // Copy as cURL masks by value, wherever the secret landed.
+    view.update(cx, |w, cx| w.copy_curl(false, cx));
+    let masked = cx.read_from_clipboard().and_then(|c| c.text()).unwrap();
+    assert!(
+        !masked.contains("hunter2-value") && masked.contains("‹secret:tok›"),
+        "{masked}"
+    );
+    view.update(cx, |w, cx| w.copy_curl(true, cx));
+    assert!(
+        cx.read_from_clipboard()
+            .and_then(|c| c.text())
+            .unwrap()
+            .contains("hunter2-value")
+    );
+
+    // The Console (and the response label) never show it.
+    cx.simulate_keystrokes("secondary-enter");
+    wait_until(&view, cx, "the send", |w| {
+        w.responses.values().any(|r| r.result.is_some())
+    });
+    view.read_with(cx, |w, _| {
+        let log = w.console.join("\n");
+        assert!(!log.contains("hunter2-value"), "{log}");
+        assert!(log.contains("‹secret:tok›"), "{log}");
+    });
+}
+
+#[gpui::test]
+fn environment_tab_edits_write_the_right_files(cx: &mut TestAppContext) {
+    let (view, cx, root) = setup_with(cx, "payments-api", "env-tab");
+    write_env(
+        &view,
+        cx,
+        &root,
+        "local.env",
+        "# keep me\nbaseUrl=http://a\n",
+    );
+    view.update(cx, |w, _| w.open_env_tab("local"));
+    cx.run_until_parked();
+    view.update_in(cx, |w, window, cx| {
+        w.start_env_edit("local", 0, crate::envs::EnvCol::Value, window, cx)
+    });
+    cx.run_until_parked();
+    cx.simulate_input("x");
+    assert_eq!(
+        std::fs::read_to_string(root.join("environments/local.env")).unwrap(),
+        "# keep me\nbaseUrl=http://ax\n",
+        "comments survive, only the value changes"
+    );
+    // A new row goes to the file as soon as it has a name; marking it secret moves it.
+    view.update_in(cx, |w, window, cx| {
+        w.start_env_edit("local", 1, crate::envs::EnvCol::Name, window, cx)
+    });
+    cx.run_until_parked();
+    cx.simulate_input("pw");
+    view.update_in(cx, |w, window, cx| {
+        w.start_env_edit("local", 1, crate::envs::EnvCol::Value, window, cx)
+    });
+    cx.run_until_parked();
+    cx.simulate_input("s3");
+    let on_disk = std::fs::read_to_string(root.join("environments/local.env")).unwrap();
+    assert!(on_disk.contains("pw=s3"), "{on_disk:?}");
+    view.update(cx, |w, cx| w.toggle_env_secret("local", 1, cx));
+    assert!(
+        !std::fs::read_to_string(root.join("environments/local.env"))
+            .unwrap()
+            .contains("pw=")
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("environments/local.local.env")).unwrap(),
+        "pw=s3\n"
+    );
+}
+
+#[gpui::test]
+fn typing_open_braces_offers_variables_and_tab_completes(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "complete");
+    set_doc_text(
+        &view,
+        cx,
+        CREATE,
+        "---\nname: X\n---\n\n```http\nGET http://x.test/\n```\n".into(),
+    );
+    view.update(cx, |w, cx| w.set_active_env(Some("local".into()), cx));
+    cx.simulate_keystrokes("secondary-l");
+    cx.simulate_input("{{cust");
+    view.read_with(cx, |w, _| {
+        let c = w.envs.completion.as_ref().expect("suggestions");
+        assert_eq!(c.names, ["customerId"]);
+    });
+    cx.simulate_keystrokes("tab");
+    assert_eq!(
+        doc_text(&view, cx, CREATE)
+            .lines()
+            .find(|l| l.starts_with("GET"))
+            .unwrap(),
+        "GET http://x.test/{{customerId}}"
+    );
+    view.read_with(cx, |w, _| assert!(w.envs.completion.is_none()));
+}
+
+#[gpui::test]
+fn unresolved_variables_are_listed_in_problems(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "problems");
+    set_doc_text(
+        &view,
+        cx,
+        CREATE,
+        "---\nname: X\n---\n\n```http\nGET {{baseUrl}}/{{nope}}\n```\n".into(),
+    );
+    view.read_with(cx, |w, _| {
+        let v: Vec<_> = w
+            .all_problems()
+            .into_iter()
+            .filter(|p| p.code == "V101")
+            .collect();
+        assert_eq!(v.len(), 1, "{v:?}");
+        assert!(v[0].message.contains("{{nope}}"));
+        assert_eq!(
+            &w.project.as_ref().unwrap().doc(CREATE).unwrap().text[v[0].span.start..v[0].span.end],
+            "{{nope}}"
+        );
+        assert!(w.problem_total() >= 1);
+    });
+}
+
+#[gpui::test]
+fn auth_tab_edits_the_auth_front_matter(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "auth-tab");
+    view.update(cx, |w, cx| w.set_auth_type(CREATE, "bearer", cx));
+    view.update(cx, |w, cx| {
+        w.set_auth_field(CREATE, "token", "{{accessToken}}", cx)
+    });
+    let t = doc_text(&view, cx, CREATE);
+    assert!(
+        t.contains("auth:\n  type: bearer\n  token: {{accessToken}}")
+            || t.contains("token: \"{{accessToken}}\""),
+        "{t}"
+    );
+    view.update(cx, |w, cx| w.set_auth_type(CREATE, "oauth2", cx));
+    view.update(cx, |w, cx| {
+        w.set_auth_field(CREATE, "token_url", "https://idp/token", cx)
+    });
+    assert!(doc_text(&view, cx, CREATE).contains("type: oauth2"));
+    view.update(cx, |w, cx| w.set_auth_type(CREATE, "inherit", cx));
+    assert!(!doc_text(&view, cx, CREATE).contains("oauth2"));
+    assert!(
+        doc_text(&view, cx, CREATE).contains("Creates a payment."),
+        "prose is untouched"
+    );
+}
+
+#[gpui::test]
+fn active_environment_is_part_of_the_session(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "session-env");
+    view.update(cx, |w, cx| w.set_active_env(Some("staging".into()), cx));
+    let s = view.read_with(cx, |w, _| w.session());
+    assert_eq!(s.active_env.as_deref(), Some("staging"));
+    // An environment that no longer exists falls back to the first one.
+    view.update(cx, |w, _| w.init_active_env(Some("gone".into())));
+    assert_eq!(
+        view.read_with(cx, |w, _| w.envs.active.clone()).as_deref(),
+        Some("local")
+    );
+    view.update(cx, |w, _| w.init_active_env(Some("staging".into())));
+    assert_eq!(
+        view.read_with(cx, |w, _| w.envs.active.clone()).as_deref(),
+        Some("staging")
+    );
 }

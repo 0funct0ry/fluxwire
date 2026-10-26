@@ -5,6 +5,8 @@ pub mod assets;
 pub mod center;
 pub mod dock;
 pub mod editor;
+pub mod envs;
+pub mod envs_view;
 pub mod highlight;
 pub mod mock;
 pub mod ops;

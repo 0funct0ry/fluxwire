@@ -5,6 +5,7 @@
 
 mod collection;
 mod edit;
+mod environments;
 mod fence;
 mod fmt;
 mod frontmatter;
@@ -13,11 +14,14 @@ mod head;
 mod lines;
 mod parse;
 mod schema;
+mod scope;
+mod settings;
 mod template;
 mod watch;
 
 pub use collection::*;
 pub use edit::*;
+pub use environments::*;
 pub use fence::parse_info;
 pub use fmt::{format, is_canonical};
 pub use frontmatter::{decode_scalar, encode_scalar};
@@ -25,5 +29,7 @@ pub use fsops::*;
 pub use lines::{Line, lines};
 pub use parse::{parse, parse_with};
 pub use schema::front_matter_schema_json;
+pub use scope::{ScopeInputs, build_scope};
+pub use settings::{UserSettings, load_settings, parse_settings};
 pub use template::*;
 pub use watch::{DEBOUNCE, WatchHandle, watch};

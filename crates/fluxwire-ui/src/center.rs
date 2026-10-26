@@ -11,7 +11,6 @@ use crate::{
     assets::BUFFER_FONT,
     editor::{Lang, code_view, editor_content},
     highlight::{Spans, highlight},
-    mock::Kv,
     project::{OpenDoc, Target},
     tabs::{Tab, TabKind},
     theme::Theme,
@@ -24,73 +23,7 @@ const SUBTABS: [&str; 8] = [
 ];
 const WS_SUBTABS: [&str; 5] = ["Messages", "Headers", "Auth", "Scripts", "Settings"];
 
-pub fn kv_table(t: &Theme, rows: &[Kv], secret_col: bool) -> AnyElement {
-    let t = t.clone();
-    let head = |label: &'static str, w: Option<f32>| {
-        let d = div()
-            .text_size(px(11.))
-            .text_color(t.text_placeholder)
-            .child(label);
-        match w {
-            Some(w) => d.w(px(w)).flex_none(),
-            None => d.flex_1(),
-        }
-    };
-    div()
-        .flex()
-        .flex_col()
-        .child(
-            row()
-                .h(px(24.))
-                .px_3()
-                .gap_3()
-                .border_b_1()
-                .border_color(t.border_variant)
-                .child(head("", Some(16.)))
-                .child(head("Key", Some(200.)))
-                .child(head("Value", None))
-                .when(secret_col, |d| d.child(head("Secret", Some(60.)))),
-        )
-        .children(rows.iter().map(|r| {
-            row()
-                .h(px(28.))
-                .px_3()
-                .gap_3()
-                .border_b_1()
-                .border_color(t.border_variant)
-                .font_family(BUFFER_FONT)
-                .text_size(px(12.))
-                .when(!r.enabled, |d| d.text_color(t.text_placeholder))
-                .child(
-                    div()
-                        .size(px(14.))
-                        .flex_none()
-                        .rounded(px(3.))
-                        .border_1()
-                        .border_color(t.border)
-                        .when(r.enabled, |d| d.bg(t.accent).border_color(t.accent)),
-                )
-                .child(div().w(px(200.)).flex_none().truncate().child(r.key))
-                .child(
-                    row()
-                        .flex_1()
-                        .truncate()
-                        .children(with_variables(r.value, &t)),
-                )
-                .when(secret_col, |d| {
-                    d.child(div().w(px(60.)).flex_none().text_color(t.text_muted).child(
-                        if r.key.to_lowercase().contains("token") {
-                            "yes"
-                        } else {
-                            ""
-                        },
-                    ))
-                })
-        }))
-        .into_any_element()
-}
-
-fn pill(t: &Theme, label: impl Into<gpui::SharedString>) -> gpui::Div {
+pub(crate) fn pill(t: &Theme, label: impl Into<gpui::SharedString>) -> gpui::Div {
     row()
         .px_2()
         .h(px(22.))
@@ -102,7 +35,7 @@ fn pill(t: &Theme, label: impl Into<gpui::SharedString>) -> gpui::Div {
         .child(label.into())
 }
 
-fn button(
+pub(crate) fn button(
     t: &Theme,
     id: &'static str,
     label: &'static str,
@@ -140,7 +73,7 @@ impl Workspace {
                 TabKind::WebSocket => self.render_websocket(t, tab, ui, cx).into_any_element(),
                 TabKind::FolderRun => self.render_folder_run(t).into_any_element(),
                 TabKind::Docs => self.render_docs(t).into_any_element(),
-                TabKind::Environment => self.render_environment(t).into_any_element(),
+                TabKind::Environment => self.render_environment(t, tab, cx).into_any_element(),
                 TabKind::History => self.render_history_entry(t, tab).into_any_element(),
                 TabKind::Sync => self.render_sync_tab(t).into_any_element(),
             },
@@ -499,6 +432,7 @@ impl Workspace {
         let method_label = method.to_string();
         let sending = self.is_sending();
         let url_len = url.chars().count();
+        let look = self.var_look(&self.active_key().unwrap_or_default());
         row()
             .flex_none()
             .gap_2()
@@ -582,7 +516,7 @@ impl Workspace {
                             .flex()
                             .flex_row()
                             .items_center()
-                            .children(url_runs(url, sel, t))
+                            .children(url_runs(url, sel, t, Some(&look)))
                             .when(sel.is_none(), |d| {
                                 d.child(div().w(px(1.)).h(px(15.)).bg(t.accent))
                             })
@@ -811,6 +745,7 @@ impl Workspace {
         } else {
             editor = editor
                 .child(self.url_bar(t, ui, &method, &url, doc.parsed.runnable(), cx))
+                .children(self.completion_strip(t, cx))
                 .children(self.doc_banners(t, doc, cx))
                 .child(self.tab_strip(t, "sub", labels, ui.sub, |u, i| u.sub = i, cx))
                 .child(
@@ -857,6 +792,7 @@ impl Workspace {
         id: &'static str,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let look = self.var_look(key);
         let rows = self.table_rows(key, table);
         let editing = self
             .cell
@@ -897,13 +833,13 @@ impl Workspace {
             if active {
                 base.track_focus(&self.cell_focus)
                     .on_key_down(cx.listener(|this, ev, w, cx| this.on_cell_key(ev, w, cx)))
-                    .children(with_variables(&shown, t))
+                    .children(with_variables(&shown, t, Some(&look)))
                     .child(div().w(px(1.)).h(px(14.)).bg(t.accent))
             } else {
                 base.on_click(
                     cx.listener(move |this, _, w, cx| this.start_cell(table, idx, col, w, cx)),
                 )
-                .children(with_variables(&shown, t))
+                .children(with_variables(&shown, t, Some(&look)))
             }
         };
         let mut all: Vec<(bool, String, String)> = rows;
@@ -1081,34 +1017,7 @@ impl Workspace {
                     cx,
                 )
             }
-            3 => div()
-                .p_3()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .text_color(t.text_muted)
-                .child(match doc.parsed.front.get("auth") {
-                    None => "Auth: inherit (default)".to_string(),
-                    Some(e) => format!(
-                        "Auth: {}",
-                        match &e.value {
-                            fluxwire_model::FmValue::Scalar(s) => s.clone(),
-                            fluxwire_model::FmValue::Map(m) => m
-                                .iter()
-                                .map(|(k, v)| format!("{k}={v}"))
-                                .collect::<Vec<_>>()
-                                .join(", "),
-                            other => format!("{other:?}"),
-                        }
-                    ),
-                })
-                .child(
-                    div()
-                        .text_size(px(12.))
-                        .text_color(t.text_placeholder)
-                        .child("Auth editing arrives with environments in M4."),
-                )
-                .into_any_element(),
+            3 => self.render_auth_tab(t, key, cx),
             4 => {
                 let (kind, info) = if ui.post_script {
                     (BlockKind::Post, "ts post")
@@ -1209,6 +1118,7 @@ impl Workspace {
             return self.render_empty(t, cx).into_any_element();
         };
         let key = tab.key.clone();
+        let look = self.var_look(&key);
         let url = doc
             .parsed
             .request()
@@ -1372,7 +1282,7 @@ impl Workspace {
                             .border_color(t.border)
                             .font_family(BUFFER_FONT)
                             .text_size(px(14.))
-                            .children(with_variables(&url, t)),
+                            .children(with_variables(&url, t, Some(&look))),
                     )
                     .child(
                         button(
@@ -1430,10 +1340,7 @@ impl Workspace {
                     .gap_2()
                     .child(pill(t, "Sequential"))
                     .child(pill(t, "Concurrency 1"))
-                    .child(pill(
-                        t,
-                        format!("Env: {}", self.mock.environments[self.env].name),
-                    ))
+                    .child(pill(t, format!("Env: {}", self.env_label())))
                     .child(pill(t, "Iterations 1"))
                     .child(button(t, "run-go", "Run", true)),
             )
@@ -1509,21 +1416,6 @@ impl Workspace {
             )
     }
 
-    fn render_environment(&self, t: &Theme) -> impl IntoElement {
-        let env = &self.mock.environments[self.env];
-        let rows: Vec<Kv> = env
-            .vars
-            .iter()
-            .map(|(k, v, _)| Kv {
-                key: k,
-                value: v,
-                enabled: true,
-            })
-            .collect();
-        self.page(t, env.name, "Environment variables")
-            .child(kv_table(t, &rows, true))
-    }
-
     fn render_history_entry(&self, t: &Theme, tab: &Tab) -> impl IntoElement {
         let idx: usize = tab.key.trim_start_matches("history/").parse().unwrap_or(0);
         let h = &self.mock.history[idx.min(self.mock.history.len() - 1)];
@@ -1589,11 +1481,7 @@ impl Workspace {
         let body: AnyElement = match self.bottom_tab {
             BottomTab::Console => self.console_view(t),
             BottomTab::Problems => {
-                let problems = self
-                    .project
-                    .as_ref()
-                    .map(|p| p.problems())
-                    .unwrap_or_default();
+                let problems = self.all_problems();
                 div()
                     .flex()
                     .flex_col()

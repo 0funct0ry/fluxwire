@@ -5,6 +5,7 @@ mod body;
 mod curl;
 mod engine;
 mod error;
+pub mod oauth2;
 mod plan;
 mod tls;
 
@@ -19,7 +20,7 @@ use fluxwire_vars::VarScope;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 
-pub use auth::Auth;
+pub use auth::{Auth, OAuth2Config};
 pub use plan::HttpPlan;
 
 pub struct HttpProtocol;
@@ -67,7 +68,10 @@ impl Protocol for HttpProtocol {
     fn plan(&self, doc: &FluxDoc, scope: &VarScope) -> Result<Plan, Vec<Diagnostic>> {
         let p = plan::plan(doc, scope)?;
         let label = format!("{} {}", p.method, p.url);
-        Ok(Plan::new("http", label, p))
+        let warnings = p.warnings.clone();
+        let mut plan = Plan::new("http", label, p);
+        plan.warnings = warnings;
+        Ok(plan)
     }
 
     fn execute(&self, plan: Plan, ctx: ExecCtx) -> BoxStream<'static, Event> {
@@ -158,6 +162,37 @@ impl Protocol for HttpProtocol {
                 "redirects": r.redirects.len(),
             }),
         }
+    }
+
+    fn token_info(
+        &self,
+        plan: &Plan,
+        env: &fluxwire_protocol::EnvState,
+    ) -> Option<fluxwire_protocol::TokenInfo> {
+        match &plan.payload::<HttpPlan>()?.auth {
+            auth::Auth::OAuth2(cfg) => oauth2::cached_token(cfg, env).as_ref().map(Into::into),
+            _ => None,
+        }
+    }
+
+    fn fetch_token(
+        &self,
+        plan: Plan,
+        ctx: ExecCtx,
+        force: bool,
+    ) -> Option<
+        futures::future::BoxFuture<
+            'static,
+            Result<fluxwire_protocol::TokenInfo, fluxwire_protocol::ExecError>,
+        >,
+    > {
+        let auth::Auth::OAuth2(cfg) = plan.payload::<HttpPlan>()?.auth.clone() else {
+            return None;
+        };
+        Some(Box::pin(async move {
+            let t = oauth2::ensure_token(&cfg, &ctx, force).await?;
+            Ok((&t).into())
+        }))
     }
 
     fn to_curl(&self, plan: &Plan, mask_secrets: bool) -> Option<String> {

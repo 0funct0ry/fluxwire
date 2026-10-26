@@ -9,7 +9,7 @@ use std::time::SystemTime;
 
 use fluxwire_model::{BlockData, Diagnostic, Edit, FluxDoc};
 pub use fluxwire_protocol::{
-    CancellationToken, ExecCtx, ExecError, ExecSettings, NetConfig, Outcome, PhaseTiming,
+    CancellationToken, EnvState, ExecCtx, ExecError, ExecSettings, NetConfig, Outcome, PhaseTiming,
     RedirectHop, TestResult,
 };
 use fluxwire_protocol::{Event, HistoryRecord, Plan, Protocol};
@@ -81,6 +81,27 @@ pub struct RunResult {
     pub history: Option<HistoryRecord>,
     /// Phases seen while running, in order (kept for failed runs too).
     pub phases: Vec<PhaseTiming>,
+    /// Non-fatal planning diagnostics (e.g. unresolved variables left as literal text).
+    pub warnings: Vec<Diagnostic>,
+    /// `(name, value)` of secret variables in scope when the run started.
+    pub secrets: Vec<(String, String)>,
+}
+
+impl RunResult {
+    /// Replace secret values with `‹secret:name›` (SPEC §8.3). Use for logs and the Console.
+    pub fn redact(&self, text: &str) -> String {
+        redact_with(&self.secrets, text)
+    }
+}
+
+pub fn redact_with(secrets: &[(String, String)], text: &str) -> String {
+    let mut s: Vec<&(String, String)> = secrets.iter().filter(|(_, v)| !v.is_empty()).collect();
+    s.sort_by_key(|(_, v)| std::cmp::Reverse(v.len()));
+    let mut out = text.to_string();
+    for (n, v) in s {
+        out = out.replace(v.as_str(), &format!("‹secret:{n}›"));
+    }
+    out
 }
 
 #[derive(Debug, Clone)]
@@ -110,6 +131,8 @@ pub struct SendOptions {
     pub scope: VarScope,
     pub settings: ExecSettings,
     pub net: NetConfig,
+    /// Cookie jar and token cache of the active environment.
+    pub env: Option<EnvState>,
 }
 
 pub struct Runner {
@@ -162,6 +185,7 @@ impl Runner {
             settings: opts.settings.clone(),
             net: opts.net.clone(),
             temp_dir: None,
+            env: opts.env.clone(),
         };
         let proto = self.protocol_for(doc).cloned();
         let doc = doc.clone();
@@ -187,6 +211,47 @@ impl Runner {
             .ok_or_else(|| RunError::NoProtocol("curl export".into()))
     }
 
+    /// OAuth2 token status for `doc` in `env`, if its auth uses tokens.
+    pub fn token_info(
+        &self,
+        doc: &FluxDoc,
+        scope: &VarScope,
+        env: &EnvState,
+    ) -> Option<fluxwire_protocol::TokenInfo> {
+        let proto = self.protocol_for(doc).ok()?;
+        let plan = proto.plan(doc, scope).ok()?;
+        proto.token_info(&plan, env)
+    }
+
+    /// Fetch (or with `force`, replace) the token behind `doc`'s auth. The receiver yields
+    /// once; `None` when the request does not use token auth or cannot be planned.
+    pub fn fetch_token(
+        &self,
+        doc: &FluxDoc,
+        opts: SendOptions,
+        force: bool,
+    ) -> Option<(
+        tokio::sync::oneshot::Receiver<Result<fluxwire_protocol::TokenInfo, ExecError>>,
+        CancellationToken,
+    )> {
+        let proto = self.protocol_for(doc).ok()?.clone();
+        let plan = proto.plan(doc, &opts.scope).ok()?;
+        let cancel = CancellationToken::new();
+        let ctx = ExecCtx {
+            cancel: cancel.clone(),
+            settings: opts.settings,
+            net: opts.net,
+            temp_dir: None,
+            env: opts.env,
+        };
+        let fut = proto.fetch_token(plan, ctx, force)?;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.rt.spawn(async move {
+            let _ = tx.send(fut.await);
+        });
+        Some((rx, cancel))
+    }
+
     /// Edits that fill `doc` from pasted text, if some protocol recognises it.
     pub fn edits_from_paste(&self, doc: &FluxDoc, text: &str) -> Option<Vec<Edit>> {
         let proto = self.protocol_for(doc).ok()?;
@@ -210,6 +275,13 @@ async fn run(
         tests: Vec::new(),
         history: None,
         phases: Vec::new(),
+        warnings: Vec::new(),
+        secrets: scope
+            .vars
+            .iter()
+            .filter(|(_, v)| v.secret)
+            .map(|(n, v)| (n.clone(), v.value.clone()))
+            .collect(),
     };
     if !doc.unsupported.is_empty() {
         result.error = Some(RunError::Unsupported(doc.unsupported.clone()));
@@ -229,7 +301,8 @@ async fn run(
             return result;
         }
     };
-    result.label = plan.label.clone();
+    result.label = result.redact(&plan.label);
+    result.warnings = plan.warnings.clone();
     let mut stream = proto.execute(plan, ctx);
     while let Some(ev) = stream.next().await {
         match ev {

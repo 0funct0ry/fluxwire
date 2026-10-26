@@ -54,6 +54,8 @@ pub enum ModalKind {
 #[derive(Clone, Debug)]
 pub enum PromptPurpose {
     Rename { key: String },
+    NewEnvironment,
+    RenameEnvironment { name: String },
 }
 
 /// A request or folder being named in place, as a row in the tree.
@@ -112,7 +114,7 @@ pub enum ItemRun {
         title: String,
         kind: TabKind,
     },
-    Environment(usize),
+    Environment(Option<String>),
 }
 
 #[derive(Clone, Debug)]
@@ -173,7 +175,7 @@ pub struct Workspace {
     pub bottom_open: bool,
     pub bottom_tab: BottomTab,
     pub split_vertical: bool,
-    pub env: usize,
+    pub envs: crate::envs::EnvStore,
     pub collapsed: HashSet<String>,
     pub modal: Option<Modal>,
     pub prompt: Option<PromptPurpose>,
@@ -205,6 +207,7 @@ pub struct Workspace {
     pub modal_focus: FocusHandle,
     pub url_focus: FocusHandle,
     pub cell_focus: FocusHandle,
+    pub env_focus: FocusHandle,
     pub editor_focus: FocusHandle,
     pub filter_focus: FocusHandle,
     pub find_focus: FocusHandle,
@@ -229,6 +232,10 @@ impl Workspace {
             .as_deref()
             .map(crate::project::load_recent)
             .unwrap_or_default();
+        let settings = cx
+            .try_global::<crate::envs::ConfigDir>()
+            .map(|c| fluxwire_format::load_settings(&c.0))
+            .unwrap_or_default();
         let mut this = Self {
             mock: mock::payments_api(),
             project: None,
@@ -242,7 +249,7 @@ impl Workspace {
             bottom_open: false,
             bottom_tab: BottomTab::Console,
             split_vertical: true,
-            env: 1,
+            envs: crate::envs::EnvStore::default(),
             collapsed: HashSet::new(),
             modal: None,
             prompt: None,
@@ -270,10 +277,12 @@ impl Workspace {
             modal_focus: cx.focus_handle(),
             url_focus: cx.focus_handle(),
             cell_focus: cx.focus_handle(),
+            env_focus: cx.focus_handle(),
             editor_focus: cx.focus_handle(),
             filter_focus: cx.focus_handle(),
             find_focus: cx.focus_handle(),
         };
+        this.envs.settings = settings;
         this.start_session_timer(cx);
         cx.on_app_quit(|this, _cx| {
             this.save_session_now();
@@ -366,33 +375,44 @@ impl Workspace {
                         },
                     })
                     .collect();
-                items.extend(self.mock.environments.iter().map(|e| ModalItem {
-                    label: e.name.to_string(),
+                items.extend(self.env_names().into_iter().map(|e| ModalItem {
+                    label: e.clone(),
                     detail: "environment".into(),
                     run: ItemRun::Open {
-                        key: format!("env/{}", e.name),
-                        title: e.name.into(),
+                        key: format!("env/{e}"),
+                        title: e,
                         kind: TabKind::Environment,
                     },
                 }));
                 items
             }
             ModalKind::Prompt => vec![],
-            ModalKind::Environment => self
-                .mock
-                .environments
-                .iter()
-                .enumerate()
-                .map(|(i, e)| ModalItem {
-                    label: e.name.to_string(),
-                    detail: if i == self.env {
+            ModalKind::Environment => {
+                let active = self.envs.active.clone();
+                let mut v: Vec<ModalItem> = self
+                    .env_names()
+                    .into_iter()
+                    .map(|e| ModalItem {
+                        detail: if active.as_deref() == Some(e.as_str()) {
+                            "active".into()
+                        } else {
+                            String::new()
+                        },
+                        label: e.clone(),
+                        run: ItemRun::Environment(Some(e)),
+                    })
+                    .collect();
+                v.push(ModalItem {
+                    label: "No environment".into(),
+                    detail: if active.is_none() {
                         "active".into()
                     } else {
                         String::new()
                     },
-                    run: ItemRun::Environment(i),
-                })
-                .collect(),
+                    run: ItemRun::Environment(None),
+                });
+                v
+            }
         };
         let q = m.query.text();
         all.into_iter().filter(|i| fuzzy(q, &i.label)).collect()
@@ -405,11 +425,13 @@ impl Workspace {
             ItemRun::Open { key, title, kind } => {
                 if matches!(kind, TabKind::Http { .. } | TabKind::WebSocket) {
                     self.open_request(&key, true, window, cx);
+                } else if matches!(kind, TabKind::Environment) {
+                    self.open_env_tab(&title);
                 } else {
                     self.open_tab(&key, &title, kind, true);
                 }
             }
-            ItemRun::Environment(i) => self.env = i,
+            ItemRun::Environment(name) => self.set_active_env(name, cx),
         }
         cx.notify();
     }
@@ -449,7 +471,7 @@ impl Workspace {
     // ---- rendering ------------------------------------------------------------------------
 
     fn render_title_bar(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let env = self.mock.environments[self.env].name;
+        let env = self.env_label();
         let t = t.clone();
         row()
             .id("title-bar")
@@ -571,7 +593,7 @@ impl Workspace {
                 }))
                 .child(icon(glyph, 14., if active { t.text } else { t.text_muted }))
         };
-        let problems = self.project.as_ref().map_or(0, |p| p.problem_count());
+        let problems = self.problem_total();
         let notice = self.notice.clone();
         let sync_down = self.mock.sync.iter().filter(|c| c.arrow == "↓").count();
         let sync_up = self.mock.sync.len() - sync_down;
@@ -901,8 +923,10 @@ impl Render for Workspace {
                 this.open_tab(&format!("docs/{folder}"), &format!("Docs: {folder}"), TabKind::Docs, true)
             },
             OpenEnvironment => |this, _w, _c| {
-                let name = this.mock.environments[this.env].name;
-                this.open_tab(&format!("env/{name}"), name, TabKind::Environment, true)
+                if let Some(name) = this.envs.active.clone() {
+                    this.load_env(&name);
+                    this.open_tab(&format!("env/{name}"), &name, TabKind::Environment, true)
+                }
             },
             OpenSync => |this, _w, _c| this.open_tab("sync", "Sync", TabKind::Sync, true),
             CloseWorkspace => |this, _w, _c| this.close_project(),
@@ -968,6 +992,7 @@ pub fn run() {
             crate::actions::install(cx);
             if let Some(dirs) = directories::ProjectDirs::from("dev", "fluxwire", "fluxwire") {
                 cx.set_global(StateDir(dirs.data_dir().to_path_buf()));
+                cx.set_global(crate::envs::ConfigDir(dirs.config_dir().to_path_buf()));
             }
             cx.on_window_closed(|cx| {
                 if cx.windows().is_empty() {

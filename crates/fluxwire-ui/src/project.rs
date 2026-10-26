@@ -626,6 +626,9 @@ pub struct Session {
     pub active: Option<String>,
     /// Unsaved buffers: key -> text.
     pub unsaved: BTreeMap<String, String>,
+    /// Active environment, remembered per workspace.
+    #[serde(default)]
+    pub active_env: Option<String>,
 }
 
 pub fn load_recent(dir: &Path) -> Recent {

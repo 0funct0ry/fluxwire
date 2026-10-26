@@ -1,5 +1,5 @@
 //! Request authentication: none, basic, bearer, apikey, digest (SPEC §9.4).
-//! `inherit` and `oauth2` arrive with M4.
+//! plus oauth2 (tokens are fetched in `oauth2.rs` and sent as bearer).
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
@@ -25,6 +25,34 @@ pub enum Auth {
         username: String,
         password: String,
     },
+    OAuth2(Box<OAuth2Config>),
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct OAuth2Config {
+    /// client_credentials | authorization_code | password | refresh_token
+    pub grant: String,
+    pub token_url: String,
+    pub auth_url: String,
+    pub client_id: String,
+    pub client_secret: String,
+    pub scope: String,
+    pub pkce: bool,
+    pub audience: String,
+    pub redirect_port: u16,
+    pub username: String,
+    pub password: String,
+    pub refresh_token: String,
+}
+
+impl OAuth2Config {
+    /// Key for the per-environment token cache.
+    pub fn cache_key(&self) -> String {
+        format!(
+            "{}|{}|{}|{}|{}",
+            self.grant, self.token_url, self.client_id, self.scope, self.audience
+        )
+    }
 }
 
 fn field<'a>(fields: &'a [(String, String)], name: &str) -> &'a str {
@@ -72,7 +100,41 @@ impl Auth {
                 username: need("username")?,
                 password: field(fields, "password").to_string(),
             }),
-            "oauth2" => Err("OAuth2 arrives in M4.".into()),
+            "oauth2" => {
+                let grant = match field(fields, "grant") {
+                    "" => "client_credentials",
+                    g => g,
+                };
+                if !matches!(
+                    grant,
+                    "client_credentials" | "authorization_code" | "password" | "refresh_token"
+                ) {
+                    return Err(format!(
+                        "Unknown oauth2 grant `{grant}`. Use client_credentials, authorization_code, password or refresh_token."
+                    ));
+                }
+                let cfg = OAuth2Config {
+                    grant: grant.to_string(),
+                    token_url: need("token_url")?,
+                    auth_url: field(fields, "auth_url").to_string(),
+                    client_id: need("client_id")?,
+                    client_secret: field(fields, "client_secret").to_string(),
+                    scope: field(fields, "scope").to_string(),
+                    pkce: matches!(field(fields, "pkce"), "true" | "yes" | "1"),
+                    audience: field(fields, "audience").to_string(),
+                    redirect_port: field(fields, "redirect_port").parse().unwrap_or(0),
+                    username: field(fields, "username").to_string(),
+                    password: field(fields, "password").to_string(),
+                    refresh_token: field(fields, "refresh_token").to_string(),
+                };
+                if grant == "authorization_code" && cfg.auth_url.is_empty() {
+                    return Err(
+                        "auth type `oauth2` with grant `authorization_code` needs `auth_url`."
+                            .into(),
+                    );
+                }
+                Ok(Auth::OAuth2(Box::new(cfg)))
+            }
             "" => Err("auth map needs a `type`.".into()),
             other => Err(format!(
                 "Unknown auth type `{other}`. Use none, basic, bearer, apikey or digest."
@@ -106,6 +168,7 @@ impl Auth {
             Auth::Basic { password, .. } | Auth::Digest { password, .. } => vec![password],
             Auth::Bearer { token } => vec![token],
             Auth::ApiKey { value, .. } => vec![value],
+            Auth::OAuth2(c) => vec![&c.client_secret, &c.password, &c.refresh_token],
         }
     }
 }

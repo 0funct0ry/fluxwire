@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 fluxwire-model.workspace = true
 fluxwire-protocol.workspace = true
+fluxwire-vars.workspace = true
 pulldown-cmark = { version = "0.13", default-features = false }
 serde.workspace = true
 serde_json.workspace = true

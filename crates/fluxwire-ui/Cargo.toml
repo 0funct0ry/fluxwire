@@ -32,6 +32,7 @@ tree-sitter-xml = "0.7"
 directories = "6"
 smol = "2"
 fluxwire-protocol.workspace = true
+fluxwire-vars.workspace = true
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }

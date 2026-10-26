@@ -9,6 +9,9 @@ use std::time::Duration;
 use bytes::Bytes;
 use fluxwire_model::{Diagnostic, Edit, ExpectBlock, FluxDoc};
 use fluxwire_vars::VarScope;
+
+use crate::{EnvState, TokenInfo};
+use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
 pub use tokio_util::sync::CancellationToken;
@@ -107,6 +110,8 @@ pub struct ExecCtx {
     pub net: NetConfig,
     /// Where oversized bodies spill to; `None` uses the OS temp directory.
     pub temp_dir: Option<PathBuf>,
+    /// Cookie jar and token cache of the active environment.
+    pub env: Option<crate::EnvState>,
 }
 
 impl Default for ExecCtx {
@@ -116,6 +121,7 @@ impl Default for ExecCtx {
             settings: ExecSettings::default(),
             net: NetConfig::default(),
             temp_dir: None,
+            env: None,
         }
     }
 }
@@ -311,6 +317,20 @@ pub trait Protocol: Send + Sync {
 
     /// Export a plan as a shell command (`curl`). `None` if unsupported.
     fn to_curl(&self, _plan: &Plan, _mask_secrets: bool) -> Option<String> {
+        None
+    }
+    /// Status of the token behind this plan's auth (OAuth2), for the Auth tab.
+    fn token_info(&self, _plan: &Plan, _env: &EnvState) -> Option<TokenInfo> {
+        None
+    }
+    /// Fetch, refresh, or (with `force`) replace the plan's token. `None` if the plan
+    /// does not use token auth.
+    fn fetch_token(
+        &self,
+        _plan: Plan,
+        _ctx: ExecCtx,
+        _force: bool,
+    ) -> Option<BoxFuture<'static, Result<TokenInfo, ExecError>>> {
         None
     }
     /// Turn pasted text (e.g. a `curl` command) into edits that fill `doc`.

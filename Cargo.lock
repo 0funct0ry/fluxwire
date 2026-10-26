@@ -2057,6 +2057,7 @@ version = "0.1.0"
 dependencies = [
  "fluxwire-model",
  "fluxwire-protocol",
+ "fluxwire-vars",
  "insta",
  "notify",
  "proptest",
@@ -2186,6 +2187,7 @@ dependencies = [
  "fluxwire-model",
  "fluxwire-protocol",
  "fluxwire-runner",
+ "fluxwire-vars",
  "gpui",
  "serde",
  "serde_json",
@@ -2203,7 +2205,9 @@ dependencies = [
 name = "fluxwire-vars"
 version = "0.1.0"
 dependencies = [
+ "base64 0.23.1",
  "fluxwire-model",
+ "rand 0.10.3",
 ]
 
 [[package]]

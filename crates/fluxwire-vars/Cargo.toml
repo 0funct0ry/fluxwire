@@ -12,3 +12,5 @@ workspace = true
 
 [dependencies]
 fluxwire-model.workspace = true
+base64 = "0.23.1"
+rand = "0.10.3"

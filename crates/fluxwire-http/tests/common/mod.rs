@@ -106,7 +106,7 @@ async fn digest(headers: HeaderMap) -> Response {
     }
 }
 
-async fn echo(req: Request<Body>) -> Response {
+pub async fn echo(req: Request<Body>) -> Response {
     let version = format!("{:?}", req.version());
     let method = req.method().to_string();
     let hdrs: serde_json::Map<String, serde_json::Value> = req

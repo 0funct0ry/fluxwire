@@ -1,11 +1,11 @@
 //! Small shared widgets and the single-line text state used by the URL bar and modals.
 
 use gpui::{
-    AnyElement, Div, Hsla, IntoElement, KeyDownEvent, ParentElement, SharedString, Styled, div, px,
-    svg,
+    AnyElement, AppContext, Div, Hsla, InteractiveElement, IntoElement, KeyDownEvent,
+    ParentElement, SharedString, StatefulInteractiveElement, Styled, div, px, svg,
 };
 
-use crate::theme::Theme;
+use crate::{envs::VarInfo, theme::Theme};
 
 /// A Lucide icon tinted by `color`.
 pub fn icon(name: &str, size: f32, color: Hsla) -> impl IntoElement {
@@ -85,31 +85,89 @@ pub fn kbd_label(binding: &str) -> String {
         .collect()
 }
 
-/// Splits `text` into plain and `{{variable}}` runs and styles the variables as chips.
-pub fn with_variables(text: &str, t: &Theme) -> Vec<AnyElement> {
-    let mut out: Vec<AnyElement> = vec![];
-    let mut rest = text;
-    while let Some(start) = rest.find("{{") {
-        let Some(len) = rest[start..].find("}}") else {
-            break;
-        };
-        let end = start + len + 2;
-        if start > 0 {
-            out.push(div().child(rest[..start].to_string()).into_any_element());
-        }
-        out.push(
-            div()
-                .text_color(t.accent)
-                .bg(t.accent_bg())
-                .rounded(px(3.))
-                .px(px(2.))
-                .child(rest[start..end].to_string())
-                .into_any_element(),
-        );
-        rest = &rest[end..];
+/// Hover text for a variable: a small floating card.
+struct VarTip {
+    text: String,
+}
+
+impl gpui::Render for VarTip {
+    fn render(&mut self, _: &mut gpui::Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+        let t = crate::theme::theme(cx).clone();
+        div()
+            .px_2()
+            .py_1()
+            .rounded(px(4.))
+            .bg(t.elevated)
+            .border_1()
+            .border_color(t.border)
+            .text_size(px(12.))
+            .text_color(t.text)
+            .child(self.text.clone())
     }
-    if !rest.is_empty() {
-        out.push(div().child(rest.to_string()).into_any_element());
+}
+
+/// Style of one `{{name}}` reference: accent when it resolves, red underline when it does not,
+/// with the resolved value and its source on hover.
+fn var_chip(
+    inner: String,
+    name: &str,
+    id: usize,
+    t: &Theme,
+    look: Option<&dyn Fn(&str) -> VarInfo>,
+) -> AnyElement {
+    let Some(look) = look else {
+        return div()
+            .text_color(t.accent)
+            .bg(t.accent_bg())
+            .rounded(px(3.))
+            .child(inner)
+            .into_any_element();
+    };
+    let info = look(name);
+    let tip = info.tip.clone();
+    let d = div()
+        .id(("var-ref", id))
+        .rounded(px(3.))
+        .child(inner)
+        .tooltip(move |_, cx| {
+            let tip = tip.clone();
+            cx.new(|_| VarTip { text: tip }).into()
+        });
+    if info.resolved {
+        d.text_color(t.accent).bg(t.accent_bg())
+    } else {
+        d.text_color(t.deleted).border_b_1().border_color(t.deleted)
+    }
+    .into_any_element()
+}
+
+/// Splits `text` into plain and `{{variable}}` runs and styles the variables as chips.
+pub fn with_variables(
+    text: &str,
+    t: &Theme,
+    look: Option<&dyn Fn(&str) -> VarInfo>,
+) -> Vec<AnyElement> {
+    let mut out: Vec<AnyElement> = vec![];
+    let mut at = 0;
+    for (i, r) in fluxwire_vars::refs(text).into_iter().enumerate() {
+        if r.range.start > at {
+            out.push(
+                div()
+                    .child(text[at..r.range.start].to_string())
+                    .into_any_element(),
+            );
+        }
+        out.push(var_chip(
+            text[r.range.clone()].to_string(),
+            &r.name,
+            i,
+            t,
+            look,
+        ));
+        at = r.range.end;
+    }
+    if at < text.len() {
+        out.push(div().child(text[at..].to_string()).into_any_element());
     }
     out
 }
@@ -151,44 +209,40 @@ pub fn word_range(text: &str, idx: usize) -> (usize, usize) {
 
 /// Like `with_variables`, but with an optional selection (char indices) and no chip padding, so
 /// every character is exactly one monospace cell wide and pixel positions map back to indices.
-pub fn url_runs(text: &str, sel: Option<(usize, usize)>, t: &Theme) -> Vec<AnyElement> {
+pub fn url_runs(
+    text: &str,
+    sel: Option<(usize, usize)>,
+    t: &Theme,
+    look: Option<&dyn Fn(&str) -> VarInfo>,
+) -> Vec<AnyElement> {
     let chars: Vec<char> = text.chars().collect();
-    let mut in_var = vec![false; chars.len()];
-    let mut i = 0;
-    while i + 1 < chars.len() {
-        if chars[i] == '{'
-            && chars[i + 1] == '{'
-            && let Some(j) = (i + 2..chars.len().saturating_sub(1))
-                .find(|&j| chars[j] == '}' && chars[j + 1] == '}')
-        {
-            in_var[i..j + 2].iter_mut().for_each(|v| *v = true);
-            i = j + 2;
-            continue;
-        }
-        i += 1;
+    // Which variable reference (index) each character belongs to.
+    let mut var_at: Vec<Option<usize>> = vec![None; chars.len()];
+    let mut names: Vec<String> = vec![];
+    for (n, r) in fluxwire_vars::refs(text).into_iter().enumerate() {
+        let a = text[..r.range.start].chars().count();
+        let b = text[..r.range.end].chars().count();
+        var_at[a..b].iter_mut().for_each(|v| *v = Some(n));
+        names.push(r.name);
     }
     let sel = sel
         .map(|(a, b)| (a.min(b), a.max(b)))
         .filter(|(a, b)| a != b);
     let mut out = Vec::new();
     let mut start = 0;
-    let class = |k: usize| (in_var[k], sel.is_some_and(|(a, b)| (a..b).contains(&k)));
+    let class = |k: usize| (var_at[k], sel.is_some_and(|(a, b)| (a..b).contains(&k)));
     for k in 1..=chars.len() {
         if k == chars.len() || class(k) != class(start) {
             let (var, selected) = class(start);
             let run: String = chars[start..k].iter().collect();
-            let mut d = div().child(run);
-            if var {
-                d = d.text_color(t.accent);
-            }
-            d = if selected {
-                d.bg(t.element_selected)
-            } else if var {
-                d.bg(t.accent_bg())
-            } else {
-                d
+            let mut el = match var {
+                Some(n) => var_chip(run, &names[n], n, t, look),
+                None => div().child(run).into_any_element(),
             };
-            out.push(d.into_any_element());
+            if selected {
+                el = div().bg(t.element_selected).child(el).into_any_element();
+            }
+            out.push(el);
             start = k;
         }
     }

@@ -29,46 +29,30 @@ pub struct HttpPlan {
     pub body: Bytes,
     pub auth: Auth,
     pub settings: SettingsOverride,
+    /// Non-fatal diagnostics (e.g. unresolved variables left as literal text).
+    pub warnings: Vec<Diagnostic>,
+    /// `(name, value)` of secret variables in scope, for value-based redaction.
+    pub secrets: Vec<(String, String)>,
 }
 
 fn err(code: &'static str, span: Span, msg: impl Into<String>) -> Diagnostic {
     Diagnostic::new(code, Severity::Error, span, msg)
 }
 
-/// Replace `{{name}}` with literal values from `scope`. Unresolved names are
-/// returned so the caller can report them (M4 replaces this with `fluxwire-vars`).
-pub(crate) fn interpolate(text: &str, scope: &VarScope, missing: &mut Vec<String>) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(i) = rest.find("{{") {
-        if i > 0 && rest.as_bytes()[i - 1] == b'\\' {
-            out.push_str(&rest[..i - 1]);
-            out.push_str("{{");
-            rest = &rest[i + 2..];
-            continue;
-        }
-        out.push_str(&rest[..i]);
-        let after = &rest[i + 2..];
-        match after.find("}}") {
-            Some(j) => {
-                let name = after[..j].trim();
-                match scope.get(name) {
-                    Some(v) => out.push_str(v),
-                    None => {
-                        missing.push(name.to_string());
-                        out.push_str(&rest[i..i + 2 + j + 2]);
-                    }
-                }
-                rest = &after[j + 2..];
-            }
-            None => {
-                out.push_str(&rest[i..]);
-                rest = "";
-            }
-        }
+/// Interpolation state for one plan: collects unresolved names and schemes.
+struct Cx<'a> {
+    scope: &'a VarScope,
+    missing: Vec<String>,
+    schemes: Vec<String>,
+}
+
+impl Cx<'_> {
+    fn i(&mut self, text: &str) -> String {
+        let r = fluxwire_vars::interpolate(text, self.scope);
+        self.missing.extend(r.missing);
+        self.schemes.extend(r.schemes);
+        r.text
     }
-    out.push_str(rest);
-    out
 }
 
 fn map_entries(doc: &FluxDoc, key: &str) -> Vec<(String, String)> {
@@ -78,9 +62,10 @@ fn map_entries(doc: &FluxDoc, key: &str) -> Vec<(String, String)> {
     }
 }
 
-fn settings(doc: &FluxDoc) -> SettingsOverride {
+fn settings(doc: &FluxDoc, inherited: &[(String, String)]) -> SettingsOverride {
     let mut s = SettingsOverride::default();
-    for (k, v) in map_entries(doc, "settings") {
+    let own = map_entries(doc, "settings");
+    for (k, v) in inherited.iter().cloned().chain(own) {
         match k.as_str() {
             "timeout_ms" => s.timeout = v.trim().parse().ok().map(Duration::from_millis),
             "follow_redirects" => s.follow_redirects = v.trim().parse().ok(),
@@ -110,6 +95,64 @@ fn kv_lines(doc: &FluxDoc, kind: BlockKind) -> Vec<(&Block, &KvLine)> {
     out
 }
 
+/// Replace `:name` path segments from the `path` front matter map, falling back to a
+/// variable of the same name (SPEC §7.4).
+fn apply_path_params(target: &str, doc: &FluxDoc, cx: &mut Cx) -> String {
+    let start = target.find("://").map_or(0, |i| i + 3);
+    let Some(path_start) = target[start..].find('/').map(|i| i + start) else {
+        return target.to_string();
+    };
+    let path_end = target[path_start..]
+        .find(['?', '#'])
+        .map_or(target.len(), |i| i + path_start);
+    let own = map_entries(doc, "path");
+    let inherited = cx.scope.inherited.path.clone();
+    let segs: Vec<String> = target[path_start..path_end]
+        .split('/')
+        .map(|seg| {
+            let Some(name) = seg.strip_prefix(':').filter(|n| {
+                !n.is_empty()
+                    && n.chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            }) else {
+                return seg.to_string();
+            };
+            let value = own
+                .iter()
+                .rev()
+                .chain(inherited.iter().rev())
+                .find(|(k, _)| k == name)
+                .map(|(_, v)| cx.i(v))
+                .or_else(|| cx.scope.get(name).map(str::to_string));
+            match value {
+                Some(v) => pct_encode(&v),
+                None => {
+                    cx.missing.push(name.to_string());
+                    seg.to_string()
+                }
+            }
+        })
+        .collect();
+    format!(
+        "{}{}{}",
+        &target[..path_start],
+        segs.join("/"),
+        &target[path_end..]
+    )
+}
+
+fn pct_encode(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
 fn urlencode(s: &str) -> String {
     url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
 }
@@ -127,13 +170,18 @@ pub fn plan(doc: &FluxDoc, scope: &VarScope) -> Result<HttpPlan, Vec<Diagnostic>
         )]);
     };
     let mut diags = Vec::new();
-    let mut missing = Vec::new();
+    let mut cx = Cx {
+        scope,
+        missing: Vec::new(),
+        schemes: Vec::new(),
+    };
 
-    let mut target = interpolate(&req.target, scope, &mut missing);
+    let mut target = cx.i(&req.target);
+    target = apply_path_params(&target, doc, &mut cx);
     for q in req.query.iter().filter(|q| q.enabled) {
-        let name = interpolate(&q.name, scope, &mut missing);
+        let name = cx.i(&q.name);
         let piece = match &q.value {
-            Some(v) => format!("{name}={}", interpolate(v, scope, &mut missing)),
+            Some(v) => format!("{name}={}", cx.i(v)),
             None => name,
         };
         target.push(if target.contains('?') { '&' } else { '?' });
@@ -143,18 +191,26 @@ pub fn plan(doc: &FluxDoc, scope: &VarScope) -> Result<HttpPlan, Vec<Diagnostic>
         .headers
         .iter()
         .filter(|h| h.enabled)
-        .map(|h| (h.name.clone(), interpolate(&h.value, scope, &mut missing)))
+        .map(|h| (h.name.clone(), cx.i(&h.value)))
         .collect();
+    // `http defaults` headers from the collection and folders sit underneath.
+    let mut merged: Vec<(String, String)> = Vec::new();
+    for (k, v) in &scope.inherited.headers {
+        if !has_header(&headers, k) {
+            merged.push((k.clone(), cx.i(v)));
+        }
+    }
+    merged.append(&mut headers);
+    let mut headers = merged;
 
     let mut body_text = match &req.body {
-        Body::Raw(span) => Some(interpolate(
-            span.slice(&doc.source)
+        Body::Raw(span) => Some(
+            cx.i(span
+                .slice(&doc.source)
                 .strip_suffix("\r\n")
                 .or_else(|| span.slice(&doc.source).strip_suffix('\n'))
-                .unwrap_or(span.slice(&doc.source)),
-            scope,
-            &mut missing,
-        )),
+                .unwrap_or(span.slice(&doc.source))),
+        ),
         _ => None,
     };
     let mut body = Bytes::new();
@@ -178,8 +234,8 @@ pub fn plan(doc: &FluxDoc, scope: &VarScope) -> Result<HttpPlan, Vec<Diagnostic>
             .map(|(_, l)| {
                 format!(
                     "{}={}",
-                    urlencode(&interpolate(&l.name, scope, &mut missing)),
-                    urlencode(&interpolate(&l.value, scope, &mut missing))
+                    urlencode(&cx.i(&l.name)),
+                    urlencode(&cx.i(&l.value))
                 )
             })
             .collect::<Vec<_>>()
@@ -195,8 +251,8 @@ pub fn plan(doc: &FluxDoc, scope: &VarScope) -> Result<HttpPlan, Vec<Diagnostic>
         let boundary = format!("----fluxwire{:016x}", rand::random::<u64>());
         let mut out: Vec<u8> = Vec::new();
         for (_, l) in &multipart {
-            let name = interpolate(&l.name, scope, &mut missing);
-            let value = interpolate(&l.value, scope, &mut missing);
+            let name = cx.i(&l.name);
+            let value = cx.i(&l.value);
             out.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
             if let Some(path) = value
                 .strip_prefix("@file(")
@@ -245,26 +301,20 @@ pub fn plan(doc: &FluxDoc, scope: &VarScope) -> Result<HttpPlan, Vec<Diagnostic>
         body = Bytes::from(t.into_bytes());
     }
 
-    let mut auth_fields = Vec::new();
-    for (k, v) in map_entries(doc, "auth") {
-        auth_fields.push((k, interpolate(&v, scope, &mut missing)));
-    }
-    let auth_kw = doc.front.str("auth").map(str::to_string);
-    let auth = Auth::from_front(auth_kw.as_deref(), &auth_fields);
+    let auth = resolve_auth(doc, &mut cx);
     if let Err(e) = &auth {
         diags.push(err("P103", Span::at(0), e.clone()));
     }
 
-    if !missing.is_empty() {
-        missing.sort();
-        missing.dedup();
+    let mut missing = std::mem::take(&mut cx.missing);
+    missing.sort();
+    missing.dedup();
+    for s in std::mem::take(&mut cx.schemes) {
         diags.push(err(
-            "P101",
+            "P105",
             req.target_span,
             format!(
-                "Unresolved variable{}: {}. Environments and variables arrive in M4; use a literal value for now.",
-                if missing.len() == 1 { "" } else { "s" },
-                missing.iter().map(|m| format!("{{{{{m}}}}}")).collect::<Vec<_>>().join(", ")
+                "Unknown variable scheme in {{{{{s}}}}}: no resolver is registered for it in this version."
             ),
         ));
     }
@@ -294,15 +344,72 @@ pub fn plan(doc: &FluxDoc, scope: &VarScope) -> Result<HttpPlan, Vec<Diagnostic>
         }
     };
 
+    let unresolved = |sev: Severity| {
+        Diagnostic::new(
+            "P101",
+            sev,
+            req.target_span,
+            format!(
+                "Unresolved variable{}: {}. Select an environment or define {} in an environment file.",
+                if missing.len() == 1 { "" } else { "s" },
+                missing
+                    .iter()
+                    .map(|m| format!("{{{{{m}}}}}"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                if missing.len() == 1 { "it" } else { "them" },
+            ),
+        )
+    };
     match (url, auth) {
-        (Some(url), Ok(auth)) if diags.is_empty() => Ok(HttpPlan {
-            method: req.method.to_ascii_uppercase(),
-            url,
-            headers,
-            body,
-            auth,
-            settings: settings(doc),
-        }),
-        _ => Err(diags),
+        (Some(url), Ok(auth)) if diags.is_empty() => {
+            let mut warnings = Vec::new();
+            if !missing.is_empty() {
+                warnings.push(unresolved(Severity::Warning));
+            }
+            Ok(HttpPlan {
+                method: req.method.to_ascii_uppercase(),
+                url,
+                headers,
+                body,
+                auth,
+                settings: settings(doc, &scope.inherited.settings),
+                warnings,
+                secrets: scope
+                    .vars
+                    .iter()
+                    .filter(|(_, v)| v.secret)
+                    .map(|(n, v)| (n.clone(), v.value.clone()))
+                    .collect(),
+            })
+        }
+        _ => {
+            if !missing.is_empty() {
+                diags.insert(0, unresolved(Severity::Error));
+            }
+            Err(diags)
+        }
     }
+}
+
+/// Request `auth` wins; `inherit` or absent falls back to the nearest ancestor (SPEC §7.8).
+fn resolve_auth(doc: &FluxDoc, cx: &mut Cx) -> Result<Auth, String> {
+    let own_fields = map_entries(doc, "auth");
+    let own_kw = doc.front.str("auth").map(str::to_string);
+    let inherits = own_fields.is_empty()
+        && matches!(
+            own_kw.as_deref().map(str::trim),
+            None | Some("") | Some("inherit")
+        );
+    let (kw, fields) = if inherits {
+        match &cx.scope.inherited.auth {
+            Some((kw, f)) => (kw.clone(), f.clone()),
+            None => (None, Vec::new()),
+        }
+    } else {
+        (own_kw, own_fields)
+    };
+    let fields: Vec<(String, String)> = fields.into_iter().map(|(k, v)| (k, cx.i(&v))).collect();
+    // An inherited `inherit` keyword that reached the root means no auth.
+    Auth::from_front(kw.as_deref(), &fields)
 }

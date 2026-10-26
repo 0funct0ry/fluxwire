@@ -9,6 +9,7 @@ use gpui::{Context, KeyDownEvent, PathPromptOptions, Window};
 
 use crate::{
     editor::EditorState,
+    envs::{CompleteKey, CompleteTarget},
     project::{
         OpenDoc, Problem, Project, Session, SessionTab, Target, remember_workspace, save_recent,
         save_session,
@@ -45,6 +46,8 @@ impl Workspace {
     pub fn prompt_title(&self) -> Option<String> {
         match self.prompt.as_ref()? {
             PromptPurpose::Rename { .. } => Some("Rename to".to_string()),
+            PromptPurpose::NewEnvironment => Some("New environment name".to_string()),
+            PromptPurpose::RenameEnvironment { .. } => Some("Rename environment to".to_string()),
         }
     }
 
@@ -76,6 +79,15 @@ impl Workspace {
                 self.cell = None;
                 self.watcher = None;
                 self.project = Some(p);
+                let remembered = self
+                    .state_dir
+                    .as_ref()
+                    .and_then(|d| crate::project::load_session(d, path).active_env);
+                self.envs.runtime.clear();
+                self.envs.states.clear();
+                self.envs.warned.clear();
+                self.envs.edit = None;
+                self.init_active_env(remembered);
                 if let Some(dir) = &self.state_dir {
                     remember_workspace(&mut self.recent, path);
                     save_recent(dir, &self.recent);
@@ -189,6 +201,7 @@ impl Workspace {
             return;
         };
         let changed = p.handle_fs(batch);
+        self.on_env_fs_change(batch);
         for key in changed {
             self.sync_tab(&key);
         }
@@ -276,6 +289,10 @@ impl Workspace {
     }
 
     // ---- editing --------------------------------------------------------------------------
+
+    pub fn after_edit_pub(&mut self, key: &str, cx: &mut Context<Self>) {
+        self.after_edit(key, cx)
+    }
 
     fn after_edit(&mut self, key: &str, cx: &mut Context<Self>) {
         self.sync_tab(key);
@@ -365,6 +382,25 @@ impl Workspace {
     /// replaced by typing or pasting and removed by Backspace; Cmd/Ctrl+A/C/X work on it.
     pub(crate) fn on_url_key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) {
         let Some(key) = self.active_key() else { return };
+        if self.envs.completion.is_some() {
+            let cur = self
+                .project
+                .as_ref()
+                .and_then(|p| p.doc(&key))
+                .and_then(|d| d.parsed.request().map(|r| r.target.clone()))
+                .unwrap_or_default();
+            match self.completion_key(ev, CompleteTarget::Url, &cur) {
+                CompleteKey::Consumed => {
+                    cx.notify();
+                    return;
+                }
+                CompleteKey::Accept(new) => {
+                    self.set_url_text(&key, &new, cx);
+                    return;
+                }
+                CompleteKey::Pass => {}
+            }
+        }
         let Some(doc) = self.project.as_mut().and_then(|p| p.doc_mut(&key)) else {
             return;
         };
@@ -446,6 +482,22 @@ impl Workspace {
         let edits = fmt::set_request_line(&doc.parsed, &method, &target);
         if doc.apply(&edits) {
             self.after_edit(&key, cx);
+            self.refresh_completion(CompleteTarget::Url, &target);
+        }
+    }
+
+    /// Replace the whole request target (used to accept a `{{` completion).
+    pub(crate) fn set_url_text(&mut self, key: &str, target: &str, cx: &mut Context<Self>) {
+        let Some(doc) = self.project.as_mut().and_then(|p| p.doc_mut(key)) else {
+            return;
+        };
+        let Some(method) = doc.parsed.request().map(|r| r.method.clone()) else {
+            return;
+        };
+        let edits = fmt::set_request_line(&doc.parsed, &method, target);
+        if doc.apply(&edits) {
+            self.url_sel = None;
+            self.after_edit(key, cx);
         }
     }
 
@@ -653,14 +705,31 @@ impl Workspace {
             return;
         };
         let ks = &ev.keystroke;
+        let mut accepted = false;
+        if self.envs.completion.is_some() {
+            match self.completion_key(ev, CompleteTarget::Cell, &cell.text) {
+                CompleteKey::Consumed => {
+                    cx.notify();
+                    return;
+                }
+                CompleteKey::Accept(new) => {
+                    cell.text = new;
+                    accepted = true;
+                }
+                CompleteKey::Pass => {}
+            }
+        }
         match ks.key.as_str() {
+            _ if accepted => {}
             "enter" | "escape" => {
                 self.cell = None;
+                self.envs.completion = None;
                 window.focus(&self.root_focus);
                 cx.notify();
                 return;
             }
             "tab" => {
+                self.envs.completion = None;
                 if cell.col == Col::Key {
                     self.start_cell(cell.table, cell.row, Col::Value, window, cx);
                 } else {
@@ -685,6 +754,17 @@ impl Workspace {
                 }
             }
         }
+        self.commit_cell(cell, cx);
+    }
+
+    /// Apply the edited cell text to the document (after typing or accepting a completion).
+    pub(crate) fn apply_cell_text(&mut self, cx: &mut Context<Self>) {
+        if let Some(cell) = self.cell.clone() {
+            self.commit_cell(cell, cx);
+        }
+    }
+
+    fn commit_cell(&mut self, mut cell: CellEdit, cx: &mut Context<Self>) {
         let rows = self.table_rows(&cell.key, cell.table);
         let (enabled, mut name, mut value) =
             rows.get(cell.row)
@@ -704,12 +784,16 @@ impl Workspace {
                     cell.row = self.table_rows_len(&cell.key, cell.table).saturating_sub(1);
                 }
                 let key = cell.key.clone();
+                let text = cell.text.clone();
                 self.cell = Some(cell);
                 self.after_edit(&key, cx);
+                self.refresh_completion(CompleteTarget::Cell, &text);
                 return;
             }
         }
+        let text = cell.text.clone();
         self.cell = Some(cell);
+        self.refresh_completion(CompleteTarget::Cell, &text);
         cx.notify();
     }
 
@@ -916,7 +1000,7 @@ impl Workspace {
         self.start_new(websocket, folder, window, cx);
     }
 
-    fn open_modal_keep_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_modal_keep_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let prompt = self.prompt.take();
         self.open_modal(ModalKind::Prompt, window, cx);
         self.prompt = prompt;
@@ -969,6 +1053,11 @@ impl Workspace {
         }
         let result: std::io::Result<Option<String>> = match purpose {
             PromptPurpose::Rename { key } => self.do_rename(&key, &name),
+            p @ (PromptPurpose::NewEnvironment | PromptPurpose::RenameEnvironment { .. }) => {
+                self.finish_env_prompt(p, &name);
+                cx.notify();
+                return;
+            }
         };
         match result {
             Ok(open) => {
@@ -1156,6 +1245,7 @@ impl Workspace {
             }
         }
         s.active = self.active_key();
+        s.active_env = self.envs.active.clone();
         if let Some(p) = &self.project {
             for k in p.dirty_keys() {
                 if let Some(d) = p.doc(&k) {

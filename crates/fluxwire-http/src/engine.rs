@@ -590,6 +590,19 @@ async fn run_inner(
     })?;
     let mut headers = p.headers.clone();
     let has = |h: &[(String, String)], n: &str| h.iter().any(|(k, _)| k.eq_ignore_ascii_case(n));
+    if let Auth::OAuth2(cfg) = &p.auth {
+        let token = crate::oauth2::ensure_token(cfg, &ctx, false).await?;
+        if !has(&headers, "authorization") {
+            headers.push((
+                "Authorization".into(),
+                format!(
+                    "{} {}",
+                    bearer_scheme(&token.token_type),
+                    token.access_token
+                ),
+            ));
+        }
+    }
     if let Some((k, v)) = p.auth.header()
         && !has(&headers, &k)
     {
@@ -624,9 +637,11 @@ async fn run_inner(
             rec.enter("queued");
             rec.push("queued", t0, n, false);
         }
+        let hop_headers = with_jar_cookies(&headers, &url, &ctx);
         let mut head = eng
-            .hop(&method, &url, &headers, &body, verify, &ctx, &mut rec)
+            .hop(&method, &url, &hop_headers, &body, verify, &ctx, &mut rec)
             .await?;
+        store_set_cookies(&head.headers, &url, &ctx);
         let status = head.status;
         let close = head
             .headers
@@ -774,6 +789,55 @@ async fn run_inner(
             redirects: hops,
             connection_reused: reused,
         });
+    }
+}
+
+fn bearer_scheme(token_type: &str) -> &str {
+    if token_type.is_empty() || token_type.eq_ignore_ascii_case("bearer") {
+        "Bearer"
+    } else {
+        token_type
+    }
+}
+
+/// The request headers plus a `Cookie` header from the environment's jar (SPEC §9.3).
+fn with_jar_cookies(
+    headers: &[(String, String)],
+    url: &Url,
+    ctx: &ExecCtx,
+) -> Vec<(String, String)> {
+    let mut out = headers.to_vec();
+    let Some(env) = &ctx.env else { return out };
+    let Some(host) = url.host_str() else {
+        return out;
+    };
+    let Some(jar) = env
+        .cookies
+        .header_for(host, url.path(), url.scheme() == "https")
+    else {
+        return out;
+    };
+    match out
+        .iter_mut()
+        .find(|(k, _)| k.eq_ignore_ascii_case("cookie"))
+    {
+        Some((_, v)) => {
+            v.push_str("; ");
+            v.push_str(&jar);
+        }
+        None => out.push(("Cookie".into(), jar)),
+    }
+    out
+}
+
+fn store_set_cookies(map: &hyper::HeaderMap, url: &Url, ctx: &ExecCtx) {
+    let (Some(env), Some(host)) = (&ctx.env, url.host_str()) else {
+        return;
+    };
+    for v in map.get_all("set-cookie") {
+        if let Ok(v) = v.to_str() {
+            env.cookies.store(host, url.path(), v);
+        }
     }
 }
 

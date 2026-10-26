@@ -12,6 +12,25 @@ fn quote(s: &str) -> String {
 const MASK: &str = "***";
 
 pub fn to_curl(p: &HttpPlan, mask: bool) -> String {
+    let out = to_curl_raw(p, mask);
+    if !mask {
+        return out;
+    }
+    // Secret variables can land anywhere (URL, headers, body): redact by value.
+    let mut secrets: Vec<&(String, String)> =
+        p.secrets.iter().filter(|(_, v)| !v.is_empty()).collect();
+    secrets.sort_by_key(|(_, v)| std::cmp::Reverse(v.len()));
+    let mut out = out;
+    for (name, value) in secrets {
+        let tag = format!("‹secret:{name}›");
+        out = out.replace(value.as_str(), &tag);
+        let enc: String = url::form_urlencoded::byte_serialize(value.as_bytes()).collect();
+        out = out.replace(&enc, &tag);
+    }
+    out
+}
+
+fn to_curl_raw(p: &HttpPlan, mask: bool) -> String {
     let mut url = p.url.clone();
     if let Auth::ApiKey {
         key,

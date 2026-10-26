@@ -118,7 +118,7 @@ impl Workspace {
             )
     }
 
-    fn tree_row(
+    pub(crate) fn tree_row(
         &self,
         t: &Theme,
         id: gpui::ElementId,
@@ -730,55 +730,6 @@ impl Workspace {
             );
         }
         div().flex().flex_col().children(rows)
-    }
-
-    fn render_envs(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let env = &self.mock.environments[self.env];
-        div()
-            .flex()
-            .flex_col()
-            .children(self.mock.environments.iter().enumerate().map(|(i, e)| {
-                let name = e.name;
-                self.tree_row(t, ("env", i).into(), 0, i == self.env)
-                    .gap_2()
-                    .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, _, cx| {
-                        this.env = i;
-                        if ev.click_count() >= 2 {
-                            this.open_tab(&format!("env/{name}"), name, TabKind::Environment, true);
-                        }
-                        cx.notify();
-                    }))
-                    .child(div().size(px(7.)).rounded_full().bg(if i == self.env {
-                        t.created
-                    } else {
-                        t.border
-                    }))
-                    .child(e.name)
-            }))
-            .child(
-                div()
-                    .px_2()
-                    .pt_3()
-                    .pb_1()
-                    .text_size(px(11.))
-                    .text_color(t.text_placeholder)
-                    .child(format!("Variables · {}", env.name)),
-            )
-            .children(env.vars.iter().map(|(k, v, secret)| {
-                row()
-                    .px_2()
-                    .py(px(2.))
-                    .gap_2()
-                    .font_family(BUFFER_FONT)
-                    .text_size(px(12.))
-                    .text_color(t.text_muted)
-                    .child(div().w(px(80.)).flex_none().text_color(t.text).child(*k))
-                    .child(div().truncate().child(if *secret {
-                        "••••••••"
-                    } else {
-                        *v
-                    }))
-            }))
     }
 
     fn render_sync_panel(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {

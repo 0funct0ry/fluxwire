@@ -1,4 +1,4 @@
-//! Mock data for views that later milestones replace: response (M3), history (M5), sync (M12),
+//! Mock data for views that later milestones replace: history (M5), sync (M12),
 //! folder runs (M9) and WebSocket logs (M8). The tree, request and workspace mocks were removed in M2.
 
 #[derive(Clone, Debug)]
@@ -25,7 +25,6 @@ pub struct MockResponse {
     pub protocol: &'static str,
     pub body: &'static str,
     pub headers: Vec<Kv>,
-    pub cookies: Vec<Kv>,
     /// (phase, milliseconds)
     pub timeline: Vec<(&'static str, u32)>,
     /// (name, passed)
@@ -40,11 +39,6 @@ pub struct HistoryEntry {
     pub status: u16,
     pub time: &'static str,
     pub ms: u32,
-}
-
-pub struct Environment {
-    pub name: &'static str,
-    pub vars: Vec<(&'static str, &'static str, bool)>,
 }
 
 pub struct SyncChange {
@@ -62,7 +56,6 @@ pub struct RunRow {
 pub struct Mock {
     pub response: MockResponse,
     pub history: Vec<HistoryEntry>,
-    pub environments: Vec<Environment>,
     pub sync: Vec<SyncChange>,
     pub run: Vec<RunRow>,
     pub ws_log: Vec<(&'static str, &'static str, &'static str)>,
@@ -111,7 +104,6 @@ fn response(status: u16, text: &'static str, ms: u32, body: &'static str) -> Moc
         protocol: "h2",
         body,
         headers: json_headers(),
-        cookies: vec![kv("session", "s%3A9c1e…; HttpOnly; Secure")],
         timeline: timeline(),
         tests: vec![
             ("status is 2xx", status / 100 == 2),
@@ -168,30 +160,6 @@ pub fn payments_api() -> Mock {
                 status: 200,
                 time: "16:12",
                 ms: 230,
-            },
-        ],
-        environments: vec![
-            Environment {
-                name: "local",
-                vars: vec![
-                    ("baseUrl", "http://localhost:8080", false),
-                    ("host", "localhost:8080", false),
-                ],
-            },
-            Environment {
-                name: "staging",
-                vars: vec![
-                    ("baseUrl", "https://staging.payments.example.com", false),
-                    ("host", "staging.payments.example.com", false),
-                    ("token", "••••••••", true),
-                ],
-            },
-            Environment {
-                name: "production",
-                vars: vec![
-                    ("baseUrl", "https://api.payments.example.com", false),
-                    ("token", "••••••••", true),
-                ],
             },
         ],
         sync: vec![
@@ -267,8 +235,4 @@ pub fn payments_api() -> Mock {
     }
 }
 
-impl Mock {
-    pub fn environment(&self, name: &str) -> Option<&Environment> {
-        self.environments.iter().find(|e| e.name == name)
-    }
-}
+impl Mock {}
