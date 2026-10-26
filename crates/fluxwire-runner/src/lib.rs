@@ -252,6 +252,20 @@ impl Runner {
         Some((rx, cancel))
     }
 
+    fn protocol_by_id(&self, id: &str) -> Option<&Arc<dyn Protocol>> {
+        self.protocols.iter().find(|p| p.id() == id)
+    }
+
+    /// `Copy as cURL` for a stored history record (already redacted).
+    pub fn history_curl(&self, rec: &HistoryRecord) -> Option<String> {
+        self.protocol_by_id(&rec.protocol)?.history_to_curl(rec)
+    }
+
+    /// Rebuild the outcome of a stored record, to show an earlier response.
+    pub fn history_outcome(&self, rec: &HistoryRecord) -> Option<Outcome> {
+        self.protocol_by_id(&rec.protocol)?.history_to_outcome(rec)
+    }
+
     /// Edits that fill `doc` from pasted text, if some protocol recognises it.
     pub fn edits_from_paste(&self, doc: &FluxDoc, text: &str) -> Option<Vec<Edit>> {
         let proto = self.protocol_for(doc).ok()?;
@@ -303,6 +317,9 @@ async fn run(
     };
     result.label = result.redact(&plan.label);
     result.warnings = plan.warnings.clone();
+    let request = proto.history_request(&plan);
+    let protocol = plan.protocol;
+    result.secrets.extend(proto.history_secrets(&plan));
     let mut stream = proto.execute(plan, ctx);
     while let Some(ev) = stream.next().await {
         match ev {
@@ -323,11 +340,24 @@ async fn run(
                 {
                     result.tests = proto.check(&o, e);
                 }
-                result.history = Some(proto.history_record(&o));
+                let mut rec = proto.history_record(&o);
+                if let Some(m) = rec.payload.as_object_mut() {
+                    m.insert("request".into(), request.clone());
+                }
+                result.history = Some(rec);
                 result.outcome = Some(o);
                 break;
             }
             Event::Failed(e) => {
+                result.history = Some(HistoryRecord {
+                    protocol: protocol.into(),
+                    summary: format!("{} ✗ {}", result.label, e.phase),
+                    payload: serde_json::json!({
+                        "request": request,
+                        "timings": result.phases,
+                        "error": {"phase": e.phase, "message": e.message, "fix": e.fix},
+                    }),
+                });
                 result.error = Some(RunError::Exec(e));
                 break;
             }

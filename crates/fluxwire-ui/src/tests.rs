@@ -1118,3 +1118,126 @@ fn active_environment_is_part_of_the_session(cx: &mut TestAppContext) {
         Some("staging")
     );
 }
+
+fn doc_for(port: u16, path: &str) -> String {
+    format!(
+        "---\nname: Local\n---\n\n# Local\n\n```http\nGET http://127.0.0.1:{port}{path}\nAccept: application/json\n```\n"
+    )
+}
+
+/// Send the active request and wait until `n` history entries are listed.
+fn send_and_record(view: &Entity<Workspace>, cx: &mut VisualTestContext, n: usize) {
+    cx.simulate_keystrokes("secondary-enter");
+    wait_until(view, cx, "history entry", move |w| {
+        w.history.entries.len() == n && !w.is_sending()
+    });
+}
+
+#[gpui::test]
+fn every_send_is_recorded_newest_first_and_opens_read_only(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "hist-rec");
+    let port = test_server(false);
+    set_doc_text(&view, cx, CREATE, doc_for(port, "/v1/one"));
+    send_and_record(&view, cx, 1);
+    set_doc_text(&view, cx, CREATE, doc_for(port, "/v1/two"));
+    send_and_record(&view, cx, 2);
+    let (newest, oldest) = view.read_with(cx, |w, _| {
+        let e = &w.history.entries;
+        assert!(e[0].url.ends_with("/v1/two") && e[1].url.ends_with("/v1/one"));
+        assert_eq!((e[0].status, e[0].method.as_str()), (Some(201), "GET"));
+        assert!(e[0].dirty, "the send used unsaved text");
+        (e[0].id, e[1].id)
+    });
+    view.update(cx, |w, cx| w.open_history_entry(oldest, false, cx));
+    wait_until(&view, cx, "entry loaded", move |w| {
+        w.history.cache.contains_key(&oldest)
+    });
+    view.read_with(cx, |w, _| {
+        let t = w.tabs.active().unwrap();
+        assert_eq!(t.key, format!("history/{oldest}"));
+        assert!(t.preview);
+        let e = &w.history.cache[&oldest];
+        assert_eq!(
+            e.payload["response"]["body"]["text"],
+            r#"{"id":"pay_1","amount":4200}"#
+        );
+        assert_eq!(e.payload["request"]["method"], "GET");
+    });
+    // diff the two entries
+    view.update(cx, |w, cx| {
+        w.history_pick_diff(oldest, cx);
+        w.history_pick_diff(newest, cx);
+    });
+    wait_until(&view, cx, "diff computed", move |w| {
+        w.history.diffs.contains_key(&(oldest, newest))
+    });
+    view.read_with(cx, |w, _| {
+        let d = &w.history.diffs[&(oldest, newest)];
+        assert!(d.res_body.iter().all(|r| r.left == r.right), "same body");
+    });
+}
+
+#[gpui::test]
+fn filters_restore_and_response_dropdown(cx: &mut TestAppContext) {
+    let (view, cx, root) = setup_with(cx, "payments-api", "hist-act");
+    let port = test_server(false);
+    set_doc_text(&view, cx, CREATE, doc_for(port, "/v1/one"));
+    send_and_record(&view, cx, 1);
+    set_doc_text(&view, cx, CREATE, doc_for(port, "/v1/two"));
+    send_and_record(&view, cx, 2);
+    let first = view.read_with(cx, |w, _| w.history.entries[1].id);
+
+    // filters
+    view.update(cx, |w, cx| {
+        w.history.method = Some("POST");
+        w.history_reload(cx);
+    });
+    wait_until(&view, cx, "POST filter", |w| w.history.entries.is_empty());
+    view.update(cx, |w, cx| {
+        w.history.method = None;
+        w.history.text.insert("/v1/one");
+        w.history_reload(cx);
+    });
+    wait_until(&view, cx, "text filter", |w| w.history.entries.len() == 1);
+    view.update(cx, |w, cx| {
+        w.history.text.clear();
+        w.history_reload(cx);
+    });
+    wait_until(&view, cx, "filters cleared", |w| {
+        w.history.entries.len() == 2
+    });
+
+    // response-pane dropdown shows the earlier response, then goes back
+    view.update(cx, |w, cx| w.show_history_response(first, cx));
+    wait_until(&view, cx, "earlier response", |w| {
+        w.responses
+            .values()
+            .any(|r| r.viewing.is_some() && r.shown.is_some())
+    });
+    view.update(cx, |w, cx| w.history_back_to_latest(cx));
+    wait_until(&view, cx, "latest response", |w| {
+        w.responses
+            .values()
+            .any(|r| r.viewing.is_none() && r.shown.is_some())
+    });
+
+    // restore puts the old request in an unsaved tab
+    let on_disk = std::fs::read_to_string(root.join(CREATE)).unwrap();
+    view.update_in(cx, |w, window, cx| {
+        w.history_restore(first, CREATE.to_string(), window, cx)
+    });
+    wait_until(&view, cx, "restored", |w| {
+        w.project
+            .as_ref()
+            .and_then(|p| p.doc(CREATE))
+            .is_some_and(|d| d.text.contains("/v1/one"))
+    });
+    assert!(dirty(&view, cx, CREATE));
+    assert_eq!(std::fs::read_to_string(root.join(CREATE)).unwrap(), on_disk);
+
+    // clearing empties the panel
+    view.update(cx, |w, cx| {
+        w.history_clear(crate::history::ClearScope::All, cx)
+    });
+    wait_until(&view, cx, "cleared", |w| w.history.entries.is_empty());
+}

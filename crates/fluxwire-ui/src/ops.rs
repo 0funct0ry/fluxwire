@@ -79,6 +79,7 @@ impl Workspace {
                 self.cell = None;
                 self.watcher = None;
                 self.project = Some(p);
+                self.history_project_changed(cx);
                 let remembered = self
                     .state_dir
                     .as_ref()
@@ -126,6 +127,9 @@ impl Workspace {
         self.save_session_now();
         self.project = None;
         self.watcher = None;
+        self.history.ws_key = None;
+        self.history.entries.clear();
+        self.history.rebuild_rows_pub();
         self.tabs = Default::default();
         self.tab_ui.clear();
         self.selected = None;

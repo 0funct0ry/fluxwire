@@ -315,6 +315,24 @@ pub trait Protocol: Send + Sync {
     }
     fn history_record(&self, result: &Outcome) -> HistoryRecord;
 
+    /// Resolved request snapshot stored under `payload.request` in history. Must not contain
+    /// auth-derived headers or query values (only the auth type).
+    fn history_request(&self, _plan: &Plan) -> serde_json::Value {
+        serde_json::Value::Null
+    }
+    /// `(name, value)` secrets in the plan, so the store can redact them by value.
+    fn history_secrets(&self, _plan: &Plan) -> Vec<(String, String)> {
+        Vec::new()
+    }
+    /// Shell command for a stored history record (secrets are already redacted).
+    fn history_to_curl(&self, _record: &HistoryRecord) -> Option<String> {
+        None
+    }
+    /// Rebuild an `Outcome` from a stored record, to show an earlier response.
+    fn history_to_outcome(&self, _record: &HistoryRecord) -> Option<Outcome> {
+        None
+    }
+
     /// Export a plan as a shell command (`curl`). `None` if unsupported.
     fn to_curl(&self, _plan: &Plan, _mask_secrets: bool) -> Option<String> {
         None

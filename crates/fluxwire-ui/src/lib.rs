@@ -8,6 +8,7 @@ pub mod editor;
 pub mod envs;
 pub mod envs_view;
 pub mod highlight;
+pub mod history;
 pub mod mock;
 pub mod ops;
 pub mod project;

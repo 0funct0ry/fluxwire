@@ -63,6 +63,10 @@ pub struct TabResponse {
     pub seq: u64,
     pub sending: Option<Sending>,
     pub result: Option<Arc<RunResult>>,
+    /// History entry whose stored response is shown instead of the latest send.
+    pub viewing: Option<i64>,
+    /// The latest send, kept while an earlier response is shown.
+    pub latest: Option<Arc<RunResult>>,
     pub view: Option<Arc<BodyView>>,
     pub mode: BodyMode,
     pub wrap: bool,
@@ -86,6 +90,8 @@ impl TabResponse {
             seq,
             sending: None,
             result: None,
+            viewing: None,
+            latest: None,
             view: None,
             mode: BodyMode::Pretty,
             wrap: false,
@@ -401,6 +407,7 @@ impl Workspace {
         };
         // Secrets never reach the Console (SPEC §8.3).
         self.log(res.redact(&line));
+        self.history_record(tab_id, &res, cx);
         if let Some(root) = self
             .tabs
             .all()
@@ -414,9 +421,25 @@ impl Workspace {
             return;
         };
         r.sending = None;
-        let exchange = res.outcome.as_ref().and_then(|o| o.exchange.as_ref());
-        let build = exchange.map(|x| (x.body.clone(), x.content_type.clone(), x.decoded_size));
+        r.viewing = None;
+        r.latest = None;
         r.result = Some(Arc::new(res));
+        self.build_body_view(tab_id, seq, cx);
+    }
+
+    /// Build the body view for the tab's current result in the background.
+    fn build_body_view(&mut self, tab_id: u64, seq: u64, cx: &mut Context<Self>) {
+        let Some(r) = self.responses.get_mut(&tab_id) else {
+            return;
+        };
+        let build = r
+            .result
+            .as_ref()
+            .and_then(|res| res.outcome.as_ref())
+            .and_then(|o| o.exchange.as_ref())
+            .map(|x| (x.body.clone(), x.content_type.clone(), x.decoded_size));
+        r.view = None;
+        r.shown = None;
         let Some((body, ct, size)) = build else {
             return;
         };
@@ -444,6 +467,62 @@ impl Workspace {
             .ok();
         })
         .detach();
+    }
+
+    /// Show a stored history response in the tab's response pane (never re-recorded).
+    pub fn show_stored_result(
+        &mut self,
+        tab_id: u64,
+        e: &fluxwire_store::Entry,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(outcome) = runner().history_outcome(&crate::history::record_of(e)) else {
+            self.notice = Some("That send failed, so it has no response to show.".into());
+            cx.notify();
+            return;
+        };
+        let res = RunResult {
+            label: e.summary.summary.clone(),
+            started_at: SystemTime::UNIX_EPOCH
+                + Duration::from_millis(e.summary.ts_ms.max(0) as u64),
+            phases: outcome.timings.clone(),
+            outcome: Some(Box::new(outcome)),
+            error: None,
+            tests: Vec::new(),
+            history: None,
+            warnings: Vec::new(),
+            secrets: Vec::new(),
+        };
+        let resp = self
+            .responses
+            .entry(tab_id)
+            .or_insert_with(|| TabResponse::new(0));
+        if resp.viewing.is_none() {
+            resp.latest = resp.result.take();
+        }
+        resp.viewing = Some(e.summary.id);
+        resp.seq += 1;
+        resp.result = Some(Arc::new(res));
+        let seq = resp.seq;
+        self.build_body_view(tab_id, seq, cx);
+        cx.notify();
+    }
+
+    pub fn history_back_to_latest(&mut self, cx: &mut Context<Self>) {
+        let Some(tab_id) = self.tabs.active_id() else {
+            return;
+        };
+        let Some(r) = self.responses.get_mut(&tab_id) else {
+            return;
+        };
+        if r.viewing.take().is_none() {
+            return;
+        }
+        r.result = r.latest.take();
+        r.seq += 1;
+        let seq = r.seq;
+        self.build_body_view(tab_id, seq, cx);
+        cx.notify();
     }
 
     // ---- viewer state -----------------------------------------------------------------------
@@ -779,7 +858,15 @@ impl Workspace {
         };
         let Some(r) = r else {
             return shell(vec![
-                strip(div().child("Response").into_any_element()).into_any_element(),
+                strip(
+                    row()
+                        .flex_1()
+                        .child("Response")
+                        .child(div().flex_1())
+                        .child(self.render_history_dropdown(t, cx))
+                        .into_any_element(),
+                )
+                .into_any_element(),
                 div()
                     .p_4()
                     .text_color(t.text_placeholder)
@@ -1027,7 +1114,34 @@ impl Workspace {
                 .into_any_element(),
         };
         shell(vec![
-            strip(status_row).into_any_element(),
+            strip(
+                row()
+                    .flex_1()
+                    .gap_3()
+                    .child(status_row)
+                    .when(r.viewing.is_some(), |d| {
+                        d.child(
+                            row()
+                                .gap_2()
+                                .text_color(t.accent)
+                                .child("Earlier response")
+                                .child(
+                                    div()
+                                        .id("resp-latest")
+                                        .cursor_pointer()
+                                        .underline()
+                                        .child("Back to latest")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.history_back_to_latest(cx)
+                                        })),
+                                ),
+                        )
+                    })
+                    .child(div().flex_1())
+                    .child(self.render_history_dropdown(t, cx))
+                    .into_any_element(),
+            )
+            .into_any_element(),
             self.tab_strip(t, "resp", labels, ui.resp, |u, i| u.resp = i, cx)
                 .into_any_element(),
             content,

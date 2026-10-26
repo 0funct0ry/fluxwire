@@ -33,6 +33,8 @@ directories = "6"
 smol = "2"
 fluxwire-protocol.workspace = true
 fluxwire-vars.workspace = true
+fluxwire-store.workspace = true
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }

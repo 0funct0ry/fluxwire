@@ -5,6 +5,7 @@ mod body;
 mod curl;
 mod engine;
 mod error;
+mod history;
 pub mod oauth2;
 mod plan;
 mod tls;
@@ -144,24 +145,27 @@ impl Protocol for HttpProtocol {
     }
 
     fn history_record(&self, r: &Outcome) -> HistoryRecord {
-        let x = r.exchange.as_ref();
-        HistoryRecord {
-            protocol: "http".into(),
-            summary: format!(
-                "{} {}",
-                x.map(|x| x.status.to_string())
-                    .unwrap_or_else(|| "-".into()),
-                r.final_url
-            ),
-            payload: serde_json::json!({
-                "url": r.final_url,
-                "status": x.map(|x| x.status),
-                "total_ms": r.total_ms,
-                "wire_size": x.map(|x| x.wire_size),
-                "decoded_size": x.map(|x| x.decoded_size),
-                "redirects": r.redirects.len(),
-            }),
-        }
+        history::record(r)
+    }
+
+    fn history_request(&self, plan: &Plan) -> serde_json::Value {
+        plan.payload::<HttpPlan>()
+            .map(history::request_snapshot)
+            .unwrap_or_default()
+    }
+
+    fn history_secrets(&self, plan: &Plan) -> Vec<(String, String)> {
+        plan.payload::<HttpPlan>()
+            .map(history::secrets)
+            .unwrap_or_default()
+    }
+
+    fn history_to_curl(&self, record: &HistoryRecord) -> Option<String> {
+        history::to_curl(record)
+    }
+
+    fn history_to_outcome(&self, record: &HistoryRecord) -> Option<Outcome> {
+        history::to_outcome(record)
     }
 
     fn token_info(

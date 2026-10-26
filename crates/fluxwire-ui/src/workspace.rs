@@ -162,6 +162,8 @@ pub const METHODS: [&str; 7] = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD",
 
 pub struct Workspace {
     pub mock: Mock,
+    pub history: crate::history::HistoryState,
+    pub history_focus: FocusHandle,
     pub project: Option<Project>,
     pub tabs: Tabs,
     pub tab_ui: HashMap<u64, TabUi>,
@@ -228,6 +230,7 @@ impl Workspace {
             })
             .detach();
         let state_dir = cx.try_global::<StateDir>().map(|s| s.0.clone());
+        let state_dir_is_set = state_dir.is_some();
         let recent = state_dir
             .as_deref()
             .map(crate::project::load_recent)
@@ -238,6 +241,8 @@ impl Workspace {
             .unwrap_or_default();
         let mut this = Self {
             mock: mock::payments_api(),
+            history: crate::history::HistoryState::new(state_dir_is_set),
+            history_focus: cx.focus_handle(),
             project: None,
             tabs: Tabs::new(),
             tab_ui: HashMap::new(),
@@ -896,6 +901,9 @@ impl Render for Workspace {
             ToggleBottomDock => |this, _w, _c| this.bottom_open = !this.bottom_open,
             ShowProjectPanel => |this, _w, _c| { this.panel = Panel::Project; this.left_open = true },
             ShowHistoryPanel => |this, _w, _c| { this.panel = Panel::History; this.left_open = true },
+            ClearHistoryAll => |this, _w, c| this.history_clear(crate::history::ClearScope::All, c),
+            ClearHistoryCollection => |this, _w, c| this.history_clear(crate::history::ClearScope::Collection, c),
+            ClearHistoryRequest => |this, _w, c| this.history_clear(crate::history::ClearScope::Request, c),
             ShowEnvironmentsPanel => |this, _w, _c| { this.panel = Panel::Environments; this.left_open = true },
             ShowSyncPanel => |this, _w, _c| { this.panel = Panel::Sync; this.left_open = true },
             ShowConsole => |this, _w, _c| { this.bottom_tab = BottomTab::Console; this.bottom_open = true },

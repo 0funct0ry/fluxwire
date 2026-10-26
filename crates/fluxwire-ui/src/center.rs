@@ -74,7 +74,7 @@ impl Workspace {
                 TabKind::FolderRun => self.render_folder_run(t).into_any_element(),
                 TabKind::Docs => self.render_docs(t).into_any_element(),
                 TabKind::Environment => self.render_environment(t, tab, cx).into_any_element(),
-                TabKind::History => self.render_history_entry(t, tab).into_any_element(),
+                TabKind::History => self.render_history_tab(t, tab, cx),
                 TabKind::Sync => self.render_sync_tab(t).into_any_element(),
             },
             _ => self.render_empty(t, cx).into_any_element(),
@@ -1313,7 +1313,7 @@ impl Workspace {
             .into_any_element()
     }
 
-    fn page(&self, t: &Theme, title: &str, subtitle: &str) -> gpui::Stateful<gpui::Div> {
+    pub(crate) fn page(&self, t: &Theme, title: &str, subtitle: &str) -> gpui::Stateful<gpui::Div> {
         div()
             .id("page")
             .flex_1()
@@ -1414,29 +1414,6 @@ impl Workspace {
                     t,
                 )),
             )
-    }
-
-    fn render_history_entry(&self, t: &Theme, tab: &Tab) -> impl IntoElement {
-        let idx: usize = tab.key.trim_start_matches("history/").parse().unwrap_or(0);
-        let h = &self.mock.history[idx.min(self.mock.history.len() - 1)];
-        self.page(t, h.name, "History entry · read-only")
-            .child(
-                row()
-                    .gap_3()
-                    .child(
-                        div()
-                            .font_family(BUFFER_FONT)
-                            .text_color(t.method_color(h.method))
-                            .child(h.method),
-                    )
-                    .child(
-                        div()
-                            .text_color(t.status_color(h.status))
-                            .child(h.status.to_string()),
-                    )
-                    .child(format!("{} ms · {}", h.ms, h.time)),
-            )
-            .child(code_view(self.mock.response.body, Lang::Json, t))
     }
 
     fn render_sync_tab(&self, t: &Theme) -> impl IntoElement {

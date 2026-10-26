@@ -1,4 +1,4 @@
-//! Mock data for views that later milestones replace: history (M5), sync (M12),
+//! Mock data for views that later milestones replace: sync (M12),
 //! folder runs (M9) and WebSocket logs (M8). The tree, request and workspace mocks were removed in M2.
 
 #[derive(Clone, Debug)]
@@ -32,15 +32,6 @@ pub struct MockResponse {
     pub console: Vec<&'static str>,
 }
 
-pub struct HistoryEntry {
-    pub day: &'static str,
-    pub method: &'static str,
-    pub name: &'static str,
-    pub status: u16,
-    pub time: &'static str,
-    pub ms: u32,
-}
-
 pub struct SyncChange {
     pub arrow: &'static str,
     pub operation: &'static str,
@@ -55,7 +46,6 @@ pub struct RunRow {
 }
 pub struct Mock {
     pub response: MockResponse,
-    pub history: Vec<HistoryEntry>,
     pub sync: Vec<SyncChange>,
     pub run: Vec<RunRow>,
     pub ws_log: Vec<(&'static str, &'static str, &'static str)>,
@@ -120,48 +110,6 @@ fn response(status: u16, text: &'static str, ms: u32, body: &'static str) -> Moc
 pub fn payments_api() -> Mock {
     Mock {
         response: response(201, "Created", 142, PAYMENT_JSON),
-        history: vec![
-            HistoryEntry {
-                day: "Today",
-                method: "POST",
-                name: "Create payment",
-                status: 201,
-                time: "12:04",
-                ms: 142,
-            },
-            HistoryEntry {
-                day: "Today",
-                method: "GET",
-                name: "Get payment",
-                status: 200,
-                time: "12:05",
-                ms: 88,
-            },
-            HistoryEntry {
-                day: "Today",
-                method: "DELETE",
-                name: "Cancel payment",
-                status: 404,
-                time: "11:48",
-                ms: 64,
-            },
-            HistoryEntry {
-                day: "Yesterday",
-                method: "POST",
-                name: "Create refund",
-                status: 500,
-                time: "17:30",
-                ms: 910,
-            },
-            HistoryEntry {
-                day: "Yesterday",
-                method: "GET",
-                name: "List payments",
-                status: 200,
-                time: "16:12",
-                ms: 230,
-            },
-        ],
         sync: vec![
             SyncChange {
                 arrow: "↓",
