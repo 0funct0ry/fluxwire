@@ -1,0 +1,13 @@
+---
+source: crates/fluxwire-format/tests/format.rs
+expression: summary(&d)
+---
+runnable: true  unsupported: []  kind: Request
+front matter:
+  name = Scalar("Windows")
+blocks:
+  Request lang=http role=None label=None closed=true
+    request GET /a version=None
+    header enabled=true X-A: 1
+    body "raw \"body\\r\\n\""
+diagnostics:

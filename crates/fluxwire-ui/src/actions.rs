@@ -13,6 +13,13 @@ actions!(
         CommandPalette,
         NewRequest,
         NewFolder,
+        NewWebSocketRequest,
+        RenameItem,
+        DuplicateItem,
+        DeleteItem,
+        RevealInFileManager,
+        ReloadFromDisk,
+        KeepMine,
         NewCollection,
         OpenFolder,
         Import,
@@ -101,6 +108,23 @@ pub static ACTIONS: &[ActionInfo] = &[
         None
     ),
     a!("workspace: new folder", NewFolder, None, None),
+    a!(
+        "workspace: new WebSocket request",
+        NewWebSocketRequest,
+        None,
+        None
+    ),
+    a!("workspace: rename", RenameItem, None, None),
+    a!("workspace: duplicate", DuplicateItem, None, None),
+    a!("workspace: delete (move to trash)", DeleteItem, None, None),
+    a!(
+        "workspace: reveal in file manager",
+        RevealInFileManager,
+        None,
+        None
+    ),
+    a!("file: reload from disk", ReloadFromDisk, None, None),
+    a!("file: keep my changes", KeepMine, None, None),
     a!("workspace: new collection", NewCollection, None, None),
     a!(
         "workspace: open folder",

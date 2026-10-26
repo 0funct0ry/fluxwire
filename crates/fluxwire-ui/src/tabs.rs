@@ -147,6 +147,42 @@ impl Tabs {
         self.insert_new(key, title, kind, false)
     }
 
+    pub fn id_for_key(&self, key: &str) -> Option<u64> {
+        self.tabs.iter().find(|t| t.key == key).map(|t| t.id)
+    }
+
+    /// Refresh the title and kind of the tab showing `key` (after a rename or external edit).
+    pub fn update(&mut self, key: &str, title: &str, kind: TabKind) {
+        if let Some(t) = self.tabs.iter_mut().find(|t| t.key == key) {
+            t.title = title.into();
+            t.kind = kind;
+        }
+    }
+
+    /// Point the tab for `old` at `new` (rename or move on disk).
+    pub fn rekey(&mut self, old: &str, new: &str) {
+        for t in self.tabs.iter_mut().chain(self.closed.iter_mut()) {
+            if t.key == old {
+                t.key = new.into();
+            } else if let Some(rest) = t.key.strip_prefix(&format!("{old}/")) {
+                t.key = format!("{new}/{rest}");
+            }
+        }
+    }
+
+    /// Close every tab whose key is `key` or lies below the folder `key`.
+    pub fn close_key(&mut self, key: &str) {
+        let ids: Vec<u64> = self
+            .tabs
+            .iter()
+            .filter(|t| t.key == key || t.key.starts_with(&format!("{key}/")))
+            .map(|t| t.id)
+            .collect();
+        for id in ids {
+            self.close(id);
+        }
+    }
+
     pub fn make_permanent(&mut self, id: u64) {
         if let Some(t) = self.get_mut(id) {
             t.preview = false;

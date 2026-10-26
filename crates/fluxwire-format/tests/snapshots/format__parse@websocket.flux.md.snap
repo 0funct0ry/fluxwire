@@ -1,0 +1,15 @@
+---
+source: crates/fluxwire-format/tests/format.rs
+expression: summary(&d)
+---
+runnable: true  unsupported: []  kind: Request
+front matter:
+  name = Scalar("Order stream")
+blocks:
+  Request lang=ws role=None label=None closed=true
+    request GET wss://{{host}}/v1/orders/stream version=None
+    header enabled=true Authorization: Bearer {{accessToken}}
+    body "none"
+  Message lang=json role=Some("message") label=Some("subscribe") closed=true
+  Message lang=text role=Some("message") label=Some("ping") closed=true
+diagnostics:

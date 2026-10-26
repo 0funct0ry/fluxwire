@@ -1,21 +1,32 @@
 //! The root view: window state, action handlers, title bar, status bar and modals.
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    cell::Cell,
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+    rc::Rc,
+};
 
 use gpui::{
-    Context, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent, MouseButton,
-    MouseMoveEvent, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled,
-    Window, WindowAppearance, div, prelude::*, px,
+    Bounds, Context, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent,
+    MouseButton, MouseMoveEvent, ParentElement, Pixels, Point, Render, ScrollHandle, SharedString,
+    StatefulInteractiveElement, Styled, Window, WindowAppearance, div, prelude::*, px,
 };
 
 use crate::{
     actions::*,
     assets::{BUFFER_FONT, UI_FONT},
     mock::{self, Mock},
+    project::{Project, Recent, Target},
     tabs::{TabKind, Tabs},
     theme::{Appearance, Theme, theme},
     ui::{TextEdit, icon, kbd_label, row},
 };
+
+/// Where recent workspaces and sessions are stored. Unset in tests, so nothing touches the disk.
+#[derive(Clone)]
+pub struct StateDir(pub PathBuf);
+impl gpui::Global for StateDir {}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Panel {
@@ -36,6 +47,61 @@ pub enum ModalKind {
     Palette,
     QuickSearch,
     Environment,
+    /// Single-line text prompt (new request, rename, ...).
+    Prompt,
+}
+
+#[derive(Clone, Debug)]
+pub enum PromptPurpose {
+    Rename { key: String },
+}
+
+/// A request or folder being named in place, as a row in the tree.
+#[derive(Clone, Debug)]
+pub struct InlineNew {
+    /// Workspace-relative key of the folder (or collection directory) it is created in.
+    pub parent: String,
+    pub dir: PathBuf,
+    pub websocket: bool,
+    pub folder: bool,
+    pub text: TextEdit,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MenuKind {
+    Request,
+    Folder,
+    Collection,
+    Doc,
+}
+
+#[derive(Clone, Debug)]
+pub struct TreeMenu {
+    pub key: String,
+    pub kind: MenuKind,
+    pub pos: Point<Pixels>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Table {
+    Params,
+    Headers,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Col {
+    Key,
+    Value,
+}
+
+/// The table cell being edited. Every keystroke is applied to the document immediately.
+#[derive(Clone, Debug)]
+pub struct CellEdit {
+    pub key: String,
+    pub table: Table,
+    pub row: usize,
+    pub col: Col,
+    pub text: String,
 }
 
 #[derive(Clone, Debug)]
@@ -67,19 +133,36 @@ pub struct Modal {
 pub struct TabUi {
     pub sub: usize,
     pub resp: usize,
-    pub url: TextEdit,
     pub method: usize,
     pub post_script: bool,
     pub connected: bool,
+}
+
+impl TabUi {
+    pub fn new() -> Self {
+        Self {
+            sub: 0,
+            resp: 0,
+            method: 0,
+            post_script: false,
+            connected: false,
+        }
+    }
+}
+
+impl Default for TabUi {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 pub const METHODS: [&str; 7] = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
 
 pub struct Workspace {
     pub mock: Mock,
+    pub project: Option<Project>,
     pub tabs: Tabs,
     pub tab_ui: HashMap<u64, TabUi>,
-    pub workspace_open: bool,
     pub left_open: bool,
     pub left_width: f32,
     pub panel: Panel,
@@ -87,16 +170,39 @@ pub struct Workspace {
     pub bottom_tab: BottomTab,
     pub split_vertical: bool,
     pub env: usize,
-    pub collapsed: HashSet<&'static str>,
+    pub collapsed: HashSet<String>,
     pub modal: Option<Modal>,
+    pub prompt: Option<PromptPurpose>,
+    pub tree_menu: Option<TreeMenu>,
+    pub inline: Option<InlineNew>,
+    pub inline_focus: FocusHandle,
+    /// Selected tree row (workspace-relative key); target of rename/duplicate/delete/new.
+    pub selected: Option<String>,
+    pub cell: Option<CellEdit>,
+    /// Surface that receives editor key presses.
+    pub target: Target,
+    /// Transient message for the status bar (errors, notices).
+    pub notice: Option<String>,
+    pub open_error: Option<String>,
+    pub recent: Recent,
+    pub state_dir: Option<PathBuf>,
+    pub watch_enabled: bool,
+    pub watcher: Option<fluxwire_format::WatchHandle>,
+    pub session_dirty: bool,
+    pub editor_bounds: Rc<Cell<Bounds<Pixels>>>,
+    pub editor_scroll: ScrollHandle,
     pub resizing: bool,
     pub method_menu: bool,
     pub root_focus: FocusHandle,
     pub modal_focus: FocusHandle,
     pub url_focus: FocusHandle,
+    pub cell_focus: FocusHandle,
+    pub editor_focus: FocusHandle,
 }
 
 impl Workspace {
+    /// A window with no workspace open (the welcome view). Restores the last workspace when a
+    /// state directory is configured.
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let root_focus = cx.focus_handle();
         window.focus(&root_focus);
@@ -108,12 +214,16 @@ impl Workspace {
                 );
             })
             .detach();
-        let mock = mock::payments_api();
+        let state_dir = cx.try_global::<StateDir>().map(|s| s.0.clone());
+        let recent = state_dir
+            .as_deref()
+            .map(crate::project::load_recent)
+            .unwrap_or_default();
         let mut this = Self {
-            mock,
+            mock: mock::payments_api(),
+            project: None,
             tabs: Tabs::new(),
             tab_ui: HashMap::new(),
-            workspace_open: true,
             left_open: true,
             left_width: 260.0,
             panel: Panel::Project,
@@ -123,70 +233,64 @@ impl Workspace {
             env: 1,
             collapsed: HashSet::new(),
             modal: None,
+            prompt: None,
+            tree_menu: None,
+            inline: None,
+            inline_focus: cx.focus_handle(),
+            selected: None,
+            cell: None,
+            target: Target::Body,
+            notice: None,
+            open_error: None,
+            recent,
+            watch_enabled: state_dir.is_some(),
+            state_dir,
+            watcher: None,
+            session_dirty: false,
+            editor_bounds: Rc::new(Cell::new(Bounds::default())),
+            editor_scroll: ScrollHandle::new(),
             resizing: false,
             method_menu: false,
             root_focus,
             modal_focus: cx.focus_handle(),
             url_focus: cx.focus_handle(),
+            cell_focus: cx.focus_handle(),
+            editor_focus: cx.focus_handle(),
         };
-        this.open_request("payments/create", true, window, cx);
+        this.start_session_timer(cx);
+        cx.on_app_quit(|this, _cx| {
+            this.save_session_now();
+            async {}
+        })
+        .detach();
+        if let Some(last) = this.recent.last.clone() {
+            let p = PathBuf::from(last);
+            if p.is_dir() {
+                this.open_project(&p, window, cx);
+            }
+        }
         this
     }
 
-    // ---- opening things -------------------------------------------------------------------
-
-    pub fn open_request(
-        &mut self,
-        id: &str,
-        permanent: bool,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(r) = self.mock.request(id).cloned() else {
-            return;
-        };
-        let kind = if r.method == "WS" {
-            TabKind::WebSocket
-        } else {
-            TabKind::Http {
-                method: r.method.into(),
-            }
-        };
-        let tab = if permanent {
-            self.tabs.open_permanent(id, r.name, kind)
-        } else {
-            self.tabs.open_preview(id, r.name, kind)
-        };
-        self.tab_ui.entry(tab).or_insert_with(|| TabUi {
-            sub: 0,
-            resp: 0,
-            url: TextEdit::new(r.url),
-            method: METHODS.iter().position(|m| *m == r.method).unwrap_or(0),
-            post_script: false,
-            connected: false,
-        });
-        cx.notify();
+    pub fn active_ui(&mut self) -> Option<&mut TabUi> {
+        let id = self.tabs.active_id()?;
+        self.tab_ui.get_mut(&id)
     }
 
+    /// Key of the file shown by the active request tab.
+    pub fn active_key(&self) -> Option<String> {
+        let t = self.tabs.active()?;
+        matches!(t.kind, TabKind::Http { .. } | TabKind::WebSocket).then(|| t.key.clone())
+    }
+
+    /// Open non-request tabs (history, environment, ...), which are still mock-backed.
     pub fn open_tab(&mut self, key: &str, title: &str, kind: TabKind, permanent: bool) {
         let id = if permanent {
             self.tabs.open_permanent(key, title, kind)
         } else {
             self.tabs.open_preview(key, title, kind)
         };
-        self.tab_ui.entry(id).or_insert_with(|| TabUi {
-            sub: 0,
-            resp: 0,
-            url: TextEdit::default(),
-            method: 0,
-            post_script: false,
-            connected: false,
-        });
-    }
-
-    pub fn active_ui(&mut self) -> Option<&mut TabUi> {
-        let id = self.tabs.active_id()?;
-        self.tab_ui.get_mut(&id)
+        self.tab_ui.entry(id).or_default();
     }
 
     // ---- modals ---------------------------------------------------------------------------
@@ -202,6 +306,7 @@ impl Workspace {
     }
 
     pub fn close_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.prompt = None;
         if self.modal.take().is_some() {
             window.focus(&self.root_focus);
             cx.notify();
@@ -225,21 +330,21 @@ impl Workspace {
                 .collect(),
             ModalKind::QuickSearch => {
                 let mut items: Vec<ModalItem> = self
-                    .mock
-                    .requests
-                    .iter()
-                    .map(|r| ModalItem {
-                        label: r.name.to_string(),
-                        detail: format!("{} {}", r.method, r.id),
+                    .project
+                    .as_ref()
+                    .map(|p| p.all_requests())
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(key, name, method, kind)| ModalItem {
+                        label: name.clone(),
+                        detail: format!("{method} {key}"),
                         run: ItemRun::Open {
-                            key: r.id.into(),
-                            title: r.name.into(),
-                            kind: if r.method == "WS" {
+                            key,
+                            title: name,
+                            kind: if kind == fluxwire_model::RequestKind::WebSocket {
                                 TabKind::WebSocket
                             } else {
-                                TabKind::Http {
-                                    method: r.method.into(),
-                                }
+                                TabKind::Http { method }
                             },
                         },
                     })
@@ -255,6 +360,7 @@ impl Workspace {
                 }));
                 items
             }
+            ModalKind::Prompt => vec![],
             ModalKind::Environment => self
                 .mock
                 .environments
@@ -304,6 +410,7 @@ impl Workspace {
                     };
                 }
             }
+            "enter" if self.prompt.is_some() => self.confirm_prompt(window, cx),
             "enter" => {
                 let items = self.modal_items();
                 let sel = self.modal.as_ref().map_or(0, |m| m.selected);
@@ -318,17 +425,6 @@ impl Workspace {
                     m.selected = 0;
                 }
             }
-        }
-        cx.notify();
-    }
-
-    pub(crate) fn on_url_key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) {
-        let mut edited = false;
-        if let Some(ui) = self.active_ui() {
-            edited = ui.url.handle_key(ev);
-        }
-        if edited && let Some(id) = self.tabs.active_id() {
-            self.tabs.set_dirty(id, true);
         }
         cx.notify();
     }
@@ -363,16 +459,16 @@ impl Workspace {
                     .rounded(px(4.))
                     .text_color(t.text)
                     .font_weight(gpui::FontWeight::MEDIUM)
-                    .child(self.mock.workspace)
+                    .child(self.workspace_label())
                     .child(icon("chevron-down", 12., t.text_muted)),
             )
-            .child(
+            .children(self.branch_label().map(|b| {
                 row()
                     .gap_1()
                     .text_color(t.text_muted)
                     .child(icon("git-branch", 12., t.text_muted))
-                    .child(self.mock.branch),
-            )
+                    .child(b)
+            }))
             .child(
                 row()
                     .id("env-pill")
@@ -458,7 +554,8 @@ impl Workspace {
                 }))
                 .child(icon(glyph, 14., if active { t.text } else { t.text_muted }))
         };
-        let problems = self.mock.problems.len();
+        let problems = self.project.as_ref().map_or(0, |p| p.problem_count());
+        let notice = self.notice.clone();
         let sync_down = self.mock.sync.iter().filter(|c| c.arrow == "↓").count();
         let sync_up = self.mock.sync.len() - sync_down;
         row()
@@ -524,12 +621,12 @@ impl Workspace {
                             )),
                     ),
             )
-            .child(
+            .children(self.branch_label().map(|b| {
                 row()
                     .gap_1()
                     .child(icon("git-branch", 12., t.text_muted))
-                    .child(self.mock.branch),
-            )
+                    .child(b)
+            }))
             .child(
                 row()
                     .id("problems-count")
@@ -554,6 +651,19 @@ impl Workspace {
                     .child(format!("OpenAPI ↓{sync_down} ↑{sync_up}")),
             )
             .child(div().flex_1())
+            .children(notice.map(|n| {
+                div()
+                    .id("notice")
+                    .cursor_pointer()
+                    .text_color(t.modified)
+                    .max_w(px(520.))
+                    .truncate()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.notice = None;
+                        cx.notify();
+                    }))
+                    .child(n)
+            }))
             .child(div().font_family(BUFFER_FONT).child("QuickJS"))
             .child(div().child("UTF-8"))
     }
@@ -566,7 +676,9 @@ impl Workspace {
             ModalKind::Palette => "Type a command…",
             ModalKind::QuickSearch => "Search requests, folders, environments…",
             ModalKind::Environment => "Switch environment…",
+            ModalKind::Prompt => "Name",
         };
+        let title = self.prompt_title();
         let selected = m.selected;
         let query = m.query.text().to_string();
         Some(
@@ -598,6 +710,14 @@ impl Workspace {
                         .rounded(px(6.))
                         .shadow_lg()
                         .overflow_hidden()
+                        .children(title.map(|title| {
+                            div()
+                                .px_3()
+                                .pt_2()
+                                .text_size(px(12.))
+                                .text_color(t.text_muted)
+                                .child(title)
+                        }))
                         .child(
                             row()
                                 .h(px(36.))
@@ -691,7 +811,7 @@ macro_rules! handlers {
 impl Render for Workspace {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme(cx).clone();
-        let body = if self.workspace_open {
+        let body = if self.project.is_some() {
             self.render_body(&t, cx).into_any_element()
         } else {
             self.render_welcome(&t, cx).into_any_element()
@@ -727,7 +847,7 @@ impl Render for Workspace {
             QuickSearch => |this, w, c| this.open_modal(ModalKind::QuickSearch, w, c),
             CommandPalette => |this, w, c| this.open_modal(ModalKind::Palette, w, c),
             SwitchEnvironment => |this, w, c| this.open_modal(ModalKind::Environment, w, c),
-            Dismiss => |this, w, c| { this.method_menu = false; this.close_modal(w, c) },
+            Dismiss => |this, w, c| { this.method_menu = false; this.tree_menu = None; this.cell = None; this.inline = None; this.close_modal(w, c) },
             ToggleLeftDock => |this, _w, _c| this.left_open = !this.left_open,
             ToggleBottomDock => |this, _w, _c| this.bottom_open = !this.bottom_open,
             ShowProjectPanel => |this, _w, _c| { this.panel = Panel::Project; this.left_open = true },
@@ -744,38 +864,52 @@ impl Render for Workspace {
                 set_theme(Theme::for_appearance(next), c);
             },
             ToggleSplitOrientation => |this, _w, _c| this.split_vertical = !this.split_vertical,
-            CloseTab => |this, _w, _c| if let Some(id) = this.tabs.active_id() { this.tabs.close(id) },
+            CloseTab => |this, _w, _c| if let Some(id) = this.tabs.active_id() { this.tabs.close(id); this.session_dirty = true },
             PinTab => |this, _w, _c| if let Some(id) = this.tabs.active_id() { this.tabs.toggle_pin(id) },
             NextTab => |this, _w, _c| this.tabs.cycle(1),
             PrevTab => |this, _w, _c| this.tabs.cycle(-1),
             ReopenClosedTab => |this, _w, _c| { this.tabs.reopen_closed(); },
             GroupTabsByKind => |this, _w, _c| this.tabs.group_by_kind = !this.tabs.group_by_kind,
-            RunFolder => |this, _w, _c| this.open_tab("run/payments", "Run: payments", TabKind::FolderRun, true),
-            OpenDocs => |this, _w, _c| this.open_tab("docs/payments", "Docs: payments", TabKind::Docs, true),
+            RunFolder => |this, _w, _c| {
+                let folder = this.selected_folder_name();
+                this.open_tab(&format!("run/{folder}"), &format!("Run: {folder}"), TabKind::FolderRun, true)
+            },
+            OpenDocs => |this, _w, _c| {
+                let folder = this.selected_folder_name();
+                this.open_tab(&format!("docs/{folder}"), &format!("Docs: {folder}"), TabKind::Docs, true)
+            },
             OpenEnvironment => |this, _w, _c| {
                 let name = this.mock.environments[this.env].name;
                 this.open_tab(&format!("env/{name}"), name, TabKind::Environment, true)
             },
             OpenSync => |this, _w, _c| this.open_tab("sync", "Sync", TabKind::Sync, true),
-            CloseWorkspace => |this, _w, _c| this.workspace_open = false,
-            OpenFolder => |this, _w, _c| this.workspace_open = true,
-            NewRequest => |this, w, c| this.open_request("payments/create", true, w, c),
+            CloseWorkspace => |this, _w, _c| this.close_project(),
+            OpenFolder => |this, w, c| this.open_folder_dialog(false, w, c),
+            NewCollection => |this, w, c| this.open_folder_dialog(true, w, c),
+            NewRequest => |this, w, c| this.start_new(false, false, w, c),
+            NewWebSocketRequest => |this, w, c| this.start_new(true, false, w, c),
+            NewFolder => |this, w, c| this.start_new(false, true, w, c),
+            RenameItem => |this, w, c| this.start_rename(w, c),
+            DuplicateItem => |this, w, c| this.duplicate_selected(w, c),
+            DeleteItem => |this, w, c| this.delete_selected(w, c),
+            RevealInFileManager => |this, _w, c| this.reveal_selected(c),
+            ReloadFromDisk => |this, _w, c| this.resolve_conflict(true, c),
+            KeepMine => |this, _w, c| this.resolve_conflict(false, c),
             FocusUrlBar => |this, w, _c| w.focus(&this.url_focus),
-            Save => |this, _w, _c| if let Some(id) = this.tabs.active_id() { this.tabs.set_dirty(id, false) },
-            Quit => |_this, _w, c| c.quit(),
+            Save => |this, _w, c| this.save_active(c),
+            Import => |this, _w, _c| this.notice = Some("Import arrives in a later milestone (M11).".into()),
+            OpenAsText => |this, _w, c| this.toggle_text_mode(c),
+            Quit => |this, _w, c| { this.save_session_now(); c.quit() },
             Send => |_this, _w, _c| (),
             CancelRequest => |this, _w, _c| this.method_menu = false,
             CopyAsCurl => |_this, _w, _c| (),
-            NewFolder => |_this, _w, _c| (),
-            NewCollection => |_this, _w, _c| (),
-            Import => |_this, _w, _c| (),
-            OpenAsText => |_this, _w, _c| (),
             Connect => |this, _w, _c| if let Some(ui) = this.active_ui() { ui.connected = !ui.connected },
         });
         root.child(self.render_title_bar(&t, cx))
             .child(body)
             .child(self.render_status_bar(&t, cx))
             .children(self.render_modal(&t, cx))
+            .children(self.render_tree_menu(&t, cx))
     }
 }
 
@@ -806,13 +940,26 @@ pub fn run() {
             let initial = Theme::for_appearance(appearance_of(cx.window_appearance()));
             cx.set_global(initial);
             crate::actions::install(cx);
+            if let Some(dirs) = directories::ProjectDirs::from("dev", "fluxwire", "fluxwire") {
+                cx.set_global(StateDir(dirs.data_dir().to_path_buf()));
+            }
             cx.on_window_closed(|cx| {
                 if cx.windows().is_empty() {
                     cx.quit();
                 }
             })
             .detach();
-            open_window(cx).expect("open main window");
+            let handle = open_window(cx).expect("open main window");
+            // `fluxwire [PATH]` opens PATH; the full CLI arrives in M10.
+            if let Some(path) = std::env::args()
+                .nth(1)
+                .map(PathBuf::from)
+                .filter(|p| p.is_dir())
+            {
+                handle
+                    .update(cx, |ws, window, cx| ws.open_project(&path, window, cx))
+                    .ok();
+            }
             cx.activate(true);
         });
 }

@@ -16,12 +16,21 @@ runtime-shaders = ["gpui/runtime_shaders"]
 
 [dependencies]
 fluxwire-model.workspace = true
+fluxwire-format.workspace = true
 gpui.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tree-sitter = "0.26.13"
 tree-sitter-json = "0.24.8"
+tree-sitter-md = "0.5"
+tree-sitter-yaml = "0.7"
+tree-sitter-javascript = "0.25"
+tree-sitter-typescript = "0.23"
+tree-sitter-xml = "0.7"
+directories = "6"
+smol = "2"
+fluxwire-protocol.workspace = true
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }

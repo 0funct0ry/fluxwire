@@ -1,0 +1,16 @@
+[collection]
+name = "Payments API"
+format = 1
+
+[defaults]
+script_language = "ts"
+timeout_ms = 30000
+follow_redirects = true
+max_redirects = 10
+concurrency = 8
+
+[order]
+folders = ["auth", "payments", "refunds", "events"]
+
+[secrets]
+names = ["clientSecret", "apiKey"]

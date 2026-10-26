@@ -1,18 +1,22 @@
 //! Tab bar, request editor, response pane, placeholder pages and the bottom dock.
 
+use fluxwire_model::BlockKind;
 use gpui::{
-    AnyElement, Context, InteractiveElement, IntoElement, MouseButton, ParentElement,
-    StatefulInteractiveElement, Styled, deferred, div, prelude::*, px, relative,
+    AnyElement, Context, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
+    ParentElement, StatefulInteractiveElement, Styled, deferred, div, prelude::*, px, relative,
 };
 
 use crate::{
+    actions::ACTIONS,
     assets::BUFFER_FONT,
-    editor::{Lang, code_view},
-    mock::{Kv, MockRequest},
+    editor::{Lang, code_view, editor_content},
+    highlight::{Spans, highlight},
+    mock::Kv,
+    project::{OpenDoc, Target},
     tabs::{Tab, TabKind},
     theme::Theme,
-    ui::{icon, row, with_variables},
-    workspace::{BottomTab, METHODS, TabUi, Workspace},
+    ui::{icon, kbd_label, row, with_variables},
+    workspace::{BottomTab, Col, METHODS, TabUi, Table, Workspace},
 };
 
 const SUBTABS: [&str; 8] = [
@@ -20,11 +24,6 @@ const SUBTABS: [&str; 8] = [
 ];
 const WS_SUBTABS: [&str; 5] = ["Messages", "Headers", "Auth", "Scripts", "Settings"];
 const RESP_TABS: [&str; 6] = ["Body", "Headers", "Cookies", "Timeline", "Tests", "Console"];
-
-const PRE_SCRIPT: &str = "const body = fw.request.body;\nfw.request.headers.set(\"X-Signature\", sign(body));\nfw.vars.set(\"requestedAt\", Date.now());";
-const POST_SCRIPT: &str =
-    "fw.vars.set(\"paymentId\", fw.response.json().id);\nconsole.log(\"captured paymentId\");";
-const TEST_SCRIPT: &str = "fw.test(\"creates a payment\", () => {\n  fw.expect(fw.response.status).toBe(201);\n  fw.expect(fw.response.json().currency).toBe(\"usd\");\n});";
 
 pub fn kv_table(t: &Theme, rows: &[Kv], secret_col: bool) -> AnyElement {
     let t = t.clone();
@@ -146,7 +145,7 @@ impl Workspace {
                 TabKind::History => self.render_history_entry(t, tab).into_any_element(),
                 TabKind::Sync => self.render_sync_tab(t).into_any_element(),
             },
-            _ => self.render_empty(t).into_any_element(),
+            _ => self.render_empty(t, cx).into_any_element(),
         };
         div()
             .flex_1()
@@ -158,22 +157,114 @@ impl Workspace {
             .when(self.bottom_open, |d| d.child(self.render_bottom(t, cx)))
     }
 
-    fn render_empty(&self, t: &Theme) -> impl IntoElement {
+    fn render_empty(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let has_project = self.project.is_some();
+        // (icon, label, palette action label, shown only with a workspace)
+        let rows: [(&str, &str, &str, bool); 5] = [
+            ("plus", "New request", "workspace: new request", true),
+            (
+                "search",
+                "Search requests and files",
+                "quick search: open",
+                false,
+            ),
+            (
+                "terminal",
+                "Command palette",
+                "command palette: open",
+                false,
+            ),
+            (
+                "folder-open",
+                "Open folder",
+                "workspace: open folder",
+                false,
+            ),
+            (
+                "columns-2",
+                "Toggle sidebar",
+                "view: toggle left dock",
+                false,
+            ),
+        ];
         div()
             .flex_1()
             .flex()
             .flex_col()
             .items_center()
             .justify_center()
-            .gap_2()
-            .text_color(t.text_muted)
-            .child("No tab open")
+            .gap_5()
             .child(
                 div()
-                    .text_size(px(12.))
-                    .text_color(t.text_placeholder)
-                    .child("Open a request from the Project panel, or press Cmd/Ctrl+K to search."),
+                    .size(px(48.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(10.))
+                    .bg(t.element_hover)
+                    .child(icon("layers", 24., t.text_muted)),
             )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_size(px(16.))
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(t.text)
+                            .child("No tab open"),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(13.))
+                            .text_color(t.text_muted)
+                            .child("Open a request from the sidebar, or start with one of these."),
+                    ),
+            )
+            .child(div().w(px(340.)).flex().flex_col().gap(px(2.)).children(
+                rows.into_iter().enumerate().filter_map(
+                    |(i, (glyph, label, action, needs_project))| {
+                        if needs_project && !has_project {
+                            return None;
+                        }
+                        let ix = ACTIONS.iter().position(|a| a.label == action)?;
+                        let binding = ACTIONS[ix].binding.map(kbd_label).unwrap_or_default();
+                        let hover = t.element_hover;
+                        Some(
+                            row()
+                                .id(("empty-action", i))
+                                .h(px(34.))
+                                .px_3()
+                                .gap_3()
+                                .rounded(px(6.))
+                                .cursor_pointer()
+                                .text_size(px(14.))
+                                .text_color(t.text)
+                                .hover(move |s| s.bg(hover))
+                                .on_click(cx.listener(move |_, _, w, cx| {
+                                    w.dispatch_action((ACTIONS[ix].build)(), cx)
+                                }))
+                                .child(icon(glyph, 16., t.text_muted))
+                                .child(div().flex_1().child(label))
+                                .child(
+                                    div()
+                                        .px(px(6.))
+                                        .py(px(2.))
+                                        .rounded(px(4.))
+                                        .border_1()
+                                        .border_color(t.border)
+                                        .font_family(BUFFER_FONT)
+                                        .text_size(px(11.))
+                                        .text_color(t.text_muted)
+                                        .child(binding),
+                                ),
+                        )
+                    },
+                ),
+            ))
     }
 
     fn render_tab_bar(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
@@ -402,6 +493,8 @@ impl Workspace {
         t: &Theme,
         ui: &TabUi,
         method: &str,
+        url: &str,
+        sendable: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let method_label = method.to_string();
@@ -459,10 +552,142 @@ impl Workspace {
                     .bg(t.editor)
                     .font_family(BUFFER_FONT)
                     .text_size(px(14.))
-                    .children(with_variables(ui.url.text(), t))
+                    .children(with_variables(url, t))
                     .child(div().w(px(1.)).h(px(15.)).bg(t.accent)),
             )
-            .child(button(t, "send", "Send", true).h(px(30.)).px_4())
+            .child(
+                button(t, "send", "Send", sendable)
+                    .h(px(30.))
+                    .px_4()
+                    .when(!sendable, |d| d.opacity(0.5).cursor_default()),
+            )
+            .child(
+                button(t, "text-mode", "Open as text", false)
+                    .h(px(30.))
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_text_mode(cx))),
+            )
+    }
+
+    fn banner(&self, t: &Theme, text: String, color: gpui::Hsla) -> gpui::Div {
+        row()
+            .flex_none()
+            .px_3()
+            .py_1()
+            .gap_2()
+            .border_b_1()
+            .border_color(t.border_variant)
+            .bg(gpui::Hsla { a: 0.12, ..color })
+            .text_size(px(12.))
+            .text_color(t.text)
+            .child(div().size(px(7.)).rounded_full().bg(color))
+            .child(text)
+    }
+
+    /// Banners above the editor: unsupported features, disk conflicts, missing file, other content.
+    fn doc_banners(&self, t: &Theme, doc: &OpenDoc, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let mut out: Vec<AnyElement> = vec![];
+        if !doc.parsed.unsupported.is_empty() {
+            let names = doc.parsed.unsupported.join(", ");
+            out.push(
+                self.banner(
+                    t,
+                    format!(
+                        "This request needs support for {names}, which this version does not have. You can edit and save it, but not send it."
+                    ),
+                    t.modified,
+                )
+                .into_any_element(),
+            );
+        }
+        if doc.conflict.is_some() {
+            out.push(
+                self.banner(t, "File changed on disk.".into(), t.deleted)
+                    .child(div().flex_1())
+                    .child(
+                        button(t, "conflict-reload", "Reload", false).on_click(
+                            cx.listener(|this, _, _, cx| this.resolve_conflict(true, cx)),
+                        ),
+                    )
+                    .child(
+                        button(t, "conflict-keep", "Keep mine", false).on_click(
+                            cx.listener(|this, _, _, cx| this.resolve_conflict(false, cx)),
+                        ),
+                    )
+                    .into_any_element(),
+            );
+        }
+        if doc.missing {
+            out.push(
+                self.banner(
+                    t,
+                    "This file was deleted or moved on disk. Save to recreate it.".into(),
+                    t.deleted,
+                )
+                .into_any_element(),
+            );
+        }
+        let other = doc.parsed.other_content();
+        if !other.is_empty() {
+            out.push(
+                row()
+                    .flex_none()
+                    .px_3()
+                    .py_1()
+                    .gap_2()
+                    .border_b_1()
+                    .border_color(t.border_variant)
+                    .text_size(px(11.))
+                    .text_color(t.text_placeholder)
+                    .child("Other content")
+                    .children(other.into_iter().map(|o| pill(t, o)))
+                    .into_any_element(),
+            );
+        }
+        out
+    }
+
+    /// An editable, highlighted code surface bound to `target` of the active document.
+    #[allow(clippy::too_many_arguments)]
+    fn editor_surface(
+        &self,
+        t: &Theme,
+        id: &'static str,
+        text: String,
+        spans: Spans,
+        target: Target,
+        cursor: usize,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let content = editor_content(
+            &text,
+            &spans,
+            (self.target == target).then_some(cursor),
+            Some(self.editor_bounds.clone()),
+            t,
+        );
+        div()
+            .id(id)
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .track_scroll(&self.editor_scroll)
+            .track_focus(&self.editor_focus)
+            .key_context("Editor")
+            .on_key_down(cx.listener(|this, ev, _, cx| this.on_editor_key(ev, cx)))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, ev: &MouseDownEvent, w, cx| {
+                    this.target = target;
+                    w.focus(&this.editor_focus);
+                    this.click_editor(ev.position, cx);
+                }),
+            )
+            .child(content)
+            .into_any_element()
+    }
+
+    fn cursor_of(doc: &OpenDoc, target: Target) -> usize {
+        doc.editors.get(&target).map_or(0, |e| e.cursor)
     }
 
     fn render_request(
@@ -472,45 +697,90 @@ impl Workspace {
         ui: &TabUi,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let r = self.mock.request(&tab.key).cloned();
-        let Some(r) = r else {
-            return self.render_empty(t).into_any_element();
+        let Some(doc) = self.project.as_ref().and_then(|p| p.doc(&tab.key)) else {
+            return self.render_empty(t, cx).into_any_element();
         };
-        let method = METHODS[ui.method];
-        let params_on = r.params.iter().filter(|p| p.enabled).count();
+        let key = tab.key.clone();
+        let req = doc.parsed.request();
+        let method = req.map_or("GET".to_string(), |r| r.method.clone());
+        let url = req.map_or(String::new(), |r| r.target.clone());
+        let params_on = req.map_or(0, |r| r.query.iter().filter(|q| q.enabled).count());
+        let headers = req.map_or(0, |r| r.headers.len());
+        let has_body = !doc.target_text(Target::Body).is_empty();
+        let count_of = |k: BlockKind| doc.parsed.blocks_of(k).count();
+        let scripts = count_of(BlockKind::Pre) + count_of(BlockKind::Post);
+        let tests = count_of(BlockKind::Test) + usize::from(count_of(BlockKind::Expect) > 0);
         let labels: Vec<(String, usize)> = SUBTABS
             .iter()
             .enumerate()
             .map(|(i, l)| {
                 let n = match i {
                     0 => params_on,
-                    1 => r.headers.len(),
-                    2 => usize::from(!r.body.is_empty()),
-                    4 => r.scripts,
-                    5 => r.tests,
+                    1 => headers,
+                    2 => usize::from(has_body),
+                    4 => scripts,
+                    5 => tests,
                     _ => 0,
                 };
-                // The Body tab has no count; the others badge a non-zero count.
                 ((*l).to_string(), if i == 2 { 0 } else { n })
             })
             .collect();
-        let editor = div()
+        let mut editor = div()
             .key_context("RequestEditor")
             .flex()
             .flex_col()
             .flex_1()
             .min_h_0()
-            .min_w_0()
-            .child(self.url_bar(t, ui, method, cx))
-            .child(self.tab_strip(t, "sub", labels, ui.sub, |u, i| u.sub = i, cx))
-            .child(
-                div()
-                    .id("editor-scroll")
-                    .flex_1()
-                    .overflow_y_scroll()
-                    .child(self.request_sub_content(t, &r, ui, cx)),
-            );
-        let response = self.render_response(t, &r, ui, cx);
+            .min_w_0();
+        if doc.text_mode {
+            editor = editor
+                .child(
+                    row()
+                        .flex_none()
+                        .gap_2()
+                        .px_2()
+                        .py_2()
+                        .border_b_1()
+                        .border_color(t.border_variant)
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_color(t.text_muted)
+                                .child(format!("{} (raw .flux.md)", key)),
+                        )
+                        .child(
+                            button(t, "form-mode", "Form view", false)
+                                .h(px(30.))
+                                .on_click(cx.listener(|this, _, _, cx| this.toggle_text_mode(cx))),
+                        ),
+                )
+                .children(self.doc_banners(t, doc, cx))
+                .child(self.editor_surface(
+                    t,
+                    "text-editor",
+                    doc.text.clone(),
+                    doc.highlight.clone(),
+                    Target::Text,
+                    Self::cursor_of(doc, Target::Text),
+                    cx,
+                ));
+        } else {
+            editor = editor
+                .child(self.url_bar(t, ui, &method, &url, doc.parsed.runnable(), cx))
+                .children(self.doc_banners(t, doc, cx))
+                .child(self.tab_strip(t, "sub", labels, ui.sub, |u, i| u.sub = i, cx))
+                .child(
+                    div()
+                        .id("editor-scroll")
+                        .flex_1()
+                        .min_h_0()
+                        .flex()
+                        .flex_col()
+                        .overflow_y_scroll()
+                        .child(self.request_sub_content(t, doc, &key, ui, cx)),
+                );
+        }
+        let response = self.render_response(t, ui, cx);
         let vertical = self.split_vertical;
         div()
             .flex_1()
@@ -534,86 +804,365 @@ impl Workspace {
             .into_any_element()
     }
 
-    fn request_sub_content(
+    /// Key/value table whose cells edit the document in place.
+    fn editable_table(
         &self,
         t: &Theme,
-        r: &MockRequest,
-        ui: &TabUi,
+        table: Table,
+        key: &str,
+        id: &'static str,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        match ui.sub {
-            0 => kv_table(t, &r.params, false),
-            1 => kv_table(t, &r.headers, false),
-            2 => code_view(r.body, Lang::Json, t),
-            3 => div()
-                .p_3()
-                .text_color(t.text_muted)
-                .child(format!("Auth: {}", r.auth))
-                .into_any_element(),
-            4 => div()
-                .flex()
-                .flex_col()
-                .child(
-                    row()
-                        .gap_2()
-                        .p_2()
-                        .children([("Pre", false), ("Post", true)].map(|(l, post)| {
-                            let on = ui.post_script == post;
-                            button(t, if post { "post" } else { "pre" }, l, on).on_click(
-                                cx.listener(move |this, _, _, cx| {
-                                    if let Some(ui) = this.active_ui() {
-                                        ui.post_script = post;
-                                    }
-                                    cx.notify();
-                                }),
-                            )
-                        }))
-                        .child(pill(t, "ts")),
-                )
-                .child(code_view(
-                    if ui.post_script {
-                        POST_SCRIPT
-                    } else {
-                        PRE_SCRIPT
-                    },
-                    Lang::Plain,
-                    t,
+        let rows = self.table_rows(key, table);
+        let editing = self
+            .cell
+            .as_ref()
+            .filter(|c| c.table == table && c.key == key)
+            .cloned();
+        let n = rows.len();
+        let cell_el = |idx: usize, col: Col, text: &str, enabled: bool, cx: &mut Context<Self>| {
+            let active = editing
+                .as_ref()
+                .is_some_and(|c| c.row == idx && c.col == col);
+            let shown = if active {
+                editing
+                    .as_ref()
+                    .map_or(text.to_string(), |c| c.text.clone())
+            } else {
+                text.to_string()
+            };
+            let base = row()
+                .id((
+                    if col == Col::Key { "cell-k" } else { "cell-v" },
+                    idx + usize::from(table == Table::Headers) * 1000,
                 ))
-                .into_any_element(),
-            5 => code_view(TEST_SCRIPT, Lang::Plain, t),
-            6 => div()
+                .h(px(24.))
+                .px_1()
+                .rounded(px(3.))
+                .overflow_hidden()
+                .cursor_text()
+                .border_1()
+                .border_color(if active {
+                    t.accent
+                } else {
+                    gpui::transparent_black()
+                })
+                .when(!enabled, |d| d.text_color(t.text_placeholder))
+                .when(col == Col::Key, |d| d.w(px(200.)).flex_none())
+                .when(col == Col::Value, |d| d.flex_1().min_w_0());
+            if active {
+                base.track_focus(&self.cell_focus)
+                    .on_key_down(cx.listener(|this, ev, w, cx| this.on_cell_key(ev, w, cx)))
+                    .children(with_variables(&shown, t))
+                    .child(div().w(px(1.)).h(px(14.)).bg(t.accent))
+            } else {
+                base.on_click(
+                    cx.listener(move |this, _, w, cx| this.start_cell(table, idx, col, w, cx)),
+                )
+                .children(with_variables(&shown, t))
+            }
+        };
+        let mut all: Vec<(bool, String, String)> = rows;
+        if let Some(c) = &editing
+            && c.row >= n
+        {
+            all.push((
+                true,
+                if c.col == Col::Key {
+                    c.text.clone()
+                } else {
+                    String::new()
+                },
+                if c.col == Col::Value {
+                    c.text.clone()
+                } else {
+                    String::new()
+                },
+            ));
+        }
+        let new_row_idx = n;
+        div()
+            .id(id)
+            .flex()
+            .flex_col()
+            .child(
+                row()
+                    .h(px(24.))
+                    .px_3()
+                    .gap_3()
+                    .border_b_1()
+                    .border_color(t.border_variant)
+                    .text_size(px(11.))
+                    .text_color(t.text_placeholder)
+                    .child(div().w(px(16.)).flex_none())
+                    .child(div().w(px(200.)).flex_none().child("Key"))
+                    .child(div().flex_1().child("Value"))
+                    .child(div().w(px(16.)).flex_none()),
+            )
+            .children(all.into_iter().enumerate().map(|(i, (enabled, k, v))| {
+                let id_off = i + usize::from(table == Table::Headers) * 1000;
+                row()
+                    .h(px(28.))
+                    .px_3()
+                    .gap_3()
+                    .border_b_1()
+                    .border_color(t.border_variant)
+                    .font_family(BUFFER_FONT)
+                    .text_size(px(12.))
+                    .child(
+                        div()
+                            .id(("row-check", id_off))
+                            .size(px(14.))
+                            .flex_none()
+                            .rounded(px(3.))
+                            .border_1()
+                            .border_color(t.border)
+                            .cursor_pointer()
+                            .when(enabled, |d| d.bg(t.accent).border_color(t.accent))
+                            .on_click(
+                                cx.listener(move |this, _, _, cx| this.toggle_row(table, i, cx)),
+                            ),
+                    )
+                    .child(cell_el(i, Col::Key, &k, enabled, cx))
+                    .child(cell_el(i, Col::Value, &v, enabled, cx))
+                    .child(
+                        div()
+                            .id(("row-del", id_off))
+                            .w(px(16.))
+                            .flex_none()
+                            .cursor_pointer()
+                            .on_click(
+                                cx.listener(move |this, _, _, cx| this.delete_row(table, i, cx)),
+                            )
+                            .child(icon("x", 12., t.text_placeholder)),
+                    )
+            }))
+            .child(
+                row()
+                    .id(("add-row", usize::from(table == Table::Headers)))
+                    .h(px(28.))
+                    .px_3()
+                    .gap_1()
+                    .cursor_pointer()
+                    .text_size(px(12.))
+                    .text_color(t.text_muted)
+                    .hover({
+                        let h = t.element_hover;
+                        move |s| s.bg(h)
+                    })
+                    .on_click(cx.listener(move |this, _, w, cx| {
+                        this.start_cell(table, new_row_idx, Col::Key, w, cx)
+                    }))
+                    .child(icon("plus", 12., t.text_muted))
+                    .child(if table == Table::Headers {
+                        "Add header"
+                    } else {
+                        "Add parameter"
+                    }),
+            )
+            .into_any_element()
+    }
+
+    /// Script/test editor for the first block of `kind`, or an "add" button.
+    fn block_editor(
+        &self,
+        t: &Theme,
+        doc: &OpenDoc,
+        kind: BlockKind,
+        info: &'static str,
+        id: &'static str,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        match doc.find_block(kind.clone(), None) {
+            Some(i) => {
+                let b = &doc.parsed.blocks[i];
+                let lang = if b.info.language == "js" {
+                    Lang::Js
+                } else {
+                    Lang::Ts
+                };
+                let text = doc.target_text(Target::Block(i));
+                let spans = highlight(&text, lang);
+                self.editor_surface(
+                    t,
+                    id,
+                    text,
+                    spans,
+                    Target::Block(i),
+                    Self::cursor_of(doc, Target::Block(i)),
+                    cx,
+                )
+            }
+            None => div()
                 .p_3()
-                .text_color(t.text_muted)
-                .child(r.docs)
-                .into_any_element(),
-            _ => div()
                 .flex()
                 .flex_col()
-                .p_3()
                 .gap_2()
+                .items_start()
                 .text_color(t.text_muted)
-                .child("Timeout: 30000 ms")
-                .child("Follow redirects: yes")
-                .child("Verify TLS: yes")
+                .child(format!("No `{info}` block in this file."))
+                .child(button(t, id, "Add block", true).on_click(
+                    cx.listener(move |this, _, _, cx| this.add_block(kind.clone(), info, cx)),
+                ))
                 .into_any_element(),
         }
     }
 
-    fn render_response(
+    fn request_sub_content(
         &self,
         t: &Theme,
-        r: &MockRequest,
+        doc: &OpenDoc,
+        key: &str,
         ui: &TabUi,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let resp = &r.response;
+    ) -> AnyElement {
+        match ui.sub {
+            0 => self.editable_table(t, Table::Params, key, "params", cx),
+            1 => self.editable_table(t, Table::Headers, key, "headers", cx),
+            2 => {
+                let text = doc.target_text(Target::Body);
+                let lang = if text.trim_start().starts_with(['{', '[']) {
+                    Lang::Json
+                } else {
+                    Lang::Plain
+                };
+                let spans = highlight(&text, lang);
+                self.editor_surface(
+                    t,
+                    "body-editor",
+                    text,
+                    spans,
+                    Target::Body,
+                    Self::cursor_of(doc, Target::Body),
+                    cx,
+                )
+            }
+            3 => div()
+                .p_3()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .text_color(t.text_muted)
+                .child(match doc.parsed.front.get("auth") {
+                    None => "Auth: inherit (default)".to_string(),
+                    Some(e) => format!(
+                        "Auth: {}",
+                        match &e.value {
+                            fluxwire_model::FmValue::Scalar(s) => s.clone(),
+                            fluxwire_model::FmValue::Map(m) => m
+                                .iter()
+                                .map(|(k, v)| format!("{k}={v}"))
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                            other => format!("{other:?}"),
+                        }
+                    ),
+                })
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(t.text_placeholder)
+                        .child("Auth editing arrives with environments in M4."),
+                )
+                .into_any_element(),
+            4 => {
+                let (kind, info) = if ui.post_script {
+                    (BlockKind::Post, "ts post")
+                } else {
+                    (BlockKind::Pre, "ts pre")
+                };
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .child(
+                        row()
+                            .gap_2()
+                            .p_2()
+                            .flex_none()
+                            .children([("Pre", false), ("Post", true)].map(|(l, post)| {
+                                let on = ui.post_script == post;
+                                button(t, if post { "post" } else { "pre" }, l, on).on_click(
+                                    cx.listener(move |this, _, _, cx| {
+                                        if let Some(ui) = this.active_ui() {
+                                            ui.post_script = post;
+                                        }
+                                        cx.notify();
+                                    }),
+                                )
+                            }))
+                            .child(pill(
+                                t,
+                                doc.find_block(kind.clone(), None)
+                                    .map_or("ts".to_string(), |i| {
+                                        doc.parsed.blocks[i].info.language.clone()
+                                    }),
+                            )),
+                    )
+                    .child(self.block_editor(
+                        t,
+                        doc,
+                        kind,
+                        info,
+                        if ui.post_script {
+                            "add-post"
+                        } else {
+                            "add-pre"
+                        },
+                        cx,
+                    ))
+                    .into_any_element()
+            }
+            5 => self.block_editor(t, doc, BlockKind::Test, "ts test", "add-test", cx),
+            6 => {
+                let prose = prose_of(doc);
+                div()
+                    .p_3()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .text_color(t.text_muted)
+                    .child(prose)
+                    .child(div().text_size(px(12.)).text_color(t.text_placeholder).child("Docs are the prose of the file. Edit them with Open as text; the Docs editor arrives in M13."))
+                    .into_any_element()
+            }
+            _ => {
+                let rows: Vec<(String, String)> =
+                    match doc.parsed.front.get("settings").map(|e| &e.value) {
+                        Some(fluxwire_model::FmValue::Map(m)) => m.clone(),
+                        _ => vec![],
+                    };
+                div()
+                    .flex()
+                    .flex_col()
+                    .p_3()
+                    .gap_1()
+                    .text_color(t.text_muted)
+                    .child(if rows.is_empty() {
+                        "No per-request settings; collection defaults apply.".to_string()
+                    } else {
+                        "Settings (front matter)".to_string()
+                    })
+                    .children(rows.into_iter().map(|(k, v)| {
+                        div()
+                            .font_family(BUFFER_FONT)
+                            .text_size(px(12.))
+                            .child(format!("{k}: {v}"))
+                    }))
+                    .into_any_element()
+            }
+        }
+    }
+
+    fn render_response(&self, t: &Theme, ui: &TabUi, cx: &mut Context<Self>) -> impl IntoElement {
+        let resp = &self.mock.response;
         let labels: Vec<(String, usize)> =
             RESP_TABS.iter().map(|s| ((*s).to_string(), 0)).collect();
         let body: AnyElement = match ui.resp {
             0 => code_view(resp.body, Lang::Json, t),
             1 => kv_table(t, &resp.headers, false),
             2 => kv_table(t, &resp.cookies, false),
-            3 => self.timeline(t, r),
+            3 => self.timeline(t),
             4 => div()
                 .flex()
                 .flex_col()
@@ -675,10 +1224,11 @@ impl Workspace {
             )
     }
 
-    fn timeline(&self, t: &Theme, r: &MockRequest) -> AnyElement {
-        let total: u32 = r.response.timeline.iter().map(|(_, ms)| ms).sum();
+    fn timeline(&self, t: &Theme) -> AnyElement {
+        let total: u32 = self.mock.response.timeline.iter().map(|(_, ms)| ms).sum();
         let mut offset = 0u32;
-        let rows: Vec<AnyElement> = r
+        let rows: Vec<AnyElement> = self
+            .mock
             .response
             .timeline
             .iter()
@@ -748,11 +1298,40 @@ impl Workspace {
         ui: &TabUi,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let Some(r) = self.mock.request(&tab.key).cloned() else {
-            return self.render_empty(t).into_any_element();
+        let Some(doc) = self.project.as_ref().and_then(|p| p.doc(&tab.key)) else {
+            return self.render_empty(t, cx).into_any_element();
         };
-        let labels: Vec<(String, usize)> =
-            WS_SUBTABS.iter().map(|s| ((*s).to_string(), 0)).collect();
+        let key = tab.key.clone();
+        let url = doc
+            .parsed
+            .request()
+            .map_or(String::new(), |r| r.target.clone());
+        let headers = doc.parsed.request().map_or(0, |r| r.headers.len());
+        let messages: Vec<(String, String, String)> = doc
+            .parsed
+            .blocks_of(BlockKind::Message)
+            .map(|(i, b)| {
+                (
+                    b.info.label.clone().unwrap_or_else(|| "message".into()),
+                    b.info.language.clone(),
+                    doc.target_text(Target::Block(i)),
+                )
+            })
+            .collect();
+        let labels: Vec<(String, usize)> = WS_SUBTABS
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                (
+                    (*s).to_string(),
+                    match i {
+                        0 => messages.len(),
+                        1 => headers,
+                        _ => 0,
+                    },
+                )
+            })
+            .collect();
         let connected = ui.connected;
         let content = match ui.sub {
             0 => div()
@@ -760,13 +1339,56 @@ impl Workspace {
                 .flex_col()
                 .child(
                     row()
-                        .p_2()
+                        .px_3()
+                        .pt_2()
+                        .pb_1()
                         .gap_2()
-                        .child(button(t, "ws-send", "Send", false))
-                        .child(button(t, "ws-save", "Save as message", false))
-                        .child(pill(t, "json")),
+                        .text_size(px(11.))
+                        .text_color(t.text_placeholder)
+                        .child("Saved messages"),
                 )
-                .child(code_view(r.body, Lang::Json, t))
+                .children(if messages.is_empty() {
+                    vec![
+                        div()
+                            .px_3()
+                            .text_color(t.text_muted)
+                            .child(
+                                "No saved messages. Add a `json message` block with Open as text.",
+                            )
+                            .into_any_element(),
+                    ]
+                } else {
+                    messages
+                        .into_iter()
+                        .map(|(label, lang, body)| {
+                            div()
+                                .flex()
+                                .flex_col()
+                                .child(
+                                    row()
+                                        .px_3()
+                                        .py_1()
+                                        .gap_2()
+                                        .child(
+                                            div()
+                                                .font_weight(gpui::FontWeight::MEDIUM)
+                                                .child(label),
+                                        )
+                                        .child(pill(t, lang.clone())),
+                                )
+                                .child(code_view(
+                                    &body,
+                                    if lang == "json" {
+                                        Lang::Json
+                                    } else {
+                                        Lang::Plain
+                                    },
+                                    t,
+                                ))
+                                .into_any_element()
+                        })
+                        .collect()
+                })
                 .child(
                     row()
                         .px_3()
@@ -775,7 +1397,7 @@ impl Workspace {
                         .gap_2()
                         .text_size(px(11.))
                         .text_color(t.text_placeholder)
-                        .child("Message log")
+                        .child("Message log (mock until M8)")
                         .child(pill(t, "All"))
                         .child(pill(t, "Sent"))
                         .child(pill(t, "Received")),
@@ -796,7 +1418,7 @@ impl Workspace {
                         .child(div().truncate().child(*payload))
                 }))
                 .into_any_element(),
-            1 => kv_table(t, &r.headers, false),
+            1 => self.editable_table(t, Table::Headers, &key, "ws-headers", cx),
             _ => div()
                 .p_3()
                 .text_color(t.text_muted)
@@ -831,6 +1453,9 @@ impl Workspace {
                     )
                     .child(
                         row()
+                            .id("url")
+                            .track_focus(&self.url_focus)
+                            .on_key_down(cx.listener(|this, ev, _, cx| this.on_url_key(ev, cx)))
                             .flex_1()
                             .h(px(30.))
                             .px_3()
@@ -840,7 +1465,7 @@ impl Workspace {
                             .border_color(t.border)
                             .font_family(BUFFER_FONT)
                             .text_size(px(14.))
-                            .children(with_variables(r.url, t)),
+                            .children(with_variables(&url, t)),
                     )
                     .child(
                         button(
@@ -859,6 +1484,7 @@ impl Workspace {
                         })),
                     ),
             )
+            .children(self.doc_banners(t, doc, cx))
             .child(self.tab_strip(t, "wsub", labels, ui.sub, |u, i| u.sub = i, cx))
             .child(
                 div()
@@ -994,7 +1620,6 @@ impl Workspace {
     fn render_history_entry(&self, t: &Theme, tab: &Tab) -> impl IntoElement {
         let idx: usize = tab.key.trim_start_matches("history/").parse().unwrap_or(0);
         let h = &self.mock.history[idx.min(self.mock.history.len() - 1)];
-        let r = self.mock.request("payments/create").cloned();
         self.page(t, h.name, "History entry · read-only")
             .child(
                 row()
@@ -1012,7 +1637,7 @@ impl Workspace {
                     )
                     .child(format!("{} ms · {}", h.ms, h.time)),
             )
-            .children(r.map(|r| code_view(r.response.body, Lang::Json, t)))
+            .child(code_view(self.mock.response.body, Lang::Json, t))
     }
 
     fn render_sync_tab(&self, t: &Theme) -> impl IntoElement {
@@ -1062,38 +1687,69 @@ impl Workspace {
                 .font_family(BUFFER_FONT)
                 .text_size(px(12.))
                 .text_color(t.text_muted)
-                .children(
-                    self.mock.requests[2]
-                        .response
-                        .console
-                        .iter()
-                        .map(|l| div().child(*l)),
-                )
+                .children(self.mock.response.console.iter().map(|l| div().child(*l)))
                 .into_any_element(),
-            BottomTab::Problems => div()
-                .flex()
-                .flex_col()
-                .children(self.mock.problems.iter().map(|p| {
-                    row()
-                        .h(px(26.))
-                        .px_3()
-                        .gap_3()
-                        .text_size(px(12.))
-                        .child(icon("triangle-alert", 12., t.modified))
-                        .child(p.message)
-                        .child(
+            BottomTab::Problems => {
+                let problems = self
+                    .project
+                    .as_ref()
+                    .map(|p| p.problems())
+                    .unwrap_or_default();
+                div()
+                    .flex()
+                    .flex_col()
+                    .children(if problems.is_empty() {
+                        vec![
                             div()
-                                .text_color(t.text_placeholder)
-                                .child(format!("{}:{}", p.file, p.line)),
-                        )
-                        .child(
-                            div()
-                                .font_family(BUFFER_FONT)
-                                .text_color(t.text_placeholder)
-                                .child(p.code),
-                        )
-                }))
-                .into_any_element(),
+                                .p_3()
+                                .text_color(t.text_muted)
+                                .child("No problems found.")
+                                .into_any_element(),
+                        ]
+                    } else {
+                        problems
+                            .into_iter()
+                            .enumerate()
+                            .map(|(i, p)| {
+                                let color = match p.severity {
+                                    fluxwire_model::Severity::Error => t.deleted,
+                                    fluxwire_model::Severity::Warning => t.modified,
+                                    fluxwire_model::Severity::Info => t.text_placeholder,
+                                };
+                                let target = p.clone();
+                                row()
+                                    .id(("problem", i))
+                                    .h(px(26.))
+                                    .px_3()
+                                    .gap_3()
+                                    .cursor_pointer()
+                                    .text_size(px(12.))
+                                    .hover({
+                                        let h = t.element_hover;
+                                        move |s| s.bg(h)
+                                    })
+                                    .on_click(cx.listener(move |this, _, w, cx| {
+                                        this.goto_problem(&target, w, cx)
+                                    }))
+                                    .child(icon("triangle-alert", 12., color))
+                                    .child(p.message.clone())
+                                    .child(
+                                        div()
+                                            .text_color(t.text_placeholder)
+                                            .child(format!("{}:{}:{}", p.file, p.line, p.col)),
+                                    )
+                                    .child(
+                                        div()
+                                            .font_family(BUFFER_FONT)
+                                            .text_color(t.text_placeholder)
+                                            .child(p.code),
+                                    )
+                                    .into_any_element()
+                            })
+                            .collect()
+                    })
+                    .into_any_element()
+            }
         };
         div()
             .h(px(200.))
@@ -1132,4 +1788,30 @@ impl Workspace {
                     .child(body),
             )
     }
+}
+
+/// Prose of a document: everything outside front matter and fenced blocks.
+fn prose_of(doc: &OpenDoc) -> String {
+    let src = &doc.text;
+    let mut skip: Vec<(usize, usize)> = doc
+        .parsed
+        .front
+        .span
+        .map(|s| (s.start, s.end))
+        .into_iter()
+        .collect();
+    skip.extend(doc.parsed.blocks.iter().map(|b| (b.span.start, b.span.end)));
+    fluxwire_format::lines(src, fluxwire_model::Span::new(0, src.len()))
+        .into_iter()
+        .filter(|l| {
+            !skip.iter().any(|(s, e)| {
+                l.start >= *s && l.start < *e
+                    || (l.start == l.end && l.start >= *s && l.start <= *e)
+            })
+        })
+        .map(|l| l.text(src).to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
 }

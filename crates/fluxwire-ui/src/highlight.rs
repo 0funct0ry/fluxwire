@@ -1,0 +1,507 @@
+//! Syntax highlighting for `.flux.md` files and the code surfaces inside them (ADR-003).
+//!
+//! Markdown structure comes from tree-sitter-md; injected languages (JSON, YAML, JS/TS, XML) use
+//! their tree-sitter grammars with the grammar crates' own highlight queries. HTTP-family blocks
+//! (`http`, `ws`, `http expect`, forms, defaults) are painted from `fluxwire-format`'s typed
+//! spans, which understand continuation query lines, disabled entries and expect blocks that the
+//! community HTTP grammar does not.
+
+use std::sync::OnceLock;
+
+use fluxwire_model::{BlockData, BlockKind, Body, FluxDoc, Span};
+use tree_sitter::{Language, Node, Parser, Query, QueryCursor, StreamingIterator};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tok {
+    Plain,
+    Property,
+    String,
+    Number,
+    Boolean,
+    Punct,
+    Keyword,
+    Function,
+    Type,
+    Comment,
+    Heading,
+    Variable,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lang {
+    Json,
+    Yaml,
+    Js,
+    Ts,
+    Xml,
+    /// A whole `.flux.md` file.
+    FluxMd,
+    Plain,
+}
+
+pub type Spans = Vec<(usize, usize, Tok)>;
+
+struct Compiled {
+    lang: Language,
+    query: Option<Query>,
+}
+
+fn compile(lang: Language, src: &str) -> Compiled {
+    let query = Query::new(&lang, src).ok();
+    Compiled { lang, query }
+}
+
+fn compiled(l: Lang) -> Option<&'static Compiled> {
+    static JSON: OnceLock<Compiled> = OnceLock::new();
+    static YAML: OnceLock<Compiled> = OnceLock::new();
+    static JS: OnceLock<Compiled> = OnceLock::new();
+    static TS: OnceLock<Compiled> = OnceLock::new();
+    static XML: OnceLock<Compiled> = OnceLock::new();
+    Some(match l {
+        Lang::Json => JSON.get_or_init(|| {
+            compile(
+                tree_sitter_json::LANGUAGE.into(),
+                tree_sitter_json::HIGHLIGHTS_QUERY,
+            )
+        }),
+        Lang::Yaml => YAML.get_or_init(|| {
+            compile(
+                tree_sitter_yaml::LANGUAGE.into(),
+                tree_sitter_yaml::HIGHLIGHTS_QUERY,
+            )
+        }),
+        Lang::Js => JS.get_or_init(|| {
+            compile(
+                tree_sitter_javascript::LANGUAGE.into(),
+                tree_sitter_javascript::HIGHLIGHT_QUERY,
+            )
+        }),
+        Lang::Ts => TS.get_or_init(|| {
+            let q = format!(
+                "{}\n{}",
+                tree_sitter_javascript::HIGHLIGHT_QUERY,
+                tree_sitter_typescript::HIGHLIGHTS_QUERY
+            );
+            compile(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(), &q)
+        }),
+        Lang::Xml => XML.get_or_init(|| {
+            compile(
+                tree_sitter_xml::LANGUAGE_XML.into(),
+                tree_sitter_xml::XML_HIGHLIGHT_QUERY,
+            )
+        }),
+        Lang::FluxMd | Lang::Plain => return None,
+    })
+}
+
+fn tok_for_capture(name: &str) -> Option<Tok> {
+    let n = name;
+    Some(if n.starts_with("comment") {
+        Tok::Comment
+    } else if n == "string.special.key" || n.starts_with("property") || n.starts_with("attribute") {
+        Tok::Property
+    } else if n.starts_with("string") || n.starts_with("escape") {
+        Tok::String
+    } else if n.starts_with("number") || n.starts_with("float") {
+        Tok::Number
+    } else if n.starts_with("boolean") || n.starts_with("constant") {
+        Tok::Boolean
+    } else if n.starts_with("keyword") || n == "tag" || n.starts_with("variable.builtin") {
+        Tok::Keyword
+    } else if n.starts_with("function") {
+        Tok::Function
+    } else if n.starts_with("type") || n.starts_with("constructor") {
+        Tok::Type
+    } else if n.starts_with("punctuation")
+        || n.starts_with("operator")
+        || n.starts_with("delimiter")
+    {
+        Tok::Punct
+    } else {
+        return None;
+    })
+}
+
+/// Paint the grammar's highlight query over `src[range]` into `paint` (indexed by absolute byte).
+fn paint_lang(paint: &mut [Tok], src: &str, range: Span, lang: Lang) {
+    let Some(c) = compiled(lang) else { return };
+    let Some(query) = &c.query else { return };
+    let text = range.slice(src);
+    let mut parser = Parser::new();
+    if parser.set_language(&c.lang).is_err() {
+        return;
+    }
+    let Some(tree) = parser.parse(text, None) else {
+        return;
+    };
+    let names = query.capture_names();
+    let mut cursor = QueryCursor::new();
+    let mut caps = cursor.captures(query, tree.root_node(), text.as_bytes());
+    while let Some((m, i)) = caps.next() {
+        let cap = m.captures[*i];
+        let Some(tok) = tok_for_capture(names[cap.index as usize]) else {
+            continue;
+        };
+        let (s, e) = (cap.node.start_byte(), cap.node.end_byte());
+        let end = (range.start + e).min(paint.len());
+        for p in &mut paint[range.start + s..end] {
+            // Generic `string` captures overlap the more specific key capture; keep the key.
+            if !(tok == Tok::String && *p == Tok::Property) {
+                *p = tok;
+            }
+        }
+    }
+}
+
+fn paint_range(paint: &mut [Tok], span: Span, tok: Tok) {
+    let end = span.end.min(paint.len());
+    if span.start < end {
+        for p in &mut paint[span.start..end] {
+            *p = tok;
+        }
+    }
+}
+
+fn paint_vars(paint: &mut [Tok], src: &str, range: Span) {
+    let text = range.slice(src);
+    let mut from = 0;
+    while let Some(i) = text[from..].find("{{") {
+        let s = from + i;
+        let Some(j) = text[s..].find("}}") else { break };
+        paint_range(
+            paint,
+            Span::new(range.start + s, range.start + s + j + 2),
+            Tok::Variable,
+        );
+        from = s + j + 2;
+    }
+}
+
+fn compress(src: &str, paint: &[Tok]) -> Spans {
+    let mut out: Spans = Vec::new();
+    let mut i = 0;
+    while i < paint.len() {
+        let t = paint[i];
+        let mut j = i + 1;
+        while j < paint.len() && paint[j] == t {
+            j += 1;
+        }
+        if t != Tok::Plain {
+            // Keep spans on char boundaries.
+            let (mut s, mut e) = (i, j);
+            while s < e && !src.is_char_boundary(s) {
+                s += 1;
+            }
+            while e > s && !src.is_char_boundary(e) {
+                e -= 1;
+            }
+            if e > s {
+                out.push((s, e, t));
+            }
+        }
+        i = j;
+    }
+    out
+}
+
+/// Highlight `src` as `lang`. For `Lang::FluxMd` use [`highlight_flux`], which has the typed doc.
+pub fn highlight(src: &str, lang: Lang) -> Spans {
+    let mut paint = vec![Tok::Plain; src.len()];
+    if lang == Lang::FluxMd {
+        return highlight_flux(&fluxwire_format::parse(src));
+    }
+    paint_lang(&mut paint, src, Span::new(0, src.len()), lang);
+    compress(src, &paint)
+}
+
+fn paint_markdown(paint: &mut [Tok], src: &str) {
+    let mut parser = Parser::new();
+    if parser
+        .set_language(&tree_sitter_md::LANGUAGE.into())
+        .is_err()
+    {
+        return;
+    }
+    let Some(tree) = parser.parse(src, None) else {
+        return;
+    };
+    fn walk(n: Node, paint: &mut [Tok]) {
+        let tok = match n.kind() {
+            "atx_heading" | "setext_heading" => Some(Tok::Heading),
+            "fenced_code_block_delimiter" | "block_quote_marker" | "thematic_break" => {
+                Some(Tok::Punct)
+            }
+            k if k.starts_with("list_marker") => Some(Tok::Punct),
+            "info_string" => Some(Tok::Keyword),
+            _ => None,
+        };
+        if let Some(t) = tok {
+            paint_range(paint, Span::new(n.start_byte(), n.end_byte()), t);
+            return;
+        }
+        let mut c = n.walk();
+        for child in n.children(&mut c) {
+            walk(child, paint);
+        }
+    }
+    walk(tree.root_node(), paint);
+}
+
+fn lang_for(info_lang: &str) -> Lang {
+    match info_lang.to_ascii_lowercase().as_str() {
+        "json" => Lang::Json,
+        "yaml" | "yml" => Lang::Yaml,
+        "ts" | "typescript" => Lang::Ts,
+        "js" | "javascript" => Lang::Js,
+        "xml" => Lang::Xml,
+        _ => Lang::Plain,
+    }
+}
+
+fn paint_header(paint: &mut [Tok], src: &str, span: Span, enabled: bool) {
+    let line = span.slice(src);
+    if !enabled {
+        paint_range(paint, span, Tok::Comment);
+        return;
+    }
+    if let Some(c) = line.find(':') {
+        paint_range(paint, Span::new(span.start, span.start + c), Tok::Property);
+        paint_range(
+            paint,
+            Span::new(span.start + c, span.start + c + 1),
+            Tok::Punct,
+        );
+        paint_vars(paint, src, Span::new(span.start + c + 1, span.end));
+    }
+}
+
+fn paint_body(paint: &mut [Tok], src: &str, body: &Body) {
+    match body {
+        Body::Raw(s) => {
+            let t = s.slice(src).trim_start();
+            if t.starts_with('{') || t.starts_with('[') {
+                paint_lang(paint, src, *s, Lang::Json);
+            }
+            paint_vars(paint, src, *s);
+        }
+        Body::File { span, .. } => paint_range(paint, *span, Tok::String),
+        Body::None => {}
+    }
+}
+
+/// Highlight a whole `.flux.md` document.
+pub fn highlight_flux(doc: &FluxDoc) -> Spans {
+    let src = &doc.source;
+    let mut paint = vec![Tok::Plain; src.len()];
+    paint_markdown(&mut paint, src);
+    if let Some(fm) = doc.front.span {
+        paint_range(&mut paint, Span::new(0, 3.min(src.len())), Tok::Punct);
+        paint_lang(&mut paint, src, doc.front.body, Lang::Yaml);
+        paint_range(
+            &mut paint,
+            Span::new(fm.end.saturating_sub(3), fm.end),
+            Tok::Punct,
+        );
+    }
+    for (b, d) in doc.blocks.iter().zip(&doc.data) {
+        let lang = lang_for(&b.info.language);
+        match (&b.kind, d) {
+            (BlockKind::Request, BlockData::Request(r)) => {
+                paint_range(&mut paint, r.method_span, Tok::Keyword);
+                paint_vars(&mut paint, src, r.target_span);
+                if let Some(v) = &r.version {
+                    let _ = v;
+                }
+                for q in &r.query {
+                    let text = q.span.slice(src);
+                    if q.enabled {
+                        let ind = text.len() - text.trim_start().len();
+                        paint_range(
+                            &mut paint,
+                            Span::new(q.span.start + ind, q.span.start + ind + 1),
+                            Tok::Punct,
+                        );
+                        paint_range(
+                            &mut paint,
+                            Span::new(q.span.start + ind + 1, q.span.end),
+                            Tok::Property,
+                        );
+                        if let Some(eq) = text.find('=') {
+                            paint_range(
+                                &mut paint,
+                                Span::new(q.span.start + eq + 1, q.span.end),
+                                Tok::String,
+                            );
+                            paint_vars(
+                                &mut paint,
+                                src,
+                                Span::new(q.span.start + eq + 1, q.span.end),
+                            );
+                        }
+                    } else {
+                        paint_range(&mut paint, q.span, Tok::Comment);
+                    }
+                }
+                for h in &r.headers {
+                    paint_header(&mut paint, src, h.span, h.enabled);
+                }
+                for c in &r.comments {
+                    paint_range(&mut paint, *c, Tok::Comment);
+                }
+                paint_body(&mut paint, src, &r.body);
+            }
+            (_, BlockData::Expect(x)) => {
+                let first = b.content.slice(src).lines().next().unwrap_or("");
+                let n = first.len();
+                paint_range(
+                    &mut paint,
+                    Span::new(b.content.start, b.content.start + n),
+                    Tok::Keyword,
+                );
+                for h in &x.headers {
+                    paint_header(&mut paint, src, h.span, h.enabled);
+                }
+                paint_body(&mut paint, src, &x.body);
+            }
+            (_, BlockData::Kv(lines)) => {
+                for l in lines {
+                    paint_header(&mut paint, src, l.span, l.enabled);
+                }
+            }
+            (BlockKind::Prose | BlockKind::Example, _) if lang == Lang::Plain => {}
+            (
+                BlockKind::Pre
+                | BlockKind::Post
+                | BlockKind::Test
+                | BlockKind::Message
+                | BlockKind::Config
+                | BlockKind::Example
+                | BlockKind::Prose
+                | BlockKind::Extension
+                | BlockKind::Reserved
+                | BlockKind::UnknownRole,
+                _,
+            ) => {
+                if b.content.start <= b.content.end && b.content.end <= src.len() {
+                    paint_lang(
+                        &mut paint,
+                        src,
+                        b.content,
+                        if b.kind == BlockKind::Config {
+                            Lang::Yaml
+                        } else {
+                            lang
+                        },
+                    );
+                    if b.kind == BlockKind::Message {
+                        paint_vars(&mut paint, src, b.content);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    compress(src, &paint)
+}
+
+/// Splits `src` into lines of `(text, token)` runs using `spans`.
+pub fn line_runs(src: &str, spans: &[(usize, usize, Tok)]) -> Vec<Vec<(String, Tok)>> {
+    let mut lines = vec![];
+    let mut offset = 0;
+    for line in src.split('\n') {
+        let (ls, le) = (offset, offset + line.len());
+        let mut runs = vec![];
+        let mut pos = ls;
+        for &(s, e, tok) in spans
+            .iter()
+            .filter(|(s, e, _)| *e > ls && *s < le.max(ls + 1))
+        {
+            let (s, e) = (s.max(ls), e.min(le));
+            if s > pos {
+                runs.push((src[pos..s].to_string(), Tok::Plain));
+            }
+            if e > s {
+                runs.push((src[s..e].to_string(), tok));
+            }
+            pos = pos.max(e);
+        }
+        if pos < le {
+            runs.push((src[pos..le].to_string(), Tok::Plain));
+        }
+        lines.push(runs);
+        offset = le + 1;
+    }
+    lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn kinds(src: &str, spans: &Spans) -> Vec<(String, Tok)> {
+        spans
+            .iter()
+            .map(|(s, e, t)| (src[*s..*e].to_string(), *t))
+            .collect()
+    }
+
+    #[test]
+    fn json_tokens_are_classified() {
+        let src = r#"{"a": 1, "b": "x", "c": true}"#;
+        let k = kinds(src, &highlight(src, Lang::Json));
+        assert!(k.contains(&("\"a\"".into(), Tok::Property)), "{k:?}");
+        assert!(k.contains(&("1".into(), Tok::Number)));
+        assert!(k.contains(&("\"x\"".into(), Tok::String)));
+        assert!(k.contains(&("true".into(), Tok::Boolean)));
+    }
+
+    #[test]
+    fn typescript_keywords_and_comments() {
+        let src = "const x = 1; // hi\nfunction f() {}";
+        let k = kinds(src, &highlight(src, Lang::Ts));
+        assert!(
+            k.iter().any(|(s, t)| s == "const" && *t == Tok::Keyword),
+            "{k:?}"
+        );
+        assert!(
+            k.iter()
+                .any(|(s, t)| s.starts_with("//") && *t == Tok::Comment),
+            "{k:?}"
+        );
+    }
+
+    #[test]
+    fn yaml_and_xml_highlight() {
+        let k = kinds("a: 1\n", &highlight("a: 1\n", Lang::Yaml));
+        assert!(!k.is_empty());
+        let x = "<a b=\"c\"><!-- n --></a>";
+        assert!(!highlight(x, Lang::Xml).is_empty());
+    }
+
+    #[test]
+    fn flux_md_highlights_each_layer() {
+        let src = "---\nname: A\n---\n\n# Title\n\n```http\nGET {{baseUrl}}/a\n    ?x=1\n# X-Off: 1\nAccept: json\n\n{\"k\": 1}\n```\n\n```ts test\nconst a = 1;\n```\n\n```http expect\nHTTP 200\n```\n";
+        let doc = fluxwire_format::parse(src);
+        let k = kinds(src, &highlight_flux(&doc));
+        let has = |s: &str, t: Tok| k.iter().any(|(x, y)| x.contains(s) && *y == t);
+        assert!(has("# Title", Tok::Heading), "{k:?}");
+        assert!(has("GET", Tok::Keyword));
+        assert!(has("{{baseUrl}}", Tok::Variable));
+        assert!(has("# X-Off: 1", Tok::Comment));
+        assert!(has("Accept", Tok::Property));
+        assert!(has("\"k\"", Tok::Property));
+        assert!(has("const", Tok::Keyword));
+        assert!(has("HTTP 200", Tok::Keyword));
+    }
+
+    #[test]
+    fn runs_reassemble_each_line() {
+        let src = "{\n  \"a\": 1\n}";
+        let runs = line_runs(src, &highlight(src, Lang::Json));
+        let rebuilt: Vec<String> = runs
+            .iter()
+            .map(|l| l.iter().map(|(s, _)| s.as_str()).collect())
+            .collect();
+        assert_eq!(rebuilt.join("\n"), src);
+    }
+}

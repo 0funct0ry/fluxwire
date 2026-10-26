@@ -1,0 +1,25 @@
+---
+source: crates/fluxwire-format/tests/format.rs
+expression: summary(&d)
+---
+runnable: true  unsupported: []  kind: Request
+front matter:
+  name = Scalar("Create payment")
+  tags = List(["smoke", "payments"])
+  operation = Scalar("createPayment")
+  auth = Scalar("inherit")
+  capture = Map([("paymentId", "$.id"), ("location", "header Location")])
+blocks:
+  Request lang=http role=None label=None closed=true
+    request POST {{baseUrl}}/v1/payments version=None
+    query enabled=true expand=Some("customer")
+    query enabled=false debug=Some("true")
+    header enabled=true Content-Type: application/json
+    header enabled=true Idempotency-Key: {{idemKey}}
+    header enabled=false X-Debug: 1
+    body "raw \"{\\n  \\\"amount\\\": 4200,\\n  \\\"currency\\\": \\\"INR\\\",\\n  \\\"customer\\\": \\\"{{customerId}}\\\"\\n}\\n\""
+  Expect lang=http role=Some("expect") label=None closed=true
+    expect Exact(201) None headers=1
+  Pre lang=ts role=Some("pre") label=None closed=true
+  Test lang=ts role=Some("test") label=None closed=true
+diagnostics:

@@ -26,6 +26,7 @@
       "number": { "color": "#bf956aff" },
       "boolean": { "color": "#bf956aff" },
       "property": { "color": "#d07277ff" },
+      "comment": { "color": "#5d636fff" },
       "punctuation": { "color": "#a9afbcff" }
     }
   }

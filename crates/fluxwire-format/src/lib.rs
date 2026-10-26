@@ -1,1 +1,29 @@
-//! .flux.md parser, span editor, formatter, diagnostics.
+//! `.flux.md` parser, span editor, canonical formatter, and collections on disk (SPEC §6, §7).
+//!
+//! The parser keeps the source text byte for byte and records spans; every change is a
+//! replacement of the spans it owns, so prose, bodies, scripts and unknown content survive.
+
+mod collection;
+mod edit;
+mod fence;
+mod fmt;
+mod frontmatter;
+mod fsops;
+mod head;
+mod lines;
+mod parse;
+mod schema;
+mod template;
+mod watch;
+
+pub use collection::*;
+pub use edit::*;
+pub use fence::parse_info;
+pub use fmt::{format, is_canonical};
+pub use frontmatter::{decode_scalar, encode_scalar};
+pub use fsops::*;
+pub use lines::{Line, lines};
+pub use parse::{parse, parse_with};
+pub use schema::front_matter_schema_json;
+pub use template::*;
+pub use watch::{DEBOUNCE, WatchHandle, watch};

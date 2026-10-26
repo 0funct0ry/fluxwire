@@ -1,0 +1,180 @@
+{
+  "$defs": {
+    "AuthSchema": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        }
+      ]
+    },
+    "SettingsSchema": {
+      "properties": {
+        "follow_redirects": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "http_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "max_redirects": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "run_mode": {
+          "description": "Folders only: `sequential` or `concurrent`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "timeout_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "verify_tls": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Front matter of a `.flux.md` file. Keys starting with `x-` are extensions and are preserved, never interpreted.",
+  "patternProperties": {
+    "^x-": {}
+  },
+  "properties": {
+    "auth": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AuthSchema"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "`inherit` (default), `none`, or a map with `type` and fields."
+    },
+    "capture": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Variables set from the response: `$.json.path`, `header <Name>`, `cookie <name>`, `status`.",
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "deprecated": {
+      "description": "Mirrors OpenAPI `deprecated`.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "kind": {
+      "description": "`request` (default for `*.flux.md`), `folder`, or `collection`. Other kinds need `requires`.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "name": {
+      "description": "Display name (required for requests).",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "operation": {
+      "description": "OpenAPI operationId or `METHOD /path`.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "path": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Values for `:name` path parameters.",
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "requires": {
+      "description": "Features this file needs to run. Maintained by Fluxwire; unsupported ones make the file non-runnable.",
+      "items": {
+        "type": "string"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "seq": {
+      "description": "Ordering within the parent.",
+      "format": "int64",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "settings": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SettingsSchema"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Per-request settings."
+    },
+    "tags": {
+      "description": "Used by filters such as `--filter tag:smoke`.",
+      "items": {
+        "type": "string"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "vars": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Variables set before the send.",
+      "type": [
+        "object",
+        "null"
+      ]
+    }
+  },
+  "title": "Fluxwire front matter",
+  "type": "object"
+}

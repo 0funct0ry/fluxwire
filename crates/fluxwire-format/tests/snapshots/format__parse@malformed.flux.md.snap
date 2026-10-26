@@ -1,0 +1,30 @@
+---
+source: crates/fluxwire-format/tests/format.rs
+expression: summary(&d)
+---
+runnable: true  unsupported: []  kind: Request
+front matter:
+  name = Scalar("Broken")
+blocks:
+  Request lang=http role=None label=None closed=true
+    request   version=None
+    header enabled=true X-Ok: 1
+    body "none"
+  Request lang=http role=None label=None closed=true
+    request GET /second version=None
+    body "none"
+  UnknownRole lang=ts role=Some("bogus") label=None closed=true
+  Expect lang=http role=Some("expect") label=None closed=true
+    expect Any None headers=0
+  Request lang=http role=None label=None closed=false
+    request GET /unclosed version=None
+    body "none"
+diagnostics:
+  F102 Warning 3:1 Front matter line is not 'key: value' fix=Some("Insert ':'")
+  F101 Error 9:1 Request line must be 'METHOD URL' fix=None
+  F104 Error 10:1 Header line has no colon fix=Some("Insert ':'")
+  F301 Error 14:4 Two request blocks in one file fix=Some("Mark this one as 'example'")
+  F201 Warning 18:7 Unknown role 'bogus'. If this block is documentation, use 'example' or remove the role. fix=Some("Use 'example'")
+  F403 Error 23:1 Status line must be 'HTTP 201', 'HTTP 2xx', or 'HTTP *' fix=None
+  F103 Warning 26:1 Fenced block is not closed fix=Some("Insert closing fence")
+  F301 Error 26:4 Two request blocks in one file fix=Some("Mark this one as 'example'")

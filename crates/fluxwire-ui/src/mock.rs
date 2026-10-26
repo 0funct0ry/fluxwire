@@ -1,5 +1,5 @@
-//! Mock "payments-api" workspace. Everything in here is deleted by later milestones: the tree
-//! and request views in M2, the rest as response, history and sync land (M3–M12).
+//! Mock data for views that later milestones replace: response (M3), history (M5), sync (M12),
+//! folder runs (M9) and WebSocket logs (M8). The tree, request and workspace mocks were removed in M2.
 
 #[derive(Clone, Debug)]
 pub struct Kv {
@@ -33,32 +33,6 @@ pub struct MockResponse {
     pub console: Vec<&'static str>,
 }
 
-#[derive(Clone, Debug)]
-pub struct MockRequest {
-    pub id: &'static str,
-    pub name: &'static str,
-    /// HTTP method, or "WS".
-    pub method: &'static str,
-    pub url: &'static str,
-    pub params: Vec<Kv>,
-    pub headers: Vec<Kv>,
-    pub body: &'static str,
-    pub auth: &'static str,
-    pub scripts: usize,
-    pub tests: usize,
-    pub docs: &'static str,
-    pub response: MockResponse,
-}
-
-pub enum TreeNode {
-    Folder {
-        path: &'static str,
-        name: &'static str,
-        children: Vec<TreeNode>,
-    },
-    Request(&'static str),
-}
-
 pub struct HistoryEntry {
     pub day: &'static str,
     pub method: &'static str,
@@ -79,32 +53,19 @@ pub struct SyncChange {
     pub field: &'static str,
 }
 
-pub struct Problem {
-    pub file: &'static str,
-    pub line: u32,
-    pub message: &'static str,
-    pub code: &'static str,
-}
-
 pub struct RunRow {
     pub name: &'static str,
     pub method: &'static str,
     pub passed: bool,
     pub ms: u32,
 }
-
 pub struct Mock {
-    pub workspace: &'static str,
-    pub branch: &'static str,
-    pub tree: Vec<TreeNode>,
-    pub requests: Vec<MockRequest>,
+    pub response: MockResponse,
     pub history: Vec<HistoryEntry>,
     pub environments: Vec<Environment>,
     pub sync: Vec<SyncChange>,
-    pub problems: Vec<Problem>,
     pub run: Vec<RunRow>,
     pub ws_log: Vec<(&'static str, &'static str, &'static str)>,
-    pub recent_workspaces: Vec<&'static str>,
 }
 
 const PAYMENT_JSON: &str = r#"{
@@ -164,181 +125,9 @@ fn response(status: u16, text: &'static str, ms: u32, body: &'static str) -> Moc
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn req(
-    id: &'static str,
-    name: &'static str,
-    method: &'static str,
-    url: &'static str,
-    body: &'static str,
-    status: u16,
-    text: &'static str,
-) -> MockRequest {
-    MockRequest {
-        id,
-        name,
-        method,
-        url,
-        params: vec![
-            kv("expand", "customer"),
-            Kv {
-                key: "limit",
-                value: "20",
-                enabled: false,
-            },
-        ],
-        headers: vec![
-            kv("Authorization", "Bearer {{token}}"),
-            kv("Idempotency-Key", "{{$uuid}}"),
-        ],
-        body,
-        auth: "Bearer token ({{token}})",
-        scripts: 1,
-        tests: 3,
-        docs: "Creates a payment for a customer. Amounts are in the smallest currency unit.",
-        response: response(
-            status,
-            text,
-            142,
-            if status == 204 { "" } else { PAYMENT_JSON },
-        ),
-    }
-}
-
 pub fn payments_api() -> Mock {
-    let create_body =
-        "{\n  \"amount\": 4200,\n  \"currency\": \"usd\",\n  \"customer\": \"{{customerId}}\"\n}";
-    let requests = vec![
-        req(
-            "auth/login",
-            "Log in",
-            "POST",
-            "{{baseUrl}}/v1/auth/login",
-            "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}",
-            200,
-            "OK",
-        ),
-        req(
-            "auth/refresh",
-            "Refresh token",
-            "POST",
-            "{{baseUrl}}/v1/auth/refresh",
-            "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}",
-            200,
-            "OK",
-        ),
-        req(
-            "payments/create",
-            "Create payment",
-            "POST",
-            "{{baseUrl}}/v1/payments",
-            create_body,
-            201,
-            "Created",
-        ),
-        req(
-            "payments/get",
-            "Get payment",
-            "GET",
-            "{{baseUrl}}/v1/payments/:id",
-            "",
-            200,
-            "OK",
-        ),
-        req(
-            "payments/list",
-            "List payments",
-            "GET",
-            "{{baseUrl}}/v1/payments",
-            "",
-            200,
-            "OK",
-        ),
-        req(
-            "payments/update",
-            "Update payment",
-            "PATCH",
-            "{{baseUrl}}/v1/payments/:id",
-            "{\n  \"metadata\": { \"channel\": \"app\" }\n}",
-            200,
-            "OK",
-        ),
-        req(
-            "payments/cancel",
-            "Cancel payment",
-            "DELETE",
-            "{{baseUrl}}/v1/payments/:id",
-            "",
-            404,
-            "Not Found",
-        ),
-        req(
-            "refunds/create",
-            "Create refund",
-            "POST",
-            "{{baseUrl}}/v1/refunds",
-            "{\n  \"payment\": \"{{paymentId}}\",\n  \"amount\": 1000\n}",
-            201,
-            "Created",
-        ),
-        req(
-            "refunds/get",
-            "Get refund",
-            "GET",
-            "{{baseUrl}}/v1/refunds/:id",
-            "",
-            200,
-            "OK",
-        ),
-        req(
-            "events/order-stream",
-            "Order stream",
-            "WS",
-            "wss://{{host}}/v1/events/orders",
-            "{\n  \"type\": \"subscribe\",\n  \"topic\": \"orders\"\n}",
-            101,
-            "Switching Protocols",
-        ),
-    ];
-    let tree = vec![
-        TreeNode::Folder {
-            path: "auth",
-            name: "auth",
-            children: vec![
-                TreeNode::Request("auth/login"),
-                TreeNode::Request("auth/refresh"),
-            ],
-        },
-        TreeNode::Folder {
-            path: "payments",
-            name: "payments",
-            children: vec![
-                TreeNode::Request("payments/create"),
-                TreeNode::Request("payments/get"),
-                TreeNode::Request("payments/list"),
-                TreeNode::Request("payments/update"),
-                TreeNode::Request("payments/cancel"),
-            ],
-        },
-        TreeNode::Folder {
-            path: "refunds",
-            name: "refunds",
-            children: vec![
-                TreeNode::Request("refunds/create"),
-                TreeNode::Request("refunds/get"),
-            ],
-        },
-        TreeNode::Folder {
-            path: "events",
-            name: "events",
-            children: vec![TreeNode::Request("events/order-stream")],
-        },
-    ];
     Mock {
-        workspace: "payments-api",
-        branch: "main",
-        tree,
-        requests,
+        response: response(201, "Created", 142, PAYMENT_JSON),
         history: vec![
             HistoryEntry {
                 day: "Today",
@@ -427,20 +216,6 @@ pub fn payments_api() -> Mock {
                 field: "request renamed: Update payment",
             },
         ],
-        problems: vec![
-            Problem {
-                file: "payments/cancel.flux.md",
-                line: 12,
-                message: "Unresolved variable {{paymentId}}",
-                code: "V101",
-            },
-            Problem {
-                file: "refunds/get.flux.md",
-                line: 4,
-                message: "Unknown role 'sample'; use 'example'",
-                code: "F201",
-            },
-        ],
         run: vec![
             RunRow {
                 name: "Log in",
@@ -489,46 +264,11 @@ pub fn payments_api() -> Mock {
                 "{\"type\":\"order.paid\",\"id\":\"ord_1043\"}",
             ),
         ],
-        recent_workspaces: vec![
-            "~/code/payments-api",
-            "~/code/billing-service",
-            "~/code/fixtures",
-        ],
     }
 }
 
 impl Mock {
-    pub fn request(&self, id: &str) -> Option<&MockRequest> {
-        self.requests.iter().find(|r| r.id == id)
-    }
-
     pub fn environment(&self, name: &str) -> Option<&Environment> {
         self.environments.iter().find(|e| e.name == name)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn walk(nodes: &[TreeNode], out: &mut Vec<&'static str>) {
-        for n in nodes {
-            match n {
-                TreeNode::Folder { children, .. } => walk(children, out),
-                TreeNode::Request(id) => out.push(id),
-            }
-        }
-    }
-
-    #[test]
-    fn every_tree_request_exists_and_has_one_websocket() {
-        let m = payments_api();
-        let mut ids = vec![];
-        walk(&m.tree, &mut ids);
-        assert_eq!(ids.len(), m.requests.len());
-        for id in ids {
-            assert!(m.request(id).is_some(), "{id}");
-        }
-        assert_eq!(m.requests.iter().filter(|r| r.method == "WS").count(), 1);
     }
 }

@@ -55,6 +55,7 @@ pub struct Theme {
     pub syntax_boolean: Hsla,
     pub syntax_property: Hsla,
     pub syntax_punctuation: Hsla,
+    pub syntax_comment: Hsla,
 }
 
 impl Global for Theme {}
@@ -126,6 +127,7 @@ impl Theme {
             syntax_boolean: syn("boolean")?,
             syntax_property: syn("property")?,
             syntax_punctuation: syn("punctuation")?,
+            syntax_comment: syn("comment").or_else(|_| get("text.placeholder"))?,
             name: file.name,
         })
     }

@@ -1,0 +1,20 @@
+---
+source: crates/fluxwire-format/tests/format.rs
+expression: summary(&d)
+---
+runnable: true  unsupported: []  kind: Request
+front matter:
+  name = Scalar("Get payment")
+  kind = Scalar("request")
+  seq = Scalar("2")
+blocks:
+  Request lang=http role=None label=None closed=true
+    request GET {{baseUrl}}/v1/payments/:paymentId version=Some("HTTP/1.1")
+    header enabled=true Accept: application/json
+    header enabled=true X-Trace: 1
+    body "none"
+  Example lang=http role=Some("example") label=None closed=true
+  Prose lang=bash role=None label=None closed=true
+  Expect lang=http role=Some("expect") label=None closed=true
+    expect Class(2) None headers=1
+diagnostics:

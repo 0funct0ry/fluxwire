@@ -1,0 +1,19 @@
+---
+source: crates/fluxwire-format/tests/format.rs
+expression: summary(&d)
+---
+runnable: false  unsupported: ["grpc"]  kind: Request
+front matter:
+  requires = List(["grpc"])
+  name = Scalar("Future gRPC")
+  x-owner = Scalar("payments-team")
+  retry = Map([("count", "3")])
+blocks:
+  UnknownRequest lang=grpc role=None label=None closed=true
+  Message lang=json role=Some("message") label=None closed=true
+  Reserved lang=json role=Some("schema") label=None closed=true
+  Extension lang=yaml role=Some("x-acme-lint") label=None closed=true
+diagnostics:
+  F401 Error 2:1 Feature 'grpc' in requires is not supported by this version fix=None
+  F402 Warning 11:4 Request language 'grpc' is not supported in this version fix=None
+  F202 Warning 20:9 Role 'schema' is not supported in this version fix=None
