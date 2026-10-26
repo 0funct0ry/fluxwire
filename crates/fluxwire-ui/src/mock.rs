@@ -1,5 +1,5 @@
 //! Mock data for views that later milestones replace: sync (M12),
-//! folder runs (M9) and WebSocket logs (M8). The tree, request and workspace mocks were removed in M2.
+//! and folder runs (M9). The tree, request and workspace mocks were removed in M2.
 
 #[derive(Clone, Debug)]
 pub struct Kv {
@@ -48,7 +48,6 @@ pub struct Mock {
     pub response: MockResponse,
     pub sync: Vec<SyncChange>,
     pub run: Vec<RunRow>,
-    pub ws_log: Vec<(&'static str, &'static str, &'static str)>,
 }
 
 const PAYMENT_JSON: &str = r#"{
@@ -157,28 +156,6 @@ pub fn payments_api() -> Mock {
                 passed: false,
                 ms: 64,
             },
-        ],
-        ws_log: vec![
-            (
-                "out",
-                "12:10:01.004",
-                "{\"type\":\"subscribe\",\"topic\":\"orders\"}",
-            ),
-            (
-                "in",
-                "12:10:01.121",
-                "{\"type\":\"subscribed\",\"topic\":\"orders\"}",
-            ),
-            (
-                "in",
-                "12:10:03.480",
-                "{\"type\":\"order.created\",\"id\":\"ord_1043\"}",
-            ),
-            (
-                "in",
-                "12:10:07.915",
-                "{\"type\":\"order.paid\",\"id\":\"ord_1043\"}",
-            ),
         ],
     }
 }

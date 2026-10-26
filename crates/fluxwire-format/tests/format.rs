@@ -324,3 +324,23 @@ proptest! {
         }
     }
 }
+
+#[test]
+fn saved_messages_are_typed_with_labels_and_file_refs() {
+    let src = std::fs::read_to_string("tests/corpus/websocket-messages.flux.md").unwrap();
+    let m = parse(&src).messages();
+    let got: Vec<_> = m
+        .iter()
+        .map(|m| (m.label.as_str(), m.language.as_str(), m.file.as_deref()))
+        .collect();
+    assert_eq!(
+        got,
+        [
+            ("subscribe", "json", None),
+            ("legacy", "xml", None),
+            ("blob", "binary", Some("fixtures/frame.bin")),
+        ]
+    );
+    assert_eq!(m[0].frame_kind(), "text");
+    assert_eq!(m[2].frame_kind(), "binary");
+}

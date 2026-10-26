@@ -38,4 +38,5 @@ fluxwire-search.workspace = true
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 [dev-dependencies]
+tungstenite = "0.30.0"
 gpui = { workspace = true, features = ["test-support"] }

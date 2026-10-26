@@ -1,0 +1,24 @@
+---
+source: crates/fluxwire-format/tests/format.rs
+expression: summary(&d)
+---
+runnable: true  unsupported: []  kind: Request
+front matter:
+  name = Scalar("Trade feed")
+  requires = List([])
+  auth = Map([("type", "bearer"), ("token", "{{token}}")])
+blocks:
+  Request lang=ws role=None label=None closed=true
+    request GET wss://{{host}}/v1/feed version=None
+    query enabled=true market=Some("BTC-USD")
+    query enabled=true depth=Some("10")
+    header enabled=true Sec-WebSocket-Protocol: v2.feed
+    header enabled=false X-Debug: 1
+    body "none"
+  Expect lang=http role=Some("expect") label=None closed=true
+    expect Exact(101) None headers=1
+  Message lang=json role=Some("message") label=Some("subscribe") closed=true
+  Message lang=xml role=Some("message") label=Some("legacy") closed=true
+  Message lang=binary role=Some("message") label=Some("blob") closed=true
+  Post lang=ts role=Some("post") label=None closed=true
+diagnostics:

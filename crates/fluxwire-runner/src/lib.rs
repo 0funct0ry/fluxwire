@@ -11,8 +11,8 @@ use std::time::SystemTime;
 
 use fluxwire_model::{BlockData, BlockKind, Diagnostic, Edit, FluxDoc, FmValue};
 pub use fluxwire_protocol::{
-    CancellationToken, EnvState, ExecCtx, ExecError, ExecSettings, NetConfig, Outcome, PhaseTiming,
-    RedirectHop, TestResult,
+    CancellationToken, EnvState, ExecCtx, ExecError, ExecSettings, Frame, NetConfig, Outcome,
+    PhaseTiming, RedirectHop, SessionHandle, TestResult,
 };
 use fluxwire_protocol::{CheckCtx, Event, HistoryRecord, Plan, Protocol};
 pub use fluxwire_script::{
@@ -151,15 +151,34 @@ pub fn redact_with(secrets: &[(String, String)], text: &str) -> String {
 pub enum RunEvent {
     Phase(PhaseTiming),
     Redirect(RedirectHop),
+    /// A frame of a session protocol (WebSocket and later), in either direction.
+    Frame(Frame),
     Finished(Box<RunResult>),
 }
 
 pub struct RunHandle {
     pub events: UnboundedReceiver<RunEvent>,
     cancel: CancellationToken,
+    session: SessionHandle,
 }
 
 impl RunHandle {
+    /// A clonable handle to send frames into, or close, the live session.
+    pub fn session(&self) -> SessionHandle {
+        self.session.clone()
+    }
+
+    /// Send a frame into a live session (`kind` is `text` or `binary`). `false` once the
+    /// session has ended or if the protocol is not a session protocol.
+    pub fn send_frame(&self, kind: &str, data: impl Into<fluxwire_protocol::Bytes>) -> bool {
+        self.session.send(kind, data)
+    }
+
+    /// Close a live session gracefully; the run then finishes normally.
+    pub fn close_session(&self) -> bool {
+        self.session.close()
+    }
+
     pub fn cancel(&self) {
         self.cancel.cancel();
     }
@@ -206,6 +225,8 @@ pub fn runner() -> &'static Runner {
         let protocols: Vec<Arc<dyn Protocol>> = vec![
             #[cfg(feature = "http")]
             Arc::new(fluxwire_http::HttpProtocol),
+            #[cfg(feature = "ws")]
+            Arc::new(fluxwire_ws::WsProtocol),
         ];
         Runner::new(protocols)
     })
@@ -242,12 +263,14 @@ impl Runner {
     pub fn send(&self, doc: &FluxDoc, opts: SendOptions) -> RunHandle {
         let (tx, rx) = unbounded_channel();
         let cancel = CancellationToken::new();
+        let (session, inbox) = fluxwire_protocol::session_channel();
         let ctx = ExecCtx {
             cancel: cancel.clone(),
             settings: opts.settings.clone(),
             net: opts.net.clone(),
             temp_dir: None,
             env: opts.env.clone(),
+            session: Some(inbox),
         };
         let proto = self.protocol_for(doc).cloned();
         let doc = doc.clone();
@@ -267,7 +290,11 @@ impl Runner {
             let result = exec(job, Some(&tx)).await;
             let _ = tx.send(RunEvent::Finished(Box::new(result)));
         });
-        RunHandle { events: rx, cancel }
+        RunHandle {
+            events: rx,
+            cancel,
+            session,
+        }
     }
 
     /// `Copy as cURL` (or any shell export the protocol offers).
@@ -316,6 +343,7 @@ impl Runner {
             net: opts.net,
             temp_dir: None,
             env: opts.env,
+            session: None,
         };
         let fut = proto.fetch_token(plan, ctx, force)?;
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -633,7 +661,11 @@ impl ScriptHost for NestedHost {
             proto: proto.clone(),
             doc,
             scope,
-            ctx: self.ctx.clone(),
+            // A nested send never takes over the caller's live session.
+            ctx: ExecCtx {
+                session: None,
+                ..self.ctx.clone()
+            },
             scripts,
             depth: self.depth + 1,
             started_at: SystemTime::now(),
@@ -819,7 +851,11 @@ async fn exec(job: Job, tx: Option<&UnboundedSender<RunEvent>>) -> RunResult {
                     let _ = tx.send(RunEvent::Redirect(r));
                 }
             }
-            Event::Frame(_) => {}
+            Event::Frame(f) => {
+                if let Some(tx) = tx {
+                    let _ = tx.send(RunEvent::Frame(f));
+                }
+            }
             Event::Done(o) => {
                 done = Some(o);
                 break;

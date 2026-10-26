@@ -446,6 +446,12 @@ impl Workspace {
             let Some(found) = task.await else { return };
             this.update(cx, |this, cx| {
                 for e in found {
+                    if e.summary.protocol == "ws"
+                        && let Some(o) = runner().history_outcome(&record_of(&e))
+                    {
+                        let frames = o.session.map(|s| s.frames).unwrap_or_default();
+                        this.ensure_history_log(e.summary.id, frames);
+                    }
                     this.history.cache.insert(e.summary.id, Arc::new(e));
                 }
                 then(this, cx);
@@ -934,6 +940,9 @@ impl Workspace {
                 .child(div().text_color(t.text_placeholder).child("Loading…"))
                 .into_any_element();
         };
+        if e.summary.protocol == "ws" {
+            return self.render_ws_history(t, id, e, cx);
+        }
         let s = &e.summary;
         let key = s.request_path.clone();
         let req = e.payload.get("request").cloned().unwrap_or(Value::Null);
@@ -1031,6 +1040,131 @@ impl Workspace {
             .child(block(headers(res.get("headers")), Lang::Plain))
             .child(section("Response body"))
             .child(block(res_body.clone(), lang_for(&res_body)))
+            .into_any_element()
+    }
+
+    /// A stored WebSocket session: handshake, then the transcript in the session log.
+    fn render_ws_history(
+        &self,
+        t: &Theme,
+        id: i64,
+        e: &Entry,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let s = &e.summary;
+        let key = s.request_path.clone();
+        let req = e.payload.get("request").cloned().unwrap_or(Value::Null);
+        let res = e.payload.get("response").cloned().unwrap_or(Value::Null);
+        let sess = e.payload.get("session").cloned().unwrap_or(Value::Null);
+        let headers = |v: Option<&Value>| {
+            headers_of(v)
+                .into_iter()
+                .map(|(k, v)| format!("{k}: {v}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let section = |title: &str| {
+            div()
+                .mt_2()
+                .text_size(px(11.))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(t.text_muted)
+                .child(title.to_string())
+        };
+        let block = |text: String| {
+            div()
+                .p_2()
+                .rounded(px(4.))
+                .border_1()
+                .border_color(t.border_variant)
+                .bg(t.editor)
+                .font_family(BUFFER_FONT)
+                .text_size(px(12.))
+                .child(code_view(&text, Lang::Plain, t))
+        };
+        let mut meta = vec![time_label(s.ts_ms), format!("{:.0} ms", s.total_ms)];
+        if let Some(env) = &s.env {
+            meta.push(format!("env {env}"));
+        }
+        if s.dirty {
+            meta.push("unsaved at send".into());
+        }
+        let total = sess
+            .get("total_frames")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let kept = sess
+            .get("frames")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len) as u64;
+        meta.push(format!("{total} frames"));
+        if total > kept {
+            meta.push(format!("transcript keeps the first {kept}"));
+        }
+        if let Some(c) = sess.get("close_code").and_then(Value::as_u64) {
+            meta.push(format!("closed with code {c}"));
+        }
+        let err = e
+            .payload
+            .get("error")
+            .and_then(|v| v.get("message"))
+            .and_then(Value::as_str)
+            .or_else(|| sess.get("error").and_then(Value::as_str));
+        let status = div()
+            .flex_none()
+            .px_3()
+            .py_1()
+            .text_size(px(12.))
+            .text_color(t.text_muted)
+            .child("Transcript")
+            .into_any_element();
+        let log = self.render_session_log(t, crate::session::LogRef::History(id), status, cx);
+        self.page(t, &s.request_name, "History entry · read-only")
+            .child(
+                row()
+                    .gap_3()
+                    .child(
+                        div()
+                            .font_family(BUFFER_FONT)
+                            .text_color(t.method_color("WS"))
+                            .child("WS"),
+                    )
+                    .child(div().font_family(BUFFER_FONT).child(s.url.clone()))
+                    .child(
+                        div()
+                            .text_color(match s.status {
+                                Some(c) => t.status_color(c as u16),
+                                None => t.deleted,
+                            })
+                            .child(s.status.map_or("failed".to_string(), |c| c.to_string())),
+                    ),
+            )
+            .child(div().text_color(t.text_muted).child(meta.join(" · ")))
+            .child(
+                row()
+                    .gap_2()
+                    .child(
+                        button(t, "h-restore", "Restore", true).on_click(cx.listener(
+                            move |this, _, w, cx| this.history_restore(id, key.clone(), w, cx),
+                        )),
+                    ),
+            )
+            .children(err.map(|m| div().text_color(t.deleted).child(m.to_string())))
+            .child(section("Handshake request headers"))
+            .child(block(headers(req.get("headers"))))
+            .child(section("Handshake response headers"))
+            .child(block(headers(res.get("headers"))))
+            .child(section("Transcript"))
+            .child(
+                div()
+                    .h(px(420.))
+                    .flex()
+                    .flex_col()
+                    .rounded(px(4.))
+                    .border_1()
+                    .border_color(t.border_variant)
+                    .child(log),
+            )
             .into_any_element()
     }
 

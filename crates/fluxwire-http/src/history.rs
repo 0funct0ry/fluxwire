@@ -153,6 +153,7 @@ pub(crate) fn to_outcome(rec: &HistoryRecord) -> Option<Outcome> {
             .get("connection_reused")
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        session: None,
     })
 }
 
@@ -238,6 +239,7 @@ mod tests {
             total_ms: 9.0,
             redirects: vec![],
             connection_reused: false,
+            session: None,
         };
         let back = to_outcome(&record(&o)).unwrap();
         let x = back.exchange.unwrap();

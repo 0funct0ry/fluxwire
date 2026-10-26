@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use bytes::Bytes;
+pub use bytes::Bytes;
 use fluxwire_model::{Diagnostic, Edit, ExpectBlock, FluxDoc};
 use fluxwire_vars::VarScope;
 
@@ -112,6 +112,8 @@ pub struct ExecCtx {
     pub temp_dir: Option<PathBuf>,
     /// Cookie jar and token cache of the active environment.
     pub env: Option<crate::EnvState>,
+    /// Commands from the caller into a live session (SPEC §10); `None` for exchange protocols.
+    pub session: Option<SessionInbox>,
 }
 
 impl Default for ExecCtx {
@@ -122,8 +124,58 @@ impl Default for ExecCtx {
             net: NetConfig::default(),
             temp_dir: None,
             env: None,
+            session: None,
         }
     }
+}
+
+/// A command the caller sends into a live session.
+#[derive(Debug, Clone)]
+pub enum SessionCmd {
+    /// Send a frame; `kind` is `text` or `binary`.
+    Send { kind: String, data: Bytes },
+    /// Close gracefully (normal closure) and finish the run.
+    Close,
+}
+
+/// Caller side of a session: send frames or close. Cheap to clone.
+#[derive(Debug, Clone)]
+pub struct SessionHandle(tokio::sync::mpsc::UnboundedSender<SessionCmd>);
+
+impl SessionHandle {
+    /// `false` if the session has already ended.
+    pub fn send(&self, kind: &str, data: impl Into<Bytes>) -> bool {
+        self.0
+            .send(SessionCmd::Send {
+                kind: kind.into(),
+                data: data.into(),
+            })
+            .is_ok()
+    }
+
+    pub fn close(&self) -> bool {
+        self.0.send(SessionCmd::Close).is_ok()
+    }
+}
+
+/// Protocol side of a session: take the command receiver once, at the start of `execute`.
+#[derive(Debug, Clone)]
+pub struct SessionInbox(
+    Arc<std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<SessionCmd>>>>,
+);
+
+impl SessionInbox {
+    pub fn take(&self) -> Option<tokio::sync::mpsc::UnboundedReceiver<SessionCmd>> {
+        self.0.lock().ok()?.take()
+    }
+}
+
+pub fn session_channel() -> (SessionHandle, SessionInbox) {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    (
+        SessionHandle(tx),
+        SessionInbox(Arc::new(std::sync::Mutex::new(Some(rx)))),
+    )
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -235,6 +287,23 @@ pub struct Outcome {
     pub total_ms: f64,
     pub redirects: Vec<RedirectHop>,
     pub connection_reused: bool,
+    /// Transcript of a session protocol; `None` for exchange protocols.
+    pub session: Option<SessionSummary>,
+}
+
+/// Frames kept in an `Outcome` and in history (SPEC §10).
+pub const TRANSCRIPT_FRAME_CAP: usize = 1000;
+
+#[derive(Debug, Clone, Default)]
+pub struct SessionSummary {
+    /// The first [`TRANSCRIPT_FRAME_CAP`] frames, in order.
+    pub frames: Vec<Frame>,
+    /// Every frame seen, including those beyond the cap.
+    pub total_frames: u64,
+    pub close_code: Option<u16>,
+    pub close_reason: String,
+    /// Set when the session ended abnormally after it was open.
+    pub error: Option<String>,
 }
 
 /// A failure that names the phase it happened in and, where known, a fix.
@@ -259,8 +328,19 @@ impl std::fmt::Display for ExecError {
 #[derive(Debug, Clone)]
 pub struct Frame {
     pub outbound: bool,
+    /// `text`, `binary`, `ping`, `pong` or `close`.
     pub kind: String,
     pub data: Bytes,
+    /// Milliseconds since the run started.
+    pub ts_ms: f64,
+    /// Close code, for `close` frames.
+    pub close_code: Option<u16>,
+}
+
+impl Frame {
+    pub fn size(&self) -> usize {
+        self.data.len()
+    }
 }
 
 #[derive(Debug, Clone)]

@@ -82,3 +82,54 @@ async fn cancel_ends_the_run_with_a_cancelled_error() {
     let r = finish(h).await;
     assert!(r.error.unwrap().is_cancelled());
 }
+
+#[tokio::test]
+async fn runs_a_session_protocol_without_protocol_specific_code() {
+    use futures::{SinkExt, StreamExt};
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = l.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((s, _)) = l.accept().await {
+            tokio::spawn(async move {
+                let Ok(mut ws) = tokio_tungstenite::accept_async(s).await else {
+                    return;
+                };
+                while let Some(Ok(m)) = ws.next().await {
+                    if m.is_text() {
+                        let _ = ws.send(m).await;
+                    } else if m.is_close() {
+                        break;
+                    }
+                }
+            });
+        }
+    });
+    let d = doc(&format!(
+        "```ws\nGET ws://127.0.0.1:{port}/\n```\n\n```http expect\nHTTP 101\n```\n"
+    ));
+    let mut h = runner().send(&d, SendOptions::default());
+    let mut inbound = Vec::new();
+    let result = loop {
+        match h.events.recv().await.expect("a result") {
+            RunEvent::Phase(p) if p.name == "upgrade" => {
+                assert!(h.send_frame("text", "hello"));
+            }
+            RunEvent::Frame(f) if !f.outbound => {
+                inbound.push(f.data.clone());
+                h.close_session();
+            }
+            RunEvent::Finished(r) => break *r,
+            _ => {}
+        }
+    };
+    assert!(result.error.is_none(), "{:?}", result.error);
+    assert_eq!(inbound, [bytes_of("hello")]);
+    assert!(result.tests.iter().all(|t| t.passed), "{:?}", result.tests);
+    let h = result.history.unwrap();
+    assert_eq!(h.protocol, "ws");
+    assert!(h.summary.starts_with("WS 101"), "{}", h.summary);
+}
+
+fn bytes_of(s: &str) -> fluxwire_protocol::Bytes {
+    fluxwire_protocol::Bytes::copy_from_slice(s.as_bytes())
+}

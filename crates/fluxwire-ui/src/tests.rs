@@ -1587,3 +1587,99 @@ fn every_action_is_reachable_from_the_palette(cx: &mut TestAppContext) {
         assert!(all.iter().any(|l| l == a.label), "{} not listed", a.label);
     }
 }
+
+/// An echo server on a thread: replies to every text frame and answers a close.
+fn ws_echo_server() -> u16 {
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for s in l.incoming() {
+            let Ok(s) = s else { continue };
+            std::thread::spawn(move || {
+                let Ok(mut ws) = tungstenite::accept(s) else {
+                    return;
+                };
+                while let Ok(m) = ws.read() {
+                    let (text, close) = (m.is_text(), m.is_close());
+                    if text && ws.send(m).is_err() {
+                        break;
+                    }
+                    if close {
+                        break;
+                    }
+                }
+            });
+        }
+    });
+    port
+}
+
+const WS_KEY: &str = "events/order-stream.flux.md";
+
+fn ws_doc_text(port: u16) -> String {
+    format!(
+        "---\nname: Stream\n---\n\n```ws\nGET ws://127.0.0.1:{port}/stream\n```\n\n```json message subscribe\n{{ \"op\": \"subscribe\" }}\n```\n"
+    )
+}
+
+#[gpui::test]
+fn websocket_connects_sends_a_saved_message_and_disconnects(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "ws");
+    let port = ws_echo_server();
+    view.update_in(cx, |w, window, cx| w.open_request(WS_KEY, true, window, cx));
+    set_doc_text(&view, cx, WS_KEY, ws_doc_text(port));
+    let id = view.read_with(cx, |w, _| w.tabs.active_id().unwrap());
+    view.update(cx, |w, cx| w.ws_toggle(cx));
+    wait_until(&view, cx, "the upgrade", |w| w.ws_connected(id));
+    view.update(cx, |w, cx| w.ws_send_saved(0, cx));
+    wait_until(&view, cx, "the echoed frame", |w| {
+        w.responses[&id].log.counts() == (1, 1)
+    });
+    view.update(cx, |w, cx| w.ws_toggle(cx));
+    wait_until(&view, cx, "the session to end", |w| {
+        w.responses[&id].sending.is_none()
+    });
+    view.read_with(cx, |w, _| {
+        let r = &w.responses[&id];
+        let res = r.result.as_ref().unwrap();
+        assert!(res.error.is_none(), "{:?}", res.error);
+        let s = res.outcome.as_ref().unwrap().session.as_ref().unwrap();
+        assert!(
+            s.frames
+                .iter()
+                .any(|f| !f.outbound && f.data == "{ \"op\": \"subscribe\" }")
+        );
+        assert!(res.history.is_some());
+        assert!(!w.ws_connected(id));
+    });
+}
+
+#[gpui::test]
+fn save_as_message_inserts_a_block_with_a_span_edit(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "ws-save");
+    view.update_in(cx, |w, window, cx| w.open_request(WS_KEY, true, window, cx));
+    let id = view.read_with(cx, |w, _| w.tabs.active_id().unwrap());
+    let before = view.read_with(cx, |w, _| {
+        w.project
+            .as_ref()
+            .unwrap()
+            .doc(WS_KEY)
+            .unwrap()
+            .text
+            .clone()
+    });
+    view.update(cx, |w, cx| {
+        w.composers.entry(id).or_default().text = "{\"op\":\"ping\"}".into();
+        w.ws_save_composer(cx);
+    });
+    view.read_with(cx, |w, _| {
+        let doc = w.project.as_ref().unwrap().doc(WS_KEY).unwrap();
+        let msgs = doc.parsed.messages();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[1].text, "{\"op\":\"ping\"}");
+        assert!(
+            doc.text.starts_with(before.trim_end()),
+            "existing content is untouched"
+        );
+    });
+}

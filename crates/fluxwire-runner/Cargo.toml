@@ -17,6 +17,7 @@ fluxwire-vars.workspace = true
 fluxwire-script.workspace = true
 fluxwire-format.workspace = true
 fluxwire-http = { workspace = true, optional = true }
+fluxwire-ws = { workspace = true, optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
 futures = "0.3"
 toml = "0.8"
@@ -24,9 +25,11 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 
 [features]
-default = ["http"]
+default = ["http", "ws"]
 http = ["dep:fluxwire-http"]
+ws = ["dep:fluxwire-ws"]
 
 [dev-dependencies]
+tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }

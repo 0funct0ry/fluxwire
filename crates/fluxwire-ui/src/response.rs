@@ -9,8 +9,8 @@ use std::{
 };
 
 use fluxwire_runner::{
-    CancellationToken, PhaseTiming, RunEvent, RunResult, SendOptions, net_config_from_dir, runner,
-    settings_from_defaults,
+    CancellationToken, PhaseTiming, RunEvent, RunResult, SendOptions, SessionHandle,
+    net_config_from_dir, runner, settings_from_defaults,
 };
 use gpui::{
     AnyElement, ClipboardItem, Context, ElementId, InteractiveElement, IntoElement, ParentElement,
@@ -57,6 +57,8 @@ pub struct Sending {
     pub phases: Vec<PhaseTiming>,
     pub redirects: usize,
     pub cancel: CancellationToken,
+    /// Send frames into, or close, a live session (WebSocket and later protocols).
+    pub session: SessionHandle,
 }
 
 pub struct TabResponse {
@@ -82,6 +84,8 @@ pub struct TabResponse {
     /// Row -> line index when folds are collapsed.
     pub visible: Option<Arc<Vec<u32>>>,
     pub scroll: UniformListScrollHandle,
+    /// Frames of a session protocol run.
+    pub log: crate::session_log::SessionLog,
 }
 
 impl TabResponse {
@@ -105,6 +109,7 @@ impl TabResponse {
             shown: None,
             visible: None,
             scroll: UniformListScrollHandle::new(),
+            log: crate::session_log::SessionLog::default(),
         }
     }
 }
@@ -248,10 +253,6 @@ impl Workspace {
             return;
         };
         let Some(doc) = project.doc(&key) else { return };
-        if doc.parsed.is_websocket() {
-            self.notice = Some("WebSocket requests arrive in M8.".into());
-            return;
-        }
         let parsed = doc.parsed.clone();
         let abs = project.abs_of(&key);
         let coll = project
@@ -368,6 +369,7 @@ impl Workspace {
             phases: Vec::new(),
             redirects: 0,
             cancel: handle.canceller(),
+            session: handle.session(),
         });
         self.responses.insert(tab_id, resp);
         if let Some(ui) = self.tab_ui.get_mut(&tab_id) {
@@ -590,6 +592,7 @@ impl Workspace {
                 }
                 self.log(format!("↪ {} {} → {}", h.status, h.from, h.to));
             }
+            RunEvent::Frame(f) => r.log.push(f),
             RunEvent::Finished(res) => self.finish_run(tab_id, seq, *res, cx),
         }
         cx.notify();

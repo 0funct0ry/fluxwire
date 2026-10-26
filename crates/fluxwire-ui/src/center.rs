@@ -1117,7 +1117,7 @@ impl Workspace {
             .into_any_element()
     }
 
-    fn request_sub_content(
+    pub(crate) fn request_sub_content(
         &self,
         t: &Theme,
         doc: &OpenDoc,
@@ -1255,23 +1255,16 @@ impl Workspace {
             return self.render_empty(t, cx).into_any_element();
         };
         let key = tab.key.clone();
+        let tab_id = tab.id;
         let look = self.var_look(&key);
         let url = doc
             .parsed
             .request()
             .map_or(String::new(), |r| r.target.clone());
         let headers = doc.parsed.request().map_or(0, |r| r.headers.len());
-        let messages: Vec<(String, String, String)> = doc
-            .parsed
-            .blocks_of(BlockKind::Message)
-            .map(|(i, b)| {
-                (
-                    b.info.label.clone().unwrap_or_else(|| "message".into()),
-                    b.info.language.clone(),
-                    doc.target_text(Target::Block(i)),
-                )
-            })
-            .collect();
+        let messages = doc.parsed.messages().len();
+        let scripts = doc.parsed.blocks_of(BlockKind::Pre).count()
+            + doc.parsed.blocks_of(BlockKind::Post).count();
         let labels: Vec<(String, usize)> = WS_SUBTABS
             .iter()
             .enumerate()
@@ -1279,106 +1272,27 @@ impl Workspace {
                 (
                     (*s).to_string(),
                     match i {
-                        0 => messages.len(),
+                        0 => messages,
                         1 => headers,
+                        3 => scripts,
                         _ => 0,
                     },
                 )
             })
             .collect();
-        let connected = ui.connected;
+        let connected = self.ws_connected(tab_id);
+        let connecting = self.ws_connecting(tab_id);
+        // The form's Auth/Scripts/Settings tabs are the HTTP ones; map the WS index onto them.
+        let http_sub = |sub: usize| TabUi { sub, ..ui.clone() };
         let content = match ui.sub {
-            0 => div()
-                .flex()
-                .flex_col()
-                .child(
-                    row()
-                        .px_3()
-                        .pt_2()
-                        .pb_1()
-                        .gap_2()
-                        .text_size(px(11.))
-                        .text_color(t.text_placeholder)
-                        .child("Saved messages"),
-                )
-                .children(if messages.is_empty() {
-                    vec![
-                        div()
-                            .px_3()
-                            .text_color(t.text_muted)
-                            .child(
-                                "No saved messages. Add a `json message` block with Open as text.",
-                            )
-                            .into_any_element(),
-                    ]
-                } else {
-                    messages
-                        .into_iter()
-                        .map(|(label, lang, body)| {
-                            div()
-                                .flex()
-                                .flex_col()
-                                .child(
-                                    row()
-                                        .px_3()
-                                        .py_1()
-                                        .gap_2()
-                                        .child(
-                                            div()
-                                                .font_weight(gpui::FontWeight::MEDIUM)
-                                                .child(label),
-                                        )
-                                        .child(pill(t, lang.clone())),
-                                )
-                                .child(code_view(
-                                    &body,
-                                    if lang == "json" {
-                                        Lang::Json
-                                    } else {
-                                        Lang::Plain
-                                    },
-                                    t,
-                                ))
-                                .into_any_element()
-                        })
-                        .collect()
-                })
-                .child(
-                    row()
-                        .px_3()
-                        .pt_3()
-                        .pb_1()
-                        .gap_2()
-                        .text_size(px(11.))
-                        .text_color(t.text_placeholder)
-                        .child("Message log (mock until M8)")
-                        .child(pill(t, "All"))
-                        .child(pill(t, "Sent"))
-                        .child(pill(t, "Received")),
-                )
-                .children(self.mock.ws_log.iter().map(|(dir, ts, payload)| {
-                    row()
-                        .h(px(24.))
-                        .px_3()
-                        .gap_3()
-                        .font_family(BUFFER_FONT)
-                        .text_size(px(12.))
-                        .child(
-                            div()
-                                .text_color(if *dir == "out" { t.accent } else { t.created })
-                                .child(if *dir == "out" { "↑" } else { "↓" }),
-                        )
-                        .child(div().text_color(t.text_placeholder).child(*ts))
-                        .child(div().truncate().child(*payload))
-                }))
-                .into_any_element(),
+            0 => self.render_ws_messages(t, tab_id, ui.msg_sel, cx),
             1 => self.editable_table(t, Table::Headers, &key, "ws-headers", cx),
-            _ => div()
-                .p_3()
-                .text_color(t.text_muted)
-                .child(WS_SUBTABS[ui.sub])
-                .into_any_element(),
+            2 => self.request_sub_content(t, doc, &key, &http_sub(3), cx),
+            3 => self.request_sub_content(t, doc, &key, &http_sub(4), cx),
+            _ => self.request_sub_content(t, doc, &key, &http_sub(7), cx),
         };
+        let status = self.ws_status_line(t, tab_id);
+        let log = self.render_session_log(t, crate::session::LogRef::Live(tab_id), status, cx);
         div()
             .key_context("RequestEditor")
             .flex_1()
@@ -1425,17 +1339,18 @@ impl Workspace {
                         button(
                             t,
                             "ws-connect",
-                            if connected { "Disconnect" } else { "Connect" },
+                            if connected {
+                                "Disconnect"
+                            } else if connecting {
+                                "Cancel"
+                            } else {
+                                "Connect"
+                            },
                             !connected,
                         )
                         .h(px(30.))
                         .px_4()
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            if let Some(ui) = this.active_ui() {
-                                ui.connected = !ui.connected;
-                            }
-                            cx.notify();
-                        })),
+                        .on_click(cx.listener(|this, _, _, cx| this.ws_toggle(cx))),
                     ),
             )
             .children(self.doc_banners(t, doc, cx))
@@ -1444,8 +1359,19 @@ impl Workspace {
                 div()
                     .id("ws-scroll")
                     .flex_1()
+                    .min_h_0()
                     .overflow_y_scroll()
                     .child(content),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .border_t_1()
+                    .border_color(t.border_variant)
+                    .child(log),
             )
             .into_any_element()
     }

@@ -159,7 +159,8 @@ pub struct TabUi {
     pub post_script: bool,
     /// Tests tab: false shows the Expect editor, true the `test` script.
     pub tests_script: bool,
-    pub connected: bool,
+    /// Selected saved message of a WebSocket tab (the one Cmd/Ctrl+Enter sends).
+    pub msg_sel: usize,
     /// Saved scroll offset of the editor area while this tab is not showing.
     pub scroll: f32,
 }
@@ -172,7 +173,7 @@ impl TabUi {
             method: 0,
             post_script: false,
             tests_script: false,
-            connected: false,
+            msg_sel: 0,
             scroll: 0.0,
         }
     }
@@ -258,6 +259,14 @@ pub struct Workspace {
     pub editor_focus: FocusHandle,
     pub filter_focus: FocusHandle,
     pub find_focus: FocusHandle,
+    /// WebSocket composers by tab id, and the focus/bounds of the composer editor.
+    pub composers: HashMap<u64, crate::session::Composer>,
+    pub composer_focus: FocusHandle,
+    pub composer_active: bool,
+    pub composer_bounds: Rc<Cell<Bounds<Pixels>>>,
+    pub log_focus: FocusHandle,
+    /// Transcripts of WebSocket History entries opened this session.
+    pub history_logs: HashMap<i64, crate::session_log::SessionLog>,
 }
 
 impl Workspace {
@@ -345,6 +354,12 @@ impl Workspace {
             editor_focus: cx.focus_handle(),
             filter_focus: cx.focus_handle(),
             find_focus: cx.focus_handle(),
+            composers: HashMap::new(),
+            composer_focus: cx.focus_handle(),
+            composer_active: false,
+            composer_bounds: Rc::new(Cell::new(Bounds::default())),
+            log_focus: cx.focus_handle(),
+            history_logs: HashMap::new(),
         };
         this.envs.settings = settings;
         this.recent_ids = this
@@ -1298,14 +1313,14 @@ impl Render for Workspace {
             Import => |this, _w, _c| this.notice = Some("Import arrives in a later milestone (M11).".into()),
             OpenAsText => |this, _w, c| this.toggle_text_mode(c),
             Quit => |this, _w, c| { this.save_session_now(); c.quit() },
-            Send => |this, _w, c| this.send_or_cancel(c),
+            Send => |this, w, c| if this.is_ws_tab() { this.ws_send_action(w, c) } else { this.send_or_cancel(c) },
             CancelRequest => |this, _w, c| if !this.cancel_request(c) { this.method_menu = false },
             CopyAsCurl => |this, _w, c| this.copy_curl(false, c),
             CopyAsCurlWithSecrets => |this, _w, c| this.copy_curl(true, c),
             FindInResponse => |this, w, _c| w.focus(&this.find_focus),
             CopyResponseBody => |this, _w, c| this.copy_response_body(c),
             SaveResponseBody => |this, _w, c| this.save_response_body(c),
-            Connect => |this, _w, _c| if let Some(ui) = this.active_ui() { ui.connected = !ui.connected },
+            Connect => |this, _w, c| this.ws_toggle(c),
         });
         root.child(self.render_title_bar(&t, cx))
             .child(body)

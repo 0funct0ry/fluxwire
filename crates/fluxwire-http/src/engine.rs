@@ -788,6 +788,7 @@ async fn run_inner(
             total_ms,
             redirects: hops,
             connection_reused: reused,
+            session: None,
         });
     }
 }

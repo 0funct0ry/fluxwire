@@ -193,6 +193,44 @@ pub struct ExpectBlock {
     pub body: Body,
 }
 
+/// A saved message of a session protocol such as WebSocket.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessageBlock {
+    /// Index into `FluxDoc::blocks`.
+    pub index: usize,
+    pub label: String,
+    /// `json`, `text`, `xml` or `binary`.
+    pub language: String,
+    /// Block content without its final line break.
+    pub text: String,
+    /// Path from `@file(path)` or `< path`, for a body read from disk (binary messages).
+    pub file: Option<String>,
+}
+
+impl MessageBlock {
+    fn file_ref(text: &str) -> Option<String> {
+        let t = text.trim();
+        if t.lines().count() != 1 {
+            return None;
+        }
+        let path = t
+            .strip_prefix("@file(")
+            .and_then(|r| r.strip_suffix(')'))
+            .map(|p| p.trim().trim_matches('"'))
+            .or_else(|| t.strip_prefix("< ").map(str::trim))?;
+        (!path.is_empty()).then(|| path.to_string())
+    }
+
+    /// The frame kind this message is sent as.
+    pub fn frame_kind(&self) -> &'static str {
+        if self.language == "binary" {
+            "binary"
+        } else {
+            "text"
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KvLine {
     pub enabled: bool,
@@ -259,6 +297,26 @@ impl FluxDoc {
             .iter()
             .enumerate()
             .filter(move |(_, b)| b.kind == kind)
+    }
+
+    /// Saved `<lang> message <label>` blocks in file order (SPEC §7.5).
+    pub fn messages(&self) -> Vec<MessageBlock> {
+        self.blocks_of(BlockKind::Message)
+            .map(|(i, b)| {
+                let text = self.block_text(i);
+                let text = text
+                    .strip_suffix('\n')
+                    .map(|t| t.strip_suffix('\r').unwrap_or(t))
+                    .unwrap_or(text);
+                MessageBlock {
+                    index: i,
+                    label: b.info.label.clone().unwrap_or_else(|| "message".into()),
+                    language: b.info.language.clone(),
+                    file: MessageBlock::file_ref(text),
+                    text: text.to_string(),
+                }
+            })
+            .collect()
     }
 
     pub fn block_text(&self, i: usize) -> &str {
