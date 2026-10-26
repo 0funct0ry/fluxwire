@@ -178,6 +178,24 @@ pub fn parse_request(src: &str, content: Span, diags: &mut Vec<Diagnostic>) -> H
     let mut parts = text.split_whitespace();
     let (m, t, v) = (parts.next(), parts.next(), parts.next());
     let (Some(m), Some(t)) = (m, t) else {
+        // A lone method (the URL was cleared): keep the method so the method picker survives.
+        if let Some(m) = m {
+            diags.push(Diagnostic::new(
+                "F101",
+                Severity::Error,
+                rl.span(),
+                "Request line must be 'METHOD URL'",
+            ));
+            let mstart = rl.start + lead;
+            let mut r = empty_request(content);
+            r.method = m.to_string();
+            r.method_span = Span::new(mstart, mstart + m.len());
+            r.target_span = Span::at(mstart + m.len());
+            r.request_line = rl.span();
+            let rest = parse_rest(src, &ls[fi + 1..], content.end, true, diags);
+            fill(&mut r, rest, rl.span());
+            return r;
+        }
         diags.push(Diagnostic::new(
             "F101",
             Severity::Error,

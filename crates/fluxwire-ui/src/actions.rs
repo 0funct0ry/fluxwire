@@ -9,6 +9,10 @@ actions!(
         Send,
         CancelRequest,
         CopyAsCurl,
+        CopyAsCurlWithSecrets,
+        FindInResponse,
+        CopyResponseBody,
+        SaveResponseBody,
         QuickSearch,
         CommandPalette,
         NewRequest,
@@ -94,6 +98,15 @@ pub static ACTIONS: &[ActionInfo] = &[
         Some("secondary-shift-c"),
         Some("RequestEditor")
     ),
+    a!(
+        "request: copy as cURL (with secrets)",
+        CopyAsCurlWithSecrets,
+        None,
+        Some("RequestEditor")
+    ),
+    a!("response: find", FindInResponse, Some("secondary-f"), None),
+    a!("response: copy body", CopyResponseBody, None, None),
+    a!("response: save body to file", SaveResponseBody, None, None),
     a!("quick search: open", QuickSearch, Some("secondary-k"), None),
     a!(
         "command palette: open",

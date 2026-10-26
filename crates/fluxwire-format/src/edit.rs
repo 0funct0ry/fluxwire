@@ -120,6 +120,21 @@ pub fn set_request_line(doc: &FluxDoc, method: &str, target: &str) -> Vec<Edit> 
             format!("{method} {target}{v}"),
         )];
     }
+    if r.target.is_empty() {
+        // `GET` alone: rewrite the line so the new target gets its separating space.
+        if target.is_empty() && r.method == method {
+            return vec![];
+        }
+        let v = r
+            .version
+            .as_ref()
+            .map(|v| format!(" {v}"))
+            .unwrap_or_default();
+        return vec![Edit::replace(
+            r.request_line,
+            format!("{method} {target}{v}"),
+        )];
+    }
     let mut edits = Vec::new();
     if r.method != method {
         edits.push(Edit::replace(r.method_span, method));

@@ -15,7 +15,7 @@ use crate::{
     project::{OpenDoc, Target},
     tabs::{Tab, TabKind},
     theme::Theme,
-    ui::{icon, kbd_label, row, with_variables},
+    ui::{icon, kbd_label, row, url_runs, with_variables},
     workspace::{BottomTab, Col, METHODS, TabUi, Table, Workspace},
 };
 
@@ -23,7 +23,6 @@ const SUBTABS: [&str; 8] = [
     "Params", "Headers", "Body", "Auth", "Scripts", "Tests", "Docs", "Settings",
 ];
 const WS_SUBTABS: [&str; 5] = ["Messages", "Headers", "Auth", "Scripts", "Settings"];
-const RESP_TABS: [&str; 6] = ["Body", "Headers", "Cookies", "Timeline", "Tests", "Console"];
 
 pub fn kv_table(t: &Theme, rows: &[Kv], secret_col: bool) -> AnyElement {
     let t = t.clone();
@@ -365,7 +364,7 @@ impl Workspace {
             .child(div().flex_1().h_full().border_b_1().border_color(t.border))
     }
 
-    fn tab_strip(
+    pub(crate) fn tab_strip(
         &self,
         t: &Theme,
         prefix: &'static str,
@@ -498,6 +497,8 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let method_label = method.to_string();
+        let sending = self.is_sending();
+        let url_len = url.chars().count();
         row()
             .flex_none()
             .gap_2()
@@ -538,6 +539,24 @@ impl Workspace {
                     .id("url")
                     .track_focus(&self.url_focus)
                     .on_key_down(cx.listener(|this, ev, _, cx| this.on_url_key(ev, cx)))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, ev: &MouseDownEvent, window, cx| {
+                            this.url_mouse_down(ev, window, cx)
+                        }),
+                    )
+                    .on_mouse_move(cx.listener(|this, ev: &gpui::MouseMoveEvent, window, cx| {
+                        this.url_mouse_move(ev, window, cx)
+                    }))
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|this, _: &gpui::MouseUpEvent, _, _| this.url_drag = false),
+                    )
+                    .on_mouse_up_out(
+                        MouseButton::Left,
+                        cx.listener(|this, _: &gpui::MouseUpEvent, _, _| this.url_drag = false),
+                    )
+                    .cursor_text()
                     .flex_1()
                     .h(px(30.))
                     .px_3()
@@ -552,14 +571,39 @@ impl Workspace {
                     .bg(t.editor)
                     .font_family(BUFFER_FONT)
                     .text_size(px(14.))
-                    .children(with_variables(url, t))
-                    .child(div().w(px(1.)).h(px(15.)).bg(t.accent)),
+                    .child({
+                        let cell = self.url_bounds.clone();
+                        let sel = self
+                            .url_sel
+                            .map(|(a, b)| (a.min(url_len), b.min(url_len)))
+                            .filter(|(a, b)| a != b);
+                        div()
+                            .relative()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .children(url_runs(url, sel, t))
+                            .when(sel.is_none(), |d| {
+                                d.child(div().w(px(1.)).h(px(15.)).bg(t.accent))
+                            })
+                            .child(
+                                gpui::canvas(move |b, _, _| cell.set(b), |_, _, _, _| {})
+                                    .absolute()
+                                    .size_full(),
+                            )
+                    }),
             )
             .child(
-                button(t, "send", "Send", sendable)
-                    .h(px(30.))
-                    .px_4()
-                    .when(!sendable, |d| d.opacity(0.5).cursor_default()),
+                button(
+                    t,
+                    "send",
+                    if sending { "Cancel" } else { "Send" },
+                    sendable || sending,
+                )
+                .h(px(30.))
+                .px_4()
+                .when(!sendable && !sending, |d| d.opacity(0.5).cursor_default())
+                .on_click(cx.listener(|this, _, _, cx| this.send_or_cancel(cx))),
             )
             .child(
                 button(t, "text-mode", "Open as text", false)
@@ -1154,143 +1198,6 @@ impl Workspace {
         }
     }
 
-    fn render_response(&self, t: &Theme, ui: &TabUi, cx: &mut Context<Self>) -> impl IntoElement {
-        let resp = &self.mock.response;
-        let labels: Vec<(String, usize)> =
-            RESP_TABS.iter().map(|s| ((*s).to_string(), 0)).collect();
-        let body: AnyElement = match ui.resp {
-            0 => code_view(resp.body, Lang::Json, t),
-            1 => kv_table(t, &resp.headers, false),
-            2 => kv_table(t, &resp.cookies, false),
-            3 => self.timeline(t),
-            4 => div()
-                .flex()
-                .flex_col()
-                .p_2()
-                .children(resp.tests.iter().map(|(name, ok)| {
-                    row()
-                        .h(px(24.))
-                        .gap_2()
-                        .child(
-                            div()
-                                .text_color(if *ok { t.created } else { t.deleted })
-                                .child(if *ok { "✓" } else { "✗" }),
-                        )
-                        .child(*name)
-                }))
-                .into_any_element(),
-            _ => div()
-                .flex()
-                .flex_col()
-                .p_2()
-                .font_family(BUFFER_FONT)
-                .text_size(px(12.))
-                .text_color(t.text_muted)
-                .children(resp.console.iter().map(|l| div().child(*l)))
-                .into_any_element(),
-        };
-        div()
-            .flex()
-            .flex_col()
-            .flex_1()
-            .min_h_0()
-            .child(
-                row()
-                    .h(px(30.))
-                    .flex_none()
-                    .px_3()
-                    .gap_3()
-                    .text_size(px(12.))
-                    .text_color(t.text_muted)
-                    .border_b_1()
-                    .border_color(t.border_variant)
-                    .child(
-                        div()
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(t.status_color(resp.status))
-                            .child(format!("{} {}", resp.status, resp.status_text)),
-                    )
-                    .child(format!("{} ms", resp.time_ms))
-                    .child(resp.size)
-                    .child(resp.protocol),
-            )
-            .child(self.tab_strip(t, "resp", labels, ui.resp, |u, i| u.resp = i, cx))
-            .child(
-                div()
-                    .id("resp-scroll")
-                    .flex_1()
-                    .overflow_y_scroll()
-                    .child(body),
-            )
-    }
-
-    fn timeline(&self, t: &Theme) -> AnyElement {
-        let total: u32 = self.mock.response.timeline.iter().map(|(_, ms)| ms).sum();
-        let mut offset = 0u32;
-        let rows: Vec<AnyElement> = self
-            .mock
-            .response
-            .timeline
-            .iter()
-            .map(|(label, ms)| {
-                let left = offset as f32 / total as f32;
-                let width = *ms as f32 / total as f32;
-                offset += ms;
-                row()
-                    .h(px(24.))
-                    .gap_3()
-                    .text_size(px(12.))
-                    .child(
-                        div()
-                            .w(px(70.))
-                            .flex_none()
-                            .text_color(t.text_muted)
-                            .child(*label),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .h(px(8.))
-                            .relative()
-                            .bg(t.element_hover)
-                            .child(
-                                div()
-                                    .absolute()
-                                    .top_0()
-                                    .h_full()
-                                    .left(relative(left))
-                                    .w(relative(width))
-                                    .rounded(px(2.))
-                                    .bg(t.accent),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .w(px(50.))
-                            .flex_none()
-                            .text_right()
-                            .font_family(BUFFER_FONT)
-                            .text_color(t.text_muted)
-                            .child(format!("{ms} ms")),
-                    )
-                    .into_any_element()
-            })
-            .collect();
-        div()
-            .flex()
-            .flex_col()
-            .p_3()
-            .children(rows)
-            .child(
-                div()
-                    .pt_2()
-                    .text_size(px(12.))
-                    .text_color(t.text_placeholder)
-                    .child("Redirects: none"),
-            )
-            .into_any_element()
-    }
-
     fn render_websocket(
         &self,
         t: &Theme,
@@ -1680,15 +1587,7 @@ impl Workspace {
             (BottomTab::Problems, "Problems"),
         ];
         let body: AnyElement = match self.bottom_tab {
-            BottomTab::Console => div()
-                .flex()
-                .flex_col()
-                .p_2()
-                .font_family(BUFFER_FONT)
-                .text_size(px(12.))
-                .text_color(t.text_muted)
-                .children(self.mock.response.console.iter().map(|l| div().child(*l)))
-                .into_any_element(),
+            BottomTab::Console => self.console_view(t),
             BottomTab::Problems => {
                 let problems = self
                     .project

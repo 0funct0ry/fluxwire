@@ -7,7 +7,7 @@ front matter:
   name = Scalar("Broken")
 blocks:
   Request lang=http role=None label=None closed=true
-    request   version=None
+    request POST  version=None
     header enabled=true X-Ok: 1
     body "none"
   Request lang=http role=None label=None closed=true

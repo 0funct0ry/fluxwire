@@ -292,7 +292,77 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Typing in the URL bar edits the request target through the span editor.
+    /// Character index under a pointer position in the URL bar (monospace cells).
+    fn url_index(&self, window: &Window, pos: gpui::Point<gpui::Pixels>) -> usize {
+        let ts = window.text_system();
+        let id = ts.resolve_font(&gpui::font(crate::assets::BUFFER_FONT));
+        let cw = ts
+            .advance(id, gpui::px(14.), 'm')
+            .map(|s| f32::from(s.width))
+            .unwrap_or(8.4)
+            .max(1.0);
+        let x = f32::from(pos.x - self.url_bounds.get().origin.x);
+        let len = self
+            .active_key()
+            .and_then(|k| {
+                self.project
+                    .as_ref()?
+                    .doc(&k)?
+                    .parsed
+                    .request()
+                    .map(|r| r.target.chars().count())
+            })
+            .unwrap_or(0);
+        ((x / cw).round().max(0.0) as usize).min(len)
+    }
+
+    pub(crate) fn url_mouse_down(
+        &mut self,
+        ev: &gpui::MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        window.focus(&self.url_focus);
+        let idx = self.url_index(window, ev.position);
+        let text = self
+            .active_key()
+            .and_then(|k| {
+                self.project
+                    .as_ref()?
+                    .doc(&k)?
+                    .parsed
+                    .request()
+                    .map(|r| r.target.clone())
+            })
+            .unwrap_or_default();
+        let len = text.chars().count();
+        self.url_sel = match ev.click_count {
+            2 => Some(crate::ui::word_range(&text, idx)),
+            n if n >= 3 => Some((0, len)),
+            _ => Some((idx, idx)),
+        };
+        self.url_drag = ev.click_count == 1;
+        cx.notify();
+    }
+
+    pub(crate) fn url_mouse_move(
+        &mut self,
+        ev: &gpui::MouseMoveEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.url_drag || ev.pressed_button != Some(gpui::MouseButton::Left) {
+            return;
+        }
+        let idx = self.url_index(window, ev.position);
+        if let Some((a, _)) = self.url_sel {
+            self.url_sel = Some((a, idx));
+            cx.notify();
+        }
+    }
+
+    /// Typing in the URL bar edits the request target through the span editor. A selection is
+    /// replaced by typing or pasting and removed by Backspace; Cmd/Ctrl+A/C/X work on it.
     pub(crate) fn on_url_key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) {
         let Some(key) = self.active_key() else { return };
         let Some(doc) = self.project.as_mut().and_then(|p| p.doc_mut(&key)) else {
@@ -301,18 +371,78 @@ impl Workspace {
         let Some(req) = doc.parsed.request() else {
             return;
         };
-        let (method, mut target) = (req.method.clone(), req.target.clone());
+        let (method, target) = (req.method.clone(), req.target.clone());
+        let mut chars: Vec<char> = target.chars().collect();
+        let sel = self
+            .url_sel
+            .map(|(a, b)| (a.min(b).min(chars.len()), a.max(b).min(chars.len())))
+            .filter(|(a, b)| a != b);
         let ks = &ev.keystroke;
-        if ks.modifiers.control || ks.modifiers.platform {
+        // Replace the selection (or append at the end) with `ins`.
+        let insert = |chars: &mut Vec<char>, ins: &str| {
+            let ins = ins
+                .chars()
+                .filter(|c| !c.is_whitespace() && !c.is_control());
+            match sel {
+                Some((a, b)) => {
+                    chars.splice(a..b, ins);
+                }
+                None => chars.extend(ins),
+            }
+        };
+        if ks.modifiers.secondary() && matches!(ks.key.as_str(), "a" | "c" | "x") {
+            match ks.key.as_str() {
+                "a" => {
+                    self.url_sel = Some((0, chars.len()));
+                    cx.notify();
+                    return;
+                }
+                k => {
+                    let Some((a, b)) = sel else { return };
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                        chars[a..b].iter().collect(),
+                    ));
+                    if k == "c" {
+                        return;
+                    }
+                    chars.drain(a..b);
+                }
+            }
+        } else if ks.modifiers.secondary() && ks.key == "v" {
+            // Paste: a `curl ...` command fills the whole request (SPEC §9.5); anything else
+            // replaces the selection or is appended to the URL.
+            let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) else {
+                return;
+            };
+            if text.trim_start().starts_with("curl")
+                && let Some(edits) = fluxwire_runner::runner().edits_from_paste(&doc.parsed, &text)
+            {
+                if doc.apply(&edits) {
+                    self.url_sel = None;
+                    self.after_edit(&key, cx);
+                    self.notice = Some("Filled the request from a cURL command.".into());
+                }
+                return;
+            }
+            insert(&mut chars, &text);
+        } else if ks.modifiers.control || ks.modifiers.platform {
             return;
-        }
-        if ks.key == "backspace" {
-            target.pop();
+        } else if ks.key == "backspace" || ks.key == "delete" {
+            match sel {
+                Some((a, b)) => {
+                    chars.drain(a..b);
+                }
+                None => {
+                    chars.pop();
+                }
+            }
         } else if let Some(s) = ks.key_char.as_deref().filter(|s| !s.is_empty()) {
-            target.extend(s.chars().filter(|c| !c.is_whitespace() && !c.is_control()));
+            insert(&mut chars, s);
         } else {
             return;
         }
+        self.url_sel = None;
+        let target: String = chars.into_iter().collect();
         let edits = fmt::set_request_line(&doc.parsed, &method, &target);
         if doc.apply(&edits) {
             self.after_edit(&key, cx);

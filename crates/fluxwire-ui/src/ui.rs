@@ -114,6 +114,87 @@ pub fn with_variables(text: &str, t: &Theme) -> Vec<AnyElement> {
     out
 }
 
+/// Char-index range of the "word" under `idx` (a whole `{{variable}}`, else a run between URL
+/// separators). Used for double-click selection in the URL bar.
+pub fn word_range(text: &str, idx: usize) -> (usize, usize) {
+    let c: Vec<char> = text.chars().collect();
+    if c.is_empty() {
+        return (0, 0);
+    }
+    let i = idx.min(c.len() - 1);
+    // inside {{...}}?
+    let s: String = c.iter().collect();
+    let mut from = 0;
+    while let Some(a) = s[from..].find("{{") {
+        let a = from + a;
+        let Some(len) = s[a..].find("}}") else { break };
+        let (ca, cb) = (s[..a].chars().count(), s[..a + len + 2].chars().count());
+        if (ca..cb).contains(&i) {
+            return (ca, cb);
+        }
+        from = a + len + 2;
+    }
+    let sep = |ch: char| "/?&=:#.@,;{}".contains(ch) || ch.is_whitespace();
+    if sep(c[i]) {
+        return (i, i + 1);
+    }
+    let mut a = i;
+    while a > 0 && !sep(c[a - 1]) {
+        a -= 1;
+    }
+    let mut b = i + 1;
+    while b < c.len() && !sep(c[b]) {
+        b += 1;
+    }
+    (a, b)
+}
+
+/// Like `with_variables`, but with an optional selection (char indices) and no chip padding, so
+/// every character is exactly one monospace cell wide and pixel positions map back to indices.
+pub fn url_runs(text: &str, sel: Option<(usize, usize)>, t: &Theme) -> Vec<AnyElement> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut in_var = vec![false; chars.len()];
+    let mut i = 0;
+    while i + 1 < chars.len() {
+        if chars[i] == '{'
+            && chars[i + 1] == '{'
+            && let Some(j) = (i + 2..chars.len().saturating_sub(1))
+                .find(|&j| chars[j] == '}' && chars[j + 1] == '}')
+        {
+            in_var[i..j + 2].iter_mut().for_each(|v| *v = true);
+            i = j + 2;
+            continue;
+        }
+        i += 1;
+    }
+    let sel = sel
+        .map(|(a, b)| (a.min(b), a.max(b)))
+        .filter(|(a, b)| a != b);
+    let mut out = Vec::new();
+    let mut start = 0;
+    let class = |k: usize| (in_var[k], sel.is_some_and(|(a, b)| (a..b).contains(&k)));
+    for k in 1..=chars.len() {
+        if k == chars.len() || class(k) != class(start) {
+            let (var, selected) = class(start);
+            let run: String = chars[start..k].iter().collect();
+            let mut d = div().child(run);
+            if var {
+                d = d.text_color(t.accent);
+            }
+            d = if selected {
+                d.bg(t.element_selected)
+            } else if var {
+                d.bg(t.accent_bg())
+            } else {
+                d
+            };
+            out.push(d.into_any_element());
+            start = k;
+        }
+    }
+    out
+}
+
 /// A horizontal row container with the shared item gap.
 pub fn row() -> Div {
     div().flex().flex_row().items_center()
@@ -130,6 +211,16 @@ mod tests {
         assert_eq!(e.text(), "abc");
         e.backspace();
         assert_eq!(e.text(), "ab");
+    }
+
+    #[test]
+    fn double_click_picks_a_word_or_a_variable() {
+        let u = "https://api.test/v1/{{id}}/x";
+        assert_eq!(word_range(u, 9), (8, 11)); // `api`: '.' separates
+        assert_eq!(word_range(u, 2), (0, 5)); // https
+        let v = u.find("{{").unwrap();
+        assert_eq!(word_range(u, v + 3), (v, v + 6));
+        assert_eq!(word_range("", 0), (0, 0));
     }
 
     #[test]

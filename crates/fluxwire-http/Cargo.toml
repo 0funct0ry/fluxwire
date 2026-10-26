@@ -12,3 +12,33 @@ workspace = true
 
 [dependencies]
 fluxwire-protocol.workspace = true
+fluxwire-model.workspace = true
+fluxwire-format.workspace = true
+fluxwire-vars.workspace = true
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "net", "time", "macros", "sync", "fs", "io-util"] }
+tokio-util = { version = "0.7.20", features = ["io", "rt"] }
+hyper = { version = "1.12.0", features = ["client", "http1", "http2"] }
+hyper-util = { version = "0.1.21", features = ["tokio"] }
+http-body-util = "0.1.5"
+bytes = "1.12.1"
+futures = "0.3.34"
+tempfile = "3.27.0"
+serde_json.workspace = true
+base64 = "0.23.1"
+url = "2.5.8"
+md-5 = "0.11.0"
+sha2 = "0.11.1"
+rand = "0.10.3"
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12"] }
+rustls-platform-verifier = "0.7.1"
+rustls-pemfile = "2.2.0"
+async-compression = { version = "0.4.51", features = ["tokio", "gzip", "zlib", "brotli", "zstd"] }
+regex = "1.13.1"
+
+[dev-dependencies]
+axum = "0.8.9"
+axum-server = { version = "0.8.0", default-features = false, features = ["tls-rustls-no-provider"] }
+rcgen = { version = "0.14.10", default-features = false, features = ["ring", "pem"] }
+tokio = { version = "1.54.1", features = ["full"] }
+serde_json.workspace = true

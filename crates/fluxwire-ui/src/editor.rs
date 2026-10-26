@@ -286,7 +286,7 @@ impl EditorState {
     }
 }
 
-fn color(t: &Theme, tok: Tok) -> Hsla {
+pub(crate) fn tok_color(t: &Theme, tok: Tok) -> Hsla {
     match tok {
         Tok::Plain => t.text,
         Tok::Property => t.syntax_property,
@@ -331,7 +331,7 @@ fn line_element(
                 if !a.is_empty() {
                     children.push(
                         div()
-                            .text_color(color(t, tok))
+                            .text_color(tok_color(t, tok))
                             .child(a.to_string())
                             .into_any_element(),
                     );
@@ -340,14 +340,19 @@ fn line_element(
                 if !b.is_empty() {
                     children.push(
                         div()
-                            .text_color(color(t, tok))
+                            .text_color(tok_color(t, tok))
                             .child(b.to_string())
                             .into_any_element(),
                     );
                 }
                 placed = true;
             }
-            _ => children.push(div().text_color(color(t, tok)).child(s).into_any_element()),
+            _ => children.push(
+                div()
+                    .text_color(tok_color(t, tok))
+                    .child(s)
+                    .into_any_element(),
+            ),
         }
         col += n;
     }

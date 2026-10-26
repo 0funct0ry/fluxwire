@@ -1,6 +1,10 @@
-//! Protocol registry skeleton (SPEC §5.5). The `Protocol` trait, `Plan`/`Event`/`Outcome`
-//! arrive in M3; for now the registry tells the format parser which request languages and
-//! roles are known, so nothing is hard-coded in the parser.
+//! The `Protocol` trait with its `Plan`/`Event`/`Outcome` types, and the registry that tells
+//! the format parser which request languages and roles are known (SPEC §5.5).
+
+mod exec;
+pub use exec::*;
+
+pub mod conformance;
 
 /// One request body or message block shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -490,3 +490,292 @@ fn collection_with_newer_format_is_refused(cx: &mut TestAppContext) {
         assert!(w.open_error.as_deref().unwrap().contains("format 2"));
     });
 }
+
+// ---- M3: sending ----------------------------------------------------------------------------
+
+/// A one-thread HTTP server. `stall` keeps connections open without answering.
+fn test_server(stall: bool) -> u16 {
+    use std::io::{Read, Write};
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for s in l.incoming() {
+            let Ok(mut s) = s else { continue };
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 4096];
+                let _ = s.read(&mut buf);
+                if stall {
+                    std::thread::sleep(std::time::Duration::from_secs(20));
+                    return;
+                }
+                let body = r#"{"id":"pay_1","amount":4200}"#;
+                let _ = write!(
+                    s,
+                    "HTTP/1.1 201 Created\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            });
+        }
+    });
+    port
+}
+
+fn set_doc_text(view: &Entity<Workspace>, cx: &mut VisualTestContext, key: &str, text: String) {
+    view.update(cx, |w, _| {
+        w.project
+            .as_mut()
+            .unwrap()
+            .doc_mut(key)
+            .unwrap()
+            .set_text(text);
+    });
+}
+
+fn wait_until(
+    view: &Entity<Workspace>,
+    cx: &mut VisualTestContext,
+    what: &str,
+    f: impl Fn(&Workspace) -> bool,
+) {
+    for _ in 0..500 {
+        cx.run_until_parked();
+        if view.read_with(cx, |w, _| f(w)) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    panic!("timed out waiting for {what}");
+}
+
+fn get_doc_text(port: u16) -> String {
+    format!(
+        "---\nname: Local\n---\n\n# Local\n\nProse stays.\n\n```http\nGET http://127.0.0.1:{port}/v1/payments\nAccept: application/json\n```\n"
+    )
+}
+
+#[gpui::test]
+fn send_shows_the_response_without_saving(cx: &mut TestAppContext) {
+    let (view, cx, root) = setup_with(cx, "payments-api", "send");
+    let port = test_server(false);
+    set_doc_text(&view, cx, CREATE, get_doc_text(port));
+    let on_disk = std::fs::read_to_string(root.join(CREATE)).unwrap();
+    cx.simulate_keystrokes("secondary-enter");
+    wait_until(&view, cx, "the response body", |w| {
+        w.responses.values().any(|r| r.shown.is_some())
+    });
+    view.read_with(cx, |w, _| {
+        let r = w.responses.values().next().unwrap();
+        let res = r.result.as_ref().unwrap();
+        let x = res.outcome.as_ref().unwrap().exchange.as_ref().unwrap();
+        assert_eq!(x.status, 201);
+        let shown = r.shown.as_ref().unwrap();
+        assert!(
+            shown.text.contains("\"id\": \"pay_1\""),
+            "pretty printed: {}",
+            shown.text
+        );
+        assert!(
+            w.console.iter().any(|l| l.contains("201 Created")),
+            "{:?}",
+            w.console
+        );
+        assert!(!w.is_sending());
+    });
+    assert_eq!(
+        std::fs::read_to_string(root.join(CREATE)).unwrap(),
+        on_disk,
+        "sending never saves"
+    );
+}
+
+#[gpui::test]
+fn cancel_ends_an_in_flight_send(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "cancel");
+    let port = test_server(true);
+    set_doc_text(&view, cx, CREATE, get_doc_text(port));
+    cx.simulate_keystrokes("secondary-enter");
+    cx.run_until_parked();
+    assert!(view.read_with(cx, |w, _| w.is_sending()));
+    view.update(cx, |_, cx| cx.notify());
+    cx.run_until_parked();
+    cx.simulate_keystrokes("escape");
+    wait_until(&view, cx, "the cancelled result", |w| !w.is_sending());
+    view.read_with(cx, |w, _| {
+        let res = w
+            .responses
+            .values()
+            .next()
+            .unwrap()
+            .result
+            .as_ref()
+            .unwrap();
+        assert!(res.error.as_ref().unwrap().is_cancelled());
+    });
+}
+
+#[gpui::test]
+fn files_that_cannot_run_are_not_sent(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "unsupported");
+    set_doc_text(
+        &view,
+        cx,
+        CREATE,
+        "---\nname: X\nrequires: [grpc]\n---\n\n```http\nGET http://127.0.0.1:1/\n```\n".into(),
+    );
+    cx.simulate_keystrokes("secondary-enter");
+    wait_until(&view, cx, "the refusal", |w| {
+        w.responses.values().any(|r| r.result.is_some())
+    });
+    view.read_with(cx, |w, _| {
+        let res = w
+            .responses
+            .values()
+            .next()
+            .unwrap()
+            .result
+            .as_ref()
+            .unwrap();
+        assert!(res.outcome.is_none());
+        assert_eq!(res.error.as_ref().unwrap().phase(), "requires");
+    });
+}
+
+#[gpui::test]
+fn unresolved_variables_report_a_plan_error(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "vars");
+    cx.simulate_keystrokes("secondary-enter");
+    wait_until(&view, cx, "the plan error", |w| {
+        w.responses.values().any(|r| r.result.is_some())
+    });
+    view.read_with(cx, |w, _| {
+        let res = w
+            .responses
+            .values()
+            .next()
+            .unwrap()
+            .result
+            .as_ref()
+            .unwrap();
+        let (msg, _) = res.error.as_ref().unwrap().describe();
+        assert!(msg.contains("{{baseUrl}}"), "{msg}");
+    });
+}
+
+#[gpui::test]
+fn pasting_a_curl_command_fills_the_request(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "paste");
+    set_doc_text(&view, cx, CREATE, get_doc_text(1));
+    cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+        "curl -X PUT https://api.test/v1/x -H 'X-A: 1' -d '{\"a\":1}'".into(),
+    ));
+    cx.simulate_keystrokes("secondary-l secondary-v");
+    let text = view.read_with(cx, |w, _| {
+        w.project
+            .as_ref()
+            .unwrap()
+            .doc(CREATE)
+            .unwrap()
+            .text
+            .clone()
+    });
+    assert!(
+        text.contains("PUT https://api.test/v1/x\nX-A: 1\n\n{\"a\":1}\n```"),
+        "{text}"
+    );
+    assert!(text.contains("Prose stays."), "prose untouched");
+    assert!(dirty(&view, cx, CREATE));
+    // a plain URL pastes as text
+    cx.write_to_clipboard(gpui::ClipboardItem::new_string("/more".into()));
+    cx.simulate_keystrokes("secondary-v");
+    let text = view.read_with(cx, |w, _| {
+        w.project
+            .as_ref()
+            .unwrap()
+            .doc(CREATE)
+            .unwrap()
+            .text
+            .clone()
+    });
+    assert!(text.contains("PUT https://api.test/v1/x/more"), "{text}");
+}
+
+#[gpui::test]
+fn copy_as_curl_masks_secrets_unless_asked(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "curl");
+    set_doc_text(
+        &view,
+        cx,
+        CREATE,
+        "---\nname: X\nauth:\n  type: bearer\n  token: s3cret\n---\n\n```http\nGET http://x.test/a\n```\n".into(),
+    );
+    view.update(cx, |w, cx| w.copy_curl(false, cx));
+    let masked = cx.read_from_clipboard().and_then(|c| c.text()).unwrap();
+    assert!(
+        masked.contains("Bearer ***") && !masked.contains("s3cret"),
+        "{masked}"
+    );
+    view.update(cx, |w, cx| w.copy_curl(true, cx));
+    let open = cx.read_from_clipboard().and_then(|c| c.text()).unwrap();
+    assert!(open.contains("Bearer s3cret"), "{open}");
+}
+
+#[gpui::test]
+fn clearing_the_url_keeps_the_method(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "clear-url");
+    set_doc_text(
+        &view,
+        cx,
+        CREATE,
+        "---\nname: X\n---\n\n```http\nDELETE http://x.test/a\nAccept: */*\n```\n".into(),
+    );
+    cx.simulate_keystrokes("secondary-l");
+    for _ in 0..20 {
+        cx.simulate_keystrokes("backspace");
+    }
+    let method = |cx: &mut VisualTestContext| {
+        view.read_with(cx, |w, _| {
+            let d = w.project.as_ref().unwrap().doc(CREATE).unwrap();
+            (d.parsed.request().unwrap().method.clone(), d.text.clone())
+        })
+    };
+    let (m, text) = method(cx);
+    assert_eq!(m, "DELETE", "{text}");
+    assert!(text.contains("DELETE \nAccept: */*"), "{text}");
+    cx.simulate_input("h");
+    let (m, text) = method(cx);
+    assert_eq!(m, "DELETE");
+    assert!(text.contains("DELETE h\nAccept: */*"), "{text}");
+}
+
+#[gpui::test]
+fn url_selection_is_replaced_copied_and_deleted(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "url-sel");
+    set_doc_text(&view, cx, CREATE, get_doc_text(1));
+    let target = |cx: &mut VisualTestContext| {
+        view.read_with(cx, |w, _| {
+            w.project
+                .as_ref()
+                .unwrap()
+                .doc(CREATE)
+                .unwrap()
+                .parsed
+                .request()
+                .unwrap()
+                .target
+                .clone()
+        })
+    };
+    cx.simulate_keystrokes("secondary-l secondary-a secondary-c");
+    assert_eq!(
+        cx.read_from_clipboard().and_then(|c| c.text()).as_deref(),
+        Some("http://127.0.0.1:1/v1/payments")
+    );
+    cx.simulate_input("http://new.test/");
+    assert_eq!(target(cx), "http://new.test/");
+    cx.simulate_keystrokes("secondary-a backspace");
+    assert_eq!(target(cx), "");
+    view.read_with(cx, |w, _| {
+        let d = w.project.as_ref().unwrap().doc(CREATE).unwrap();
+        assert_eq!(d.parsed.request().unwrap().method, "GET");
+    });
+}

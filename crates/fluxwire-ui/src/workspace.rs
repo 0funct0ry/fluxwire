@@ -163,6 +163,10 @@ pub struct Workspace {
     pub project: Option<Project>,
     pub tabs: Tabs,
     pub tab_ui: HashMap<u64, TabUi>,
+    /// Run state and response per request tab.
+    pub responses: HashMap<u64, crate::response::TabResponse>,
+    /// Send log shown in the bottom dock.
+    pub console: Vec<String>,
     pub left_open: bool,
     pub left_width: f32,
     pub panel: Panel,
@@ -190,6 +194,10 @@ pub struct Workspace {
     pub watcher: Option<fluxwire_format::WatchHandle>,
     pub session_dirty: bool,
     pub editor_bounds: Rc<Cell<Bounds<Pixels>>>,
+    /// Selection in the URL bar (char indices, anchor then head) and whether a drag is active.
+    pub url_sel: Option<(usize, usize)>,
+    pub url_drag: bool,
+    pub url_bounds: Rc<Cell<Bounds<Pixels>>>,
     pub editor_scroll: ScrollHandle,
     pub resizing: bool,
     pub method_menu: bool,
@@ -198,6 +206,8 @@ pub struct Workspace {
     pub url_focus: FocusHandle,
     pub cell_focus: FocusHandle,
     pub editor_focus: FocusHandle,
+    pub filter_focus: FocusHandle,
+    pub find_focus: FocusHandle,
 }
 
 impl Workspace {
@@ -224,6 +234,8 @@ impl Workspace {
             project: None,
             tabs: Tabs::new(),
             tab_ui: HashMap::new(),
+            responses: HashMap::new(),
+            console: Vec::new(),
             left_open: true,
             left_width: 260.0,
             panel: Panel::Project,
@@ -248,6 +260,9 @@ impl Workspace {
             watcher: None,
             session_dirty: false,
             editor_bounds: Rc::new(Cell::new(Bounds::default())),
+            url_sel: None,
+            url_drag: false,
+            url_bounds: Rc::new(Cell::new(Bounds::default())),
             editor_scroll: ScrollHandle::new(),
             resizing: false,
             method_menu: false,
@@ -256,6 +271,8 @@ impl Workspace {
             url_focus: cx.focus_handle(),
             cell_focus: cx.focus_handle(),
             editor_focus: cx.focus_handle(),
+            filter_focus: cx.focus_handle(),
+            find_focus: cx.focus_handle(),
         };
         this.start_session_timer(cx);
         cx.on_app_quit(|this, _cx| {
@@ -847,7 +864,12 @@ impl Render for Workspace {
             QuickSearch => |this, w, c| this.open_modal(ModalKind::QuickSearch, w, c),
             CommandPalette => |this, w, c| this.open_modal(ModalKind::Palette, w, c),
             SwitchEnvironment => |this, w, c| this.open_modal(ModalKind::Environment, w, c),
-            Dismiss => |this, w, c| { this.method_menu = false; this.tree_menu = None; this.cell = None; this.inline = None; this.close_modal(w, c) },
+            Dismiss => |this, w, c| {
+                let open = this.method_menu || this.tree_menu.is_some() || this.cell.is_some() || this.inline.is_some() || this.modal.is_some();
+                this.method_menu = false; this.tree_menu = None; this.cell = None; this.inline = None; this.close_modal(w, c);
+                // Esc with nothing to dismiss cancels an in-flight send
+                if !open { this.cancel_request(c); }
+            },
             ToggleLeftDock => |this, _w, _c| this.left_open = !this.left_open,
             ToggleBottomDock => |this, _w, _c| this.bottom_open = !this.bottom_open,
             ShowProjectPanel => |this, _w, _c| { this.panel = Panel::Project; this.left_open = true },
@@ -900,9 +922,13 @@ impl Render for Workspace {
             Import => |this, _w, _c| this.notice = Some("Import arrives in a later milestone (M11).".into()),
             OpenAsText => |this, _w, c| this.toggle_text_mode(c),
             Quit => |this, _w, c| { this.save_session_now(); c.quit() },
-            Send => |_this, _w, _c| (),
-            CancelRequest => |this, _w, _c| this.method_menu = false,
-            CopyAsCurl => |_this, _w, _c| (),
+            Send => |this, _w, c| this.send_or_cancel(c),
+            CancelRequest => |this, _w, c| if !this.cancel_request(c) { this.method_menu = false },
+            CopyAsCurl => |this, _w, c| this.copy_curl(false, c),
+            CopyAsCurlWithSecrets => |this, _w, c| this.copy_curl(true, c),
+            FindInResponse => |this, w, _c| w.focus(&this.find_focus),
+            CopyResponseBody => |this, _w, c| this.copy_response_body(c),
+            SaveResponseBody => |this, _w, c| this.save_response_body(c),
             Connect => |this, _w, _c| if let Some(ui) = this.active_ui() { ui.connected = !ui.connected },
         });
         root.child(self.render_title_bar(&t, cx))

@@ -9,9 +9,11 @@ pub mod highlight;
 pub mod mock;
 pub mod ops;
 pub mod project;
+pub mod response;
 pub mod tabs;
 pub mod theme;
 pub mod ui;
+pub mod viewer;
 pub mod workspace;
 
 pub use workspace::run;
