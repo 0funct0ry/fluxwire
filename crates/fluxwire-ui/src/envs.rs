@@ -516,6 +516,18 @@ impl Workspace {
                 });
             }
         }
+        for i in &self.keymap_issues {
+            out.push(crate::project::Problem {
+                key: "keymap.toml".into(),
+                file: "keymap.toml".into(),
+                line: i.line.max(1),
+                col: 1,
+                span: fluxwire_model::Span { start: 0, end: 0 },
+                code: i.code,
+                severity: fluxwire_model::Severity::Warning,
+                message: i.message.clone(),
+            });
+        }
         out.sort_by(|a, b| (a.key.as_str(), a.line).cmp(&(b.key.as_str(), b.line)));
         out
     }

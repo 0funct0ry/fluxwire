@@ -18,6 +18,12 @@ use crate::{
     workspace::{BottomTab, Col, METHODS, TabUi, Table, Workspace},
 };
 
+/// Group key of the tab at `i` for kind-grouping dividers: pinned tabs form their own group.
+fn group_of(order: &[(bool, u8)], i: usize) -> (bool, u8) {
+    let (pinned, kind) = order[i];
+    (pinned, if pinned { 0 } else { kind })
+}
+
 const SUBTABS: [&str; 8] = [
     "Params", "Headers", "Body", "Auth", "Scripts", "Tests", "Docs", "Settings",
 ];
@@ -76,6 +82,7 @@ impl Workspace {
                 TabKind::Environment => self.render_environment(t, tab, cx).into_any_element(),
                 TabKind::History => self.render_history_tab(t, tab, cx),
                 TabKind::Sync => self.render_sync_tab(t).into_any_element(),
+                TabKind::Keybindings => self.render_keybindings(t, cx),
             },
             _ => self.render_empty(t, cx).into_any_element(),
         };
@@ -202,15 +209,23 @@ impl Workspace {
     fn render_tab_bar(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let active = self.tabs.active_id();
         let tabs: Vec<Tab> = self.tabs.display_order().into_iter().cloned().collect();
+        let order: Vec<(bool, u8)> = tabs
+            .iter()
+            .map(|t| (t.pinned, t.kind.group_order()))
+            .collect();
         row()
             .id("tab-bar")
             .h(px(28.))
             .flex_none()
             .bg(t.surface)
             .overflow_x_scroll()
-            .children(tabs.into_iter().map(|tab| {
+            .children(tabs.into_iter().enumerate().map(|(n, tab)| {
                 let id = tab.id;
                 let is_active = active == Some(id);
+                // With grouping on, a heavier divider marks where the kind changes.
+                let group_start = self.tabs.group_by_kind
+                    && n > 0
+                    && group_of(&order, n) != group_of(&order, n - 1);
                 let color = t.method_color(tab.kind.color_key());
                 let glyph_color = if tab.kind.color_key().is_empty() {
                     t.text_muted
@@ -226,6 +241,7 @@ impl Workspace {
                     .flex_none()
                     .border_r_1()
                     .border_color(t.border_variant)
+                    .when(group_start, |d| d.border_l_2().border_color(t.border))
                     .text_size(px(14.))
                     .cursor_pointer()
                     // Zed: the active tab shares the editor background and drops the bottom
@@ -246,8 +262,8 @@ impl Workspace {
                     }))
                     .on_mouse_down(
                         MouseButton::Right,
-                        cx.listener(move |this, _, _, cx| {
-                            this.tabs.toggle_pin(id);
+                        cx.listener(move |this, ev: &gpui::MouseDownEvent, _, cx| {
+                            this.tab_menu = Some((id, ev.position));
                             cx.notify();
                         }),
                     )
@@ -1516,13 +1532,32 @@ impl Workspace {
             }
         };
         div()
-            .h(px(200.))
+            .h(px(self.bottom_height))
             .flex_none()
             .flex()
             .flex_col()
             .border_t_1()
             .border_color(t.border)
             .bg(t.surface)
+            .child(
+                div()
+                    .id("bottom-resize")
+                    .h(px(3.))
+                    .w_full()
+                    .flex_none()
+                    .cursor_row_resize()
+                    .hover({
+                        let h = t.element_selected;
+                        move |s| s.bg(h)
+                    })
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.resizing_bottom = true;
+                            cx.notify();
+                        }),
+                    ),
+            )
             .child(
                 row()
                     .h(px(28.))
@@ -1539,6 +1574,7 @@ impl Workspace {
                             .text_color(if on { t.text } else { t.text_muted })
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.bottom_tab = b;
+                                this.session_dirty = true;
                                 cx.notify();
                             }))
                             .child(label)

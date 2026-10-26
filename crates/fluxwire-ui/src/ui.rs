@@ -69,7 +69,8 @@ pub fn kbd_label(binding: &str) -> String {
     binding
         .split('-')
         .map(|part| match (part, mac) {
-            ("secondary", true) => "⌘".to_string(),
+            ("secondary", true) | ("cmd", true) | ("platform", true) => "⌘".to_string(),
+            ("cmd", false) | ("platform", false) => "Super+".to_string(),
             ("secondary", false) => "Ctrl+".to_string(),
             ("shift", true) => "⇧".to_string(),
             ("shift", false) => "Shift+".to_string(),

@@ -781,19 +781,61 @@ impl Workspace {
                     .children(self.recent.workspaces.clone().into_iter().enumerate().map(
                         |(i, w)| {
                             let path = std::path::PathBuf::from(&w);
-                            div()
+                            let new_win = path.clone();
+                            let forget = w.clone();
+                            let name = path
+                                .file_name()
+                                .map_or(w.clone(), |n| n.to_string_lossy().into_owned());
+                            row()
                                 .id(("recent", i))
+                                .w(px(520.))
                                 .px_2()
+                                .h(px(26.))
+                                .gap_2()
                                 .rounded(px(4.))
                                 .cursor_pointer()
-                                .font_family(BUFFER_FONT)
                                 .text_size(px(12.))
-                                .text_color(t.accent)
                                 .hover(|s| s.bg(t.element_hover))
                                 .on_click(cx.listener(move |this, _, w, cx| {
                                     this.open_project(&path, w, cx)
                                 }))
-                                .child(w)
+                                .child(div().text_color(t.accent).child(name))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .truncate()
+                                        .font_family(BUFFER_FONT)
+                                        .text_color(t.text_placeholder)
+                                        .child(w),
+                                )
+                                .child(
+                                    div()
+                                        .id(("recent-new-window", i))
+                                        .px_1()
+                                        .text_color(t.text_muted)
+                                        .hover(|s| s.text_color(t.text))
+                                        .on_click(cx.listener(move |_, _, _, cx| {
+                                            crate::workspace::open_window_at(
+                                                cx,
+                                                Some(new_win.clone()),
+                                            );
+                                            cx.stop_propagation();
+                                        }))
+                                        .child("New window"),
+                                )
+                                .child(
+                                    div()
+                                        .id(("recent-forget", i))
+                                        .px_1()
+                                        .text_color(t.text_muted)
+                                        .hover(|s| s.text_color(t.text))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.forget_recent(&forget);
+                                            cx.stop_propagation();
+                                            cx.notify();
+                                        }))
+                                        .child("×"),
+                                )
                         },
                     )),
             )

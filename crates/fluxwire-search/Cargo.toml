@@ -12,3 +12,11 @@ workspace = true
 
 [dependencies]
 fluxwire-model.workspace = true
+nucleo-matcher = "0.3.1"
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "query"
+harness = false

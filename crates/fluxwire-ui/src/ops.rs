@@ -11,8 +11,7 @@ use crate::{
     editor::EditorState,
     envs::{CompleteKey, CompleteTarget},
     project::{
-        OpenDoc, Problem, Project, Session, SessionTab, Target, remember_workspace, save_recent,
-        save_session,
+        OpenDoc, Problem, Project, Session, Target, remember_workspace, save_recent, save_session,
     },
     tabs::TabKind,
     workspace::{
@@ -868,6 +867,10 @@ impl Workspace {
     // ---- problems -------------------------------------------------------------------------
 
     pub fn goto_problem(&mut self, p: &Problem, window: &mut Window, cx: &mut Context<Self>) {
+        if p.key == "keymap.toml" {
+            self.open_config_file("keymap.toml", "", cx);
+            return;
+        }
         self.open_request(&p.key.clone(), true, window, cx);
         let Some(doc) = self.project.as_mut().and_then(|pr| pr.doc_mut(&p.key)) else {
             return;
@@ -1240,15 +1243,16 @@ impl Workspace {
     pub fn session(&self) -> Session {
         let mut s = Session::default();
         for t in self.tabs.all() {
-            if matches!(t.kind, TabKind::Http { .. } | TabKind::WebSocket) {
-                s.tabs.push(SessionTab {
-                    key: t.key.clone(),
-                    preview: t.preview,
-                    pinned: t.pinned,
-                });
-            }
+            s.tabs.push(self.session_tab(t));
         }
-        s.active = self.active_key();
+        s.closed = self
+            .tabs
+            .closed_tabs()
+            .iter()
+            .map(|t| self.session_tab(t))
+            .collect();
+        s.active = self.tabs.active().map(|t| t.key.clone());
+        s.layout = self.layout();
         s.active_env = self.envs.active.clone();
         if let Some(p) = &self.project {
             for k in p.dirty_keys() {
@@ -1298,7 +1302,21 @@ impl Workspace {
             return;
         };
         let s = crate::project::load_session(&dir, &root);
+        self.apply_layout(&s.layout);
         for t in &s.tabs {
+            if !t.kind.is_empty() {
+                if self.restore_other_tab(t, cx)
+                    && let Some(id) = self.tabs.id_for_key(&t.key)
+                {
+                    if t.pinned {
+                        self.tabs.toggle_pin(id);
+                    }
+                    if let Some(ui) = self.tab_ui.get_mut(&id) {
+                        ui.scroll = t.scroll;
+                    }
+                }
+                continue;
+            }
             self.open_request(&t.key, !t.preview, window, cx);
             if let Some(text) = s.unsaved.get(&t.key)
                 && let Some(d) = self.project.as_mut().and_then(|p| p.doc_mut(&t.key))
@@ -1311,8 +1329,25 @@ impl Workspace {
             {
                 self.tabs.toggle_pin(id);
             }
+            if let Some(id) = self.tabs.id_for_key(&t.key)
+                && let Some(ui) = self.tab_ui.get_mut(&id)
+            {
+                ui.scroll = t.scroll;
+            }
             self.sync_tab(&t.key);
         }
+        self.tabs.set_closed(
+            s.closed
+                .iter()
+                .map(|c| {
+                    let kind =
+                        crate::navigation::kind_from_tag_pub(&c.kind).unwrap_or(TabKind::Http {
+                            method: "GET".into(),
+                        });
+                    (c.key.clone(), c.title.clone(), kind, c.pinned)
+                })
+                .collect(),
+        );
         if let Some(a) = &s.active
             && let Some(id) = self.tabs.id_for_key(a)
         {

@@ -115,12 +115,19 @@ pub enum ItemRun {
         kind: TabKind,
     },
     Environment(Option<String>),
+    Folder(String),
+    History(i64),
+    Workspace(String),
 }
 
 #[derive(Clone, Debug)]
 pub struct ModalItem {
+    /// Search-index id (`req:…`, `act:…`); empty for non-indexed items.
+    pub id: String,
     pub label: String,
     pub detail: String,
+    /// Char indices of `label` matched by the query.
+    pub indices: Vec<u32>,
     pub run: ItemRun,
 }
 
@@ -128,7 +135,20 @@ pub struct Modal {
     pub kind: ModalKind,
     pub query: TextEdit,
     pub selected: usize,
+    pub results: Vec<ModalItem>,
 }
+
+/// Ctrl+Tab in progress: tabs by recency and the one being previewed.
+#[derive(Clone, Debug)]
+pub struct Switcher {
+    pub order: Vec<u64>,
+    pub idx: usize,
+}
+
+/// Most results shown for one query.
+const MODAL_LIMIT: usize = 200;
+/// Palette/quick-search items remembered for the recency boost.
+const RECENT_IDS: usize = 40;
 
 /// Per-tab view state (sub-tab selections, URL text).
 #[derive(Clone, Debug)]
@@ -138,6 +158,8 @@ pub struct TabUi {
     pub method: usize,
     pub post_script: bool,
     pub connected: bool,
+    /// Saved scroll offset of the editor area while this tab is not showing.
+    pub scroll: f32,
 }
 
 impl TabUi {
@@ -148,6 +170,7 @@ impl TabUi {
             method: 0,
             post_script: false,
             connected: false,
+            scroll: 0.0,
         }
     }
 }
@@ -180,6 +203,21 @@ pub struct Workspace {
     pub envs: crate::envs::EnvStore,
     pub collapsed: HashSet<String>,
     pub modal: Option<Modal>,
+    pub modal_scroll: ScrollHandle,
+    pub switcher: Option<Switcher>,
+    /// Tab context menu: tab id and where it opened.
+    pub tab_menu: Option<(u64, Point<Pixels>)>,
+    pub keymap_watcher: Option<fluxwire_format::WatchHandle>,
+    pub keymap_issues: Vec<crate::actions::KeymapIssue>,
+    pub bottom_height: f32,
+    pub resizing_bottom: bool,
+    pub keybind_query: TextEdit,
+    pub keybind_focus: FocusHandle,
+    /// Tab whose scroll offset `editor_scroll` currently shows.
+    pub scroll_for: Option<u64>,
+    pub search: fluxwire_search::Index,
+    /// Most recently run palette/quick-search item ids, newest first.
+    pub recent_ids: Vec<String>,
     pub prompt: Option<PromptPurpose>,
     pub tree_menu: Option<TreeMenu>,
     pub inline: Option<InlineNew>,
@@ -257,6 +295,18 @@ impl Workspace {
             envs: crate::envs::EnvStore::default(),
             collapsed: HashSet::new(),
             modal: None,
+            modal_scroll: ScrollHandle::new(),
+            switcher: None,
+            tab_menu: None,
+            keymap_watcher: None,
+            keymap_issues: Vec::new(),
+            bottom_height: 200.0,
+            resizing_bottom: false,
+            keybind_query: TextEdit::default(),
+            keybind_focus: cx.focus_handle(),
+            scroll_for: None,
+            search: fluxwire_search::Index::new(),
+            recent_ids: Vec::new(),
             prompt: None,
             tree_menu: None,
             inline: None,
@@ -288,7 +338,16 @@ impl Workspace {
             find_focus: cx.focus_handle(),
         };
         this.envs.settings = settings;
+        this.recent_ids = this
+            .state_dir
+            .as_deref()
+            .map(crate::project::load_recent_ids)
+            .unwrap_or_default();
         this.start_session_timer(cx);
+        this.reload_keymap(cx);
+        if this.watch_enabled {
+            this.start_config_watching(cx);
+        }
         cx.on_app_quit(|this, _cx| {
             this.save_session_now();
             async {}
@@ -331,7 +390,9 @@ impl Workspace {
             kind,
             query: TextEdit::default(),
             selected: 0,
+            results: Vec::new(),
         });
+        self.recompute_modal(cx);
         window.focus(&self.modal_focus);
         cx.notify();
     }
@@ -344,53 +405,66 @@ impl Workspace {
         }
     }
 
-    /// Items for the open modal, filtered by its query.
-    pub fn modal_items(&self) -> Vec<ModalItem> {
+    /// Bring the search index up to date with the workspace. Only the delta is applied.
+    pub fn refresh_search_index(&mut self, cx: &gpui::App) {
+        use fluxwire_search::{Item, Kind};
+        let mut want: Vec<Item> = Vec::new();
+        if let Some(p) = &self.project {
+            want.extend(p.search_items());
+        }
+        want.extend(
+            self.env_names()
+                .into_iter()
+                .map(|e| Item::new(format!("env:{e}"), Kind::Environment, e).detail("environment")),
+        );
+        want.extend(self.history.entries.iter().map(|e| {
+            let status = e.status.map_or("—".to_string(), |s| s.to_string());
+            Item::new(
+                format!("hist:{}", e.id),
+                Kind::History,
+                format!("{} {}", e.method, e.request_name),
+            )
+            .detail(format!("{status} · {}", crate::history::day_label(e.ts_ms)))
+            .extra(e.url.clone())
+        }));
+        want.extend(self.recent.workspaces.iter().map(|w| {
+            let name = std::path::Path::new(w)
+                .file_name()
+                .map_or(w.clone(), |n| n.to_string_lossy().into_owned());
+            Item::new(format!("ws:{w}"), Kind::Workspace, name).detail(w.clone())
+        }));
+        let bindings = cx.try_global::<KeymapState>();
+        want.extend(ACTIONS.iter().map(|a| {
+            let keys = match bindings {
+                Some(b) => b.label_for(a.name).unwrap_or_default(),
+                None => a.binding.map(kbd_label).unwrap_or_default(),
+            };
+            Item::new(format!("act:{}", a.name), Kind::Action, a.label).detail(keys)
+        }));
+        self.search.sync(want);
+    }
+
+    fn search_results(&mut self, query: &str, cx: &gpui::App) -> Vec<ModalItem> {
+        self.refresh_search_index(cx);
+        self.search.set_recency(self.recent_ids.clone());
+        let hits = self.search.query(query, MODAL_LIMIT);
+        hits.into_iter()
+            .filter_map(|h| {
+                let item = self.search.item(h.pos)?;
+                Some(modal_item(item, h.label_indices))
+            })
+            .collect()
+    }
+
+    /// Rebuild the open modal's results from its query.
+    pub fn recompute_modal(&mut self, cx: &gpui::App) {
         let Some(m) = &self.modal else {
-            return vec![];
+            return;
         };
-        let all: Vec<ModalItem> = match m.kind {
-            ModalKind::Palette => ACTIONS
-                .iter()
-                .enumerate()
-                .map(|(i, a)| ModalItem {
-                    label: a.label.to_string(),
-                    detail: a.binding.map(kbd_label).unwrap_or_default(),
-                    run: ItemRun::Action(i),
-                })
-                .collect(),
-            ModalKind::QuickSearch => {
-                let mut items: Vec<ModalItem> = self
-                    .project
-                    .as_ref()
-                    .map(|p| p.all_requests())
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|(key, name, method, kind)| ModalItem {
-                        label: name.clone(),
-                        detail: format!("{method} {key}"),
-                        run: ItemRun::Open {
-                            key,
-                            title: name,
-                            kind: if kind == fluxwire_model::RequestKind::WebSocket {
-                                TabKind::WebSocket
-                            } else {
-                                TabKind::Http { method }
-                            },
-                        },
-                    })
-                    .collect();
-                items.extend(self.env_names().into_iter().map(|e| ModalItem {
-                    label: e.clone(),
-                    detail: "environment".into(),
-                    run: ItemRun::Open {
-                        key: format!("env/{e}"),
-                        title: e,
-                        kind: TabKind::Environment,
-                    },
-                }));
-                items
-            }
+        let (kind, q) = (m.kind, m.query.text().to_string());
+        let results = match kind {
+            ModalKind::Palette => self.search_results(&format!(">{q}"), cx),
+            ModalKind::QuickSearch => self.search_results(&q, cx),
             ModalKind::Prompt => vec![],
             ModalKind::Environment => {
                 let active = self.envs.active.clone();
@@ -398,33 +472,70 @@ impl Workspace {
                     .env_names()
                     .into_iter()
                     .map(|e| ModalItem {
+                        id: String::new(),
                         detail: if active.as_deref() == Some(e.as_str()) {
                             "active".into()
                         } else {
                             String::new()
                         },
                         label: e.clone(),
+                        indices: Vec::new(),
                         run: ItemRun::Environment(Some(e)),
                     })
                     .collect();
                 v.push(ModalItem {
+                    id: String::new(),
                     label: "No environment".into(),
                     detail: if active.is_none() {
                         "active".into()
                     } else {
                         String::new()
                     },
+                    indices: Vec::new(),
                     run: ItemRun::Environment(None),
                 });
+                v.retain(|i| fuzzy(&q, &i.label));
                 v
             }
         };
-        let q = m.query.text();
-        all.into_iter().filter(|i| fuzzy(q, &i.label)).collect()
+        if let Some(m) = &mut self.modal {
+            m.selected = m.selected.min(results.len().saturating_sub(1));
+            m.results = results;
+        }
     }
 
-    fn run_modal_item(&mut self, item: ModalItem, window: &mut Window, cx: &mut Context<Self>) {
+    /// Results for the open modal.
+    pub fn modal_items(&self) -> Vec<ModalItem> {
+        self.modal
+            .as_ref()
+            .map(|m| m.results.clone())
+            .unwrap_or_default()
+    }
+
+    fn remember_recent(&mut self, id: &str) {
+        if id.is_empty() {
+            return;
+        }
+        self.recent_ids.retain(|i| i != id);
+        self.recent_ids.insert(0, id.to_string());
+        self.recent_ids.truncate(RECENT_IDS);
+        if let Some(d) = &self.state_dir {
+            crate::project::save_recent_ids(d, &self.recent_ids);
+        }
+    }
+
+    /// Run a result. `beside` (Cmd/Ctrl+Enter) opens the tab next to the active one, or the
+    /// workspace in a new window.
+    pub fn run_modal_item(
+        &mut self,
+        item: ModalItem,
+        beside: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.close_modal(window, cx);
+        self.remember_recent(&item.id);
+        let prev = self.tabs.active_id();
         match item.run {
             ItemRun::Action(i) => window.dispatch_action((ACTIONS[i].build)(), cx),
             ItemRun::Open { key, title, kind } => {
@@ -437,12 +548,51 @@ impl Workspace {
                 }
             }
             ItemRun::Environment(name) => self.set_active_env(name, cx),
+            ItemRun::Folder(key) => {
+                self.left_open = true;
+                self.panel = Panel::Project;
+                for part in folder_chain(&key) {
+                    self.collapsed.remove(&part);
+                }
+                self.selected = Some(key);
+            }
+            ItemRun::History(id) => self.open_history_entry(id, true, cx),
+            ItemRun::Workspace(path) => {
+                let path = PathBuf::from(path);
+                if beside {
+                    open_window_at(cx, Some(path));
+                } else {
+                    self.open_project(&path, window, cx);
+                }
+            }
         }
+        if beside
+            && let (Some(prev), Some(now)) = (prev, self.tabs.active_id())
+            && prev != now
+        {
+            self.tabs.place_after(now, prev);
+        }
+        self.session_dirty = true;
         cx.notify();
     }
 
+    /// Run the highlighted result (Enter, or Cmd/Ctrl+Enter for `beside`).
+    pub fn run_selected(&mut self, beside: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.prompt.is_some() {
+            return;
+        }
+        let sel = self.modal.as_ref().map_or(0, |m| m.selected);
+        let item = self
+            .modal
+            .as_ref()
+            .and_then(|m| m.results.get(sel).cloned());
+        if let Some(item) = item {
+            self.run_modal_item(item, beside, window, cx);
+        }
+    }
+
     fn on_modal_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        let count = self.modal_items().len();
+        let count = self.modal.as_ref().map_or(0, |m| m.results.len());
         let key = ev.keystroke.key.as_str();
         match key {
             "down" | "up" => {
@@ -452,21 +602,29 @@ impl Workspace {
                     } else {
                         m.selected.saturating_sub(1)
                     };
+                    self.modal_scroll.scroll_to_item(m.selected);
                 }
             }
             "enter" if self.prompt.is_some() => self.confirm_prompt(window, cx),
             "enter" => {
-                let items = self.modal_items();
                 let sel = self.modal.as_ref().map_or(0, |m| m.selected);
-                if let Some(item) = items.get(sel).cloned() {
-                    self.run_modal_item(item, window, cx);
+                let item = self
+                    .modal
+                    .as_ref()
+                    .and_then(|m| m.results.get(sel).cloned());
+                if let Some(item) = item {
+                    let beside = ev.keystroke.modifiers.secondary();
+                    self.run_modal_item(item, beside, window, cx);
                 }
             }
             _ => {
-                if let Some(m) = &mut self.modal
-                    && m.query.handle_key(ev)
-                {
-                    m.selected = 0;
+                let changed = self.modal.as_mut().is_some_and(|m| m.query.handle_key(ev));
+                if changed {
+                    if let Some(m) = &mut self.modal {
+                        m.selected = 0;
+                    }
+                    self.modal_scroll.scroll_to_item(0);
+                    self.recompute_modal(cx);
                 }
             }
         }
@@ -715,7 +873,7 @@ impl Workspace {
     fn render_modal(&self, t: &Theme, cx: &mut Context<Self>) -> Option<impl IntoElement> {
         let m = self.modal.as_ref()?;
         let t = t.clone();
-        let items = self.modal_items();
+        let items = m.results.clone();
         let placeholder = match m.kind {
             ModalKind::Palette => "Type a command…",
             ModalKind::QuickSearch => "Search requests, folders, environments…",
@@ -778,41 +936,165 @@ impl Workspace {
                         )
                         .child(
                             div()
+                                .id("modal-results")
+                                .track_scroll(&self.modal_scroll)
                                 .flex()
                                 .flex_col()
                                 .max_h(px(360.))
-                                .overflow_hidden()
+                                .overflow_y_scroll()
                                 .py_1()
-                                .children(items.into_iter().take(12).enumerate().map(
-                                    |(i, item)| {
-                                        let click_item = item.clone();
-                                        row()
-                                            .id(("modal-item", i))
-                                            .h(px(28.))
-                                            .px_3()
-                                            .justify_between()
-                                            .text_size(px(14.))
-                                            .text_color(t.text)
-                                            .when(i == selected, |d| d.bg(t.element_selected))
-                                            .hover(|s| s.bg(t.element_hover))
-                                            .cursor_pointer()
-                                            .on_click(cx.listener(move |this, _, w, cx| {
-                                                this.run_modal_item(click_item.clone(), w, cx)
-                                            }))
-                                            .child(item.label)
-                                            .child(
-                                                div()
-                                                    .font_family(BUFFER_FONT)
-                                                    .text_size(px(11.))
-                                                    .text_color(t.text_placeholder)
-                                                    .child(item.detail),
-                                            )
-                                    },
-                                )),
+                                .children(items.into_iter().enumerate().map(|(i, item)| {
+                                    let click_item = item.clone();
+                                    row()
+                                        .id(("modal-item", i))
+                                        .h(px(28.))
+                                        .px_3()
+                                        .justify_between()
+                                        .text_size(px(14.))
+                                        .text_color(t.text)
+                                        .when(i == selected, |d| d.bg(t.element_selected))
+                                        .hover(|s| s.bg(t.element_hover))
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(
+                                            move |this, ev: &gpui::ClickEvent, w, cx| {
+                                                let beside = ev.modifiers().secondary();
+                                                this.run_modal_item(
+                                                    click_item.clone(),
+                                                    beside,
+                                                    w,
+                                                    cx,
+                                                )
+                                            },
+                                        ))
+                                        .child(highlighted(&item.label, &item.indices, &t))
+                                        .child(
+                                            div()
+                                                .font_family(BUFFER_FONT)
+                                                .text_size(px(11.))
+                                                .text_color(t.text_placeholder)
+                                                .child(item.detail),
+                                        )
+                                })),
                         ),
                 ),
         )
     }
+}
+
+fn folder_chain(key: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut acc = String::new();
+    for part in key.split('/').filter(|p| !p.is_empty()) {
+        if !acc.is_empty() {
+            acc.push('/');
+        }
+        acc.push_str(part);
+        out.push(acc.clone());
+    }
+    out
+}
+
+/// A search result row from an index item; the id prefix says what running it does.
+fn modal_item(item: &fluxwire_search::Item, indices: Vec<u32>) -> ModalItem {
+    let id = item.id.clone();
+    let method = item.extra.split(' ').next().unwrap_or("GET").to_string();
+    let (run, detail) = if let Some(key) = id.strip_prefix("req:") {
+        let kind = if method == "WS" {
+            TabKind::WebSocket
+        } else {
+            TabKind::Http {
+                method: method.clone(),
+            }
+        };
+        (
+            ItemRun::Open {
+                key: key.into(),
+                title: item.label.clone(),
+                kind,
+            },
+            format!("{method} {}", item.detail),
+        )
+    } else if let Some(key) = id.strip_prefix("folder:") {
+        (ItemRun::Folder(key.into()), item.detail.clone())
+    } else if let Some(key) = id.strip_prefix("doc:") {
+        (
+            ItemRun::Open {
+                key: key.into(),
+                title: item.label.clone(),
+                kind: TabKind::Docs,
+            },
+            item.detail.clone(),
+        )
+    } else if let Some(rest) = id.strip_prefix("head:") {
+        let key = rest.rsplit_once('#').map_or(rest, |(k, _)| k);
+        (
+            ItemRun::Open {
+                key: key.into(),
+                title: item.label.clone(),
+                kind: TabKind::Http {
+                    method: "GET".into(),
+                },
+            },
+            format!("¶ {}", item.detail),
+        )
+    } else if id.starts_with("env:") {
+        (
+            ItemRun::Open {
+                key: format!("env/{}", item.label),
+                title: item.label.clone(),
+                kind: TabKind::Environment,
+            },
+            item.detail.clone(),
+        )
+    } else if let Some(n) = id.strip_prefix("hist:") {
+        (
+            ItemRun::History(n.parse().unwrap_or_default()),
+            item.detail.clone(),
+        )
+    } else if let Some(p) = id.strip_prefix("ws:") {
+        (ItemRun::Workspace(p.into()), item.detail.clone())
+    } else {
+        let name = id.strip_prefix("act:").unwrap_or(&id);
+        let i = ACTIONS.iter().position(|a| a.name == name).unwrap_or(0);
+        (ItemRun::Action(i), item.detail.clone())
+    };
+    ModalItem {
+        id,
+        label: item.label.clone(),
+        detail,
+        indices,
+        run,
+    }
+}
+
+/// `label` with the matched chars in the accent color.
+fn highlighted(label: &str, indices: &[u32], t: &Theme) -> gpui::Div {
+    let mut out = row().whitespace_nowrap().overflow_hidden();
+    let mut seg = String::new();
+    let mut on = false;
+    let flush = |out: gpui::Div, seg: &mut String, on: bool| {
+        if seg.is_empty() {
+            return out;
+        }
+        let text = std::mem::take(seg);
+        out.child(if on {
+            div()
+                .text_color(t.accent)
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .child(text)
+        } else {
+            div().child(text)
+        })
+    };
+    for (i, c) in label.chars().enumerate() {
+        let m = indices.contains(&(i as u32));
+        if m != on {
+            out = flush(out, &mut seg, on);
+            on = m;
+        }
+        seg.push(c);
+    }
+    flush(out, &mut seg, on)
 }
 
 /// Subsequence match, case-insensitive. An empty query matches everything.
@@ -854,6 +1136,7 @@ macro_rules! handlers {
 
 impl Render for Workspace {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_scroll();
         let t = theme(cx).clone();
         let body = if self.project.is_some() {
             self.render_body(&t, cx).into_any_element()
@@ -872,17 +1155,35 @@ impl Render for Workspace {
             .text_color(t.text)
             .font_family(UI_FONT)
             .text_size(px(14.))
-            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
+            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, window, cx| {
                 if this.resizing {
                     this.left_width = f32::from(ev.position.x).clamp(180.0, 520.0);
                     cx.notify();
                 }
+                if this.resizing_bottom {
+                    // Distance from the pointer to the window bottom, minus the 24 px status bar.
+                    let below =
+                        f32::from(window.bounds().size.height) - f32::from(ev.position.y) - 24.0;
+                    this.bottom_height = below.clamp(80.0, 600.0);
+                    cx.notify();
+                }
             }))
+            .on_modifiers_changed(
+                cx.listener(|this, ev: &gpui::ModifiersChangedEvent, _, cx| {
+                    let m = ev.modifiers;
+                    if this.switcher.is_some() && !m.control && !m.platform && !m.alt {
+                        this.commit_switcher();
+                        cx.notify();
+                    }
+                }),
+            )
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
-                    if this.resizing {
+                    if this.resizing || this.resizing_bottom {
                         this.resizing = false;
+                        this.resizing_bottom = false;
+                        this.session_dirty = true;
                         cx.notify();
                     }
                 }),
@@ -892,22 +1193,23 @@ impl Render for Workspace {
             CommandPalette => |this, w, c| this.open_modal(ModalKind::Palette, w, c),
             SwitchEnvironment => |this, w, c| this.open_modal(ModalKind::Environment, w, c),
             Dismiss => |this, w, c| {
-                let open = this.method_menu || this.tree_menu.is_some() || this.cell.is_some() || this.inline.is_some() || this.modal.is_some();
-                this.method_menu = false; this.tree_menu = None; this.cell = None; this.inline = None; this.close_modal(w, c);
+                if let Some(sw) = this.switcher.take() { if let Some(first) = sw.order.first() { this.tabs.peek(*first) } return; }
+                let open = this.tab_menu.is_some() || this.method_menu || this.tree_menu.is_some() || this.cell.is_some() || this.inline.is_some() || this.modal.is_some();
+                this.tab_menu = None; this.method_menu = false; this.tree_menu = None; this.cell = None; this.inline = None; this.close_modal(w, c);
                 // Esc with nothing to dismiss cancels an in-flight send
                 if !open { this.cancel_request(c); }
             },
-            ToggleLeftDock => |this, _w, _c| this.left_open = !this.left_open,
-            ToggleBottomDock => |this, _w, _c| this.bottom_open = !this.bottom_open,
-            ShowProjectPanel => |this, _w, _c| { this.panel = Panel::Project; this.left_open = true },
-            ShowHistoryPanel => |this, _w, _c| { this.panel = Panel::History; this.left_open = true },
+            ToggleLeftDock => |this, _w, _c| { this.left_open = !this.left_open; this.session_dirty = true },
+            ToggleBottomDock => |this, _w, _c| { this.bottom_open = !this.bottom_open; this.session_dirty = true },
+            ShowProjectPanel => |this, _w, _c| { this.panel = Panel::Project; this.left_open = true; this.session_dirty = true },
+            ShowHistoryPanel => |this, _w, _c| { this.panel = Panel::History; this.left_open = true; this.session_dirty = true },
             ClearHistoryAll => |this, _w, c| this.history_clear(crate::history::ClearScope::All, c),
             ClearHistoryCollection => |this, _w, c| this.history_clear(crate::history::ClearScope::Collection, c),
             ClearHistoryRequest => |this, _w, c| this.history_clear(crate::history::ClearScope::Request, c),
-            ShowEnvironmentsPanel => |this, _w, _c| { this.panel = Panel::Environments; this.left_open = true },
-            ShowSyncPanel => |this, _w, _c| { this.panel = Panel::Sync; this.left_open = true },
-            ShowConsole => |this, _w, _c| { this.bottom_tab = BottomTab::Console; this.bottom_open = true },
-            ShowProblems => |this, _w, _c| { this.bottom_tab = BottomTab::Problems; this.bottom_open = true },
+            ShowEnvironmentsPanel => |this, _w, _c| { this.panel = Panel::Environments; this.left_open = true; this.session_dirty = true },
+            ShowSyncPanel => |this, _w, _c| { this.panel = Panel::Sync; this.left_open = true; this.session_dirty = true },
+            ShowConsole => |this, _w, _c| { this.bottom_tab = BottomTab::Console; this.bottom_open = true; this.session_dirty = true },
+            ShowProblems => |this, _w, _c| { this.bottom_tab = BottomTab::Problems; this.bottom_open = true; this.session_dirty = true },
             ToggleTheme => |_this, _w, c| {
                 let next = match theme(c).appearance {
                     Appearance::Dark => Appearance::Light,
@@ -915,13 +1217,43 @@ impl Render for Workspace {
                 };
                 set_theme(Theme::for_appearance(next), c);
             },
-            ToggleSplitOrientation => |this, _w, _c| this.split_vertical = !this.split_vertical,
+            ToggleSplitOrientation => |this, _w, _c| { this.split_vertical = !this.split_vertical; this.session_dirty = true },
             CloseTab => |this, _w, _c| if let Some(id) = this.tabs.active_id() { this.tabs.close(id); this.session_dirty = true },
-            PinTab => |this, _w, _c| if let Some(id) = this.tabs.active_id() { this.tabs.toggle_pin(id) },
-            NextTab => |this, _w, _c| this.tabs.cycle(1),
-            PrevTab => |this, _w, _c| this.tabs.cycle(-1),
-            ReopenClosedTab => |this, _w, _c| { this.tabs.reopen_closed(); },
-            GroupTabsByKind => |this, _w, _c| this.tabs.group_by_kind = !this.tabs.group_by_kind,
+            PinTab => |this, _w, _c| if let Some(id) = this.tabs.active_id() { this.tabs.toggle_pin(id); this.session_dirty = true },
+            NextTab => |this, _w, _c| this.switch_tab(1),
+            PrevTab => |this, _w, _c| this.switch_tab(-1),
+            ReopenClosedTab => |this, w, c| this.reopen_closed_tab(w, c),
+            GroupTabsByKind => |this, _w, _c| { this.tabs.group_by_kind = !this.tabs.group_by_kind; this.session_dirty = true },
+            CloseOtherTabs => |this, _w, _c| if let Some(id) = this.tabs.active_id() { this.tabs.close_others(id); this.session_dirty = true },
+            CloseTabsToRight => |this, _w, _c| if let Some(id) = this.tabs.active_id() { this.tabs.close_to_right(id); this.session_dirty = true },
+            CloseCleanTabs => |this, _w, _c| { this.tabs.close_clean(); this.session_dirty = true },
+            CloseAllTabs => |this, _w, _c| { this.tabs.close_all(); this.session_dirty = true },
+            CopyTabPath => |this, _w, c| if let Some(id) = this.tabs.active_id() { this.copy_tab_path(id, c) },
+            ShowParams => |this, _w, _c| this.show_request_tab(0),
+            ShowHeaders => |this, _w, _c| this.show_request_tab(1),
+            ShowBody => |this, _w, _c| this.show_request_tab(2),
+            ShowAuth => |this, _w, _c| this.show_request_tab(3),
+            ShowScripts => |this, _w, _c| this.show_request_tab(4),
+            ShowTests => |this, _w, _c| this.show_request_tab(5),
+            ShowDocsTab => |this, _w, _c| this.show_request_tab(6),
+            ShowSettings => |this, _w, _c| this.show_request_tab(7),
+            ShowResponseBody => |this, _w, _c| this.show_response_tab(0),
+            ShowResponseHeaders => |this, _w, _c| this.show_response_tab(1),
+            ShowResponseCookies => |this, _w, _c| this.show_response_tab(2),
+            ShowResponseTimeline => |this, _w, _c| this.show_response_tab(3),
+            ShowResponseTests => |this, _w, _c| this.show_response_tab(4),
+            ShowResponseConsole => |this, _w, _c| this.show_response_tab(5),
+            ToggleMethodMenu => |this, _w, _c| this.method_menu = !this.method_menu,
+            NewEnvironment => |this, w, c| this.start_new_env(w, c),
+            RenameEnvironment => |this, w, c| if let Some(n) = this.envs.active.clone() { this.start_rename_env(&n, w, c) },
+            DuplicateEnvironment => |this, _w, c| if let Some(n) = this.envs.active.clone() { this.duplicate_env(&n, c) },
+            DeleteEnvironment => |this, _w, c| if let Some(n) = this.envs.active.clone() { this.delete_env(&n, c) },
+            NewWindow => |_this, _w, c| open_window_at(c, None),
+            OpenResultBeside => |this, w, c| this.run_selected(true, w, c),
+            OpenKeybindings => |this, _w, _c| this.open_tab("keybindings", "Keybindings", TabKind::Keybindings, true),
+            ReloadKeymap => |this, _w, c| this.reload_keymap(c),
+            OpenKeymapFile => |this, _w, c| this.open_config_file("keymap.toml", KEYMAP_TEMPLATE, c),
+            OpenSettingsFile => |this, _w, c| this.open_config_file("settings.toml", SETTINGS_TEMPLATE, c),
             RunFolder => |this, _w, _c| {
                 let folder = this.selected_folder_name();
                 this.open_tab(&format!("run/{folder}"), &format!("Run: {folder}"), TabKind::FolderRun, true)
@@ -968,6 +1300,23 @@ impl Render for Workspace {
             .child(self.render_status_bar(&t, cx))
             .children(self.render_modal(&t, cx))
             .children(self.render_tree_menu(&t, cx))
+            .children(self.render_tab_menu(&t, cx))
+            .children(self.render_switcher(&t))
+    }
+}
+
+const KEYMAP_TEMPLATE: &str = "# Fluxwire key bindings (overrides). Saved changes apply immediately.\n# A binding for an action replaces that action's default; `\"cmd-k\" = \"none\"` unbinds a key.\n#\n# [[bindings]]\n# context = \"RequestEditor\"\n# \"cmd-r\" = \"request::Send\"\n";
+const SETTINGS_TEMPLATE: &str =
+    "# Fluxwire settings.\n# allow_process_env = false\n# persist_cookies = false\n";
+
+/// A new window, opening `path` as its workspace when given.
+pub fn open_window_at(cx: &mut gpui::App, path: Option<PathBuf>) {
+    if let Ok(handle) = open_window(cx)
+        && let Some(path) = path
+    {
+        handle
+            .update(cx, |ws, window, cx| ws.open_project(&path, window, cx))
+            .ok();
     }
 }
 

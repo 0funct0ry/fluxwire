@@ -221,6 +221,41 @@ pub struct Problem {
     pub message: String,
 }
 
+/// What quick search needs from a file beyond the tree: the URL, front matter tags and headings.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct SearchRow {
+    url: String,
+    tags: Vec<String>,
+    headings: Vec<String>,
+}
+
+/// ATX headings of the prose, skipping front matter and fenced blocks.
+fn headings_of(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut in_fence = false;
+    let mut lines = text.lines().peekable();
+    if lines.peek().is_some_and(|l| l.trim_end() == "---") {
+        lines.next();
+        for l in lines.by_ref() {
+            if l.trim_end() == "---" {
+                break;
+            }
+        }
+    }
+    for l in lines {
+        let t = l.trim_start();
+        if t.starts_with("```") || t.starts_with("~~~") {
+            in_fence = !in_fence;
+        } else if !in_fence && t.starts_with('#') {
+            let h = t.trim_start_matches('#');
+            if h.starts_with(' ') && !h.trim().is_empty() {
+                out.push(h.trim().to_string());
+            }
+        }
+    }
+    out
+}
+
 #[derive(Clone, Debug)]
 struct IndexRow {
     span: Span,
@@ -256,6 +291,8 @@ pub struct Project {
     pub errors: Vec<(PathBuf, OpenError)>,
     pub docs: HashMap<String, OpenDoc>,
     index: BTreeMap<String, Vec<IndexRow>>,
+    /// Quick-search data per indexed file (URL, tags, doc headings).
+    search_rows: BTreeMap<String, SearchRow>,
     pub branch: Option<String>,
 }
 
@@ -337,6 +374,7 @@ impl Project {
             errors: vec![],
             docs: HashMap::new(),
             index: BTreeMap::new(),
+            search_rows: BTreeMap::new(),
             branch: read_git_branch(root),
         };
         p.rescan();
@@ -362,9 +400,21 @@ impl Project {
 
     /// Re-read collections and the diagnostics index from disk.
     pub fn rescan(&mut self) {
+        self.index.clear();
+        self.search_rows.clear();
+        self.load_tree();
+        let mut files = Vec::new();
+        for c in &self.collections {
+            collect_md(&c.root, &mut files);
+        }
+        for f in files {
+            self.index_file(&f);
+        }
+    }
+
+    fn load_tree(&mut self) {
         self.collections.clear();
         self.errors.clear();
-        self.index.clear();
         for dir in find_collections(&self.root) {
             match scan(&dir) {
                 Ok(c) => {
@@ -380,13 +430,6 @@ impl Project {
                 Err(e) => self.errors.push((dir, e)),
             }
         }
-        let mut files = Vec::new();
-        for c in &self.collections {
-            collect_md(&c.root, &mut files);
-        }
-        for f in files {
-            self.index_file(&f);
-        }
     }
 
     fn index_file(&mut self, abs: &Path) {
@@ -395,6 +438,14 @@ impl Project {
             Ok(text) => {
                 let d = parse_with(&text, file_kind_for(abs), &ProtocolRegistry::builtin());
                 let r = rows(&text, &d.diagnostics);
+                self.search_rows.insert(
+                    key.clone(),
+                    SearchRow {
+                        url: d.request().map(|r| r.target.clone()).unwrap_or_default(),
+                        tags: d.front.list("tags"),
+                        headings: headings_of(&text),
+                    },
+                );
                 if r.is_empty() {
                     self.index.remove(&key);
                 } else {
@@ -403,6 +454,35 @@ impl Project {
             }
             Err(_) => {
                 self.index.remove(&key);
+                self.search_rows.remove(&key);
+            }
+        }
+    }
+
+    /// After file-system changes: reload the tree, but re-parse only the changed files and files
+    /// not seen before; forget files that are gone.
+    fn rescan_incremental(&mut self, changed: &[PathBuf]) {
+        self.load_tree();
+        let mut files = Vec::new();
+        for c in &self.collections {
+            collect_md(&c.root, &mut files);
+        }
+        let present: std::collections::HashSet<String> =
+            files.iter().map(|f| self.key_of(f)).collect();
+        let gone: Vec<String> = self
+            .search_rows
+            .keys()
+            .filter(|k| !present.contains(*k))
+            .cloned()
+            .collect();
+        for k in gone {
+            self.search_rows.remove(&k);
+            self.index.remove(&k);
+        }
+        for f in files {
+            let key = self.key_of(&f);
+            if !self.search_rows.contains_key(&key) || changed.contains(&f) {
+                self.index_file(&f);
             }
         }
     }
@@ -528,7 +608,7 @@ impl Project {
             }
         }
         if tree_dirty {
-            self.rescan();
+            self.rescan_incremental(paths);
         } else {
             for p in paths {
                 if p.starts_with(&self.root) && is_request_file(p) {
@@ -559,6 +639,58 @@ impl Project {
         let mut out = Vec::new();
         for c in &self.collections {
             walk(&c.tree, &mut out);
+        }
+        out
+    }
+
+    /// Requests, folders and docs headings as search items (no parsing; reads cached rows).
+    pub fn search_items(&self) -> Vec<fluxwire_search::Item> {
+        use fluxwire_search::{Item, Kind};
+        fn walk(nodes: &[TreeNode], rows: &BTreeMap<String, SearchRow>, out: &mut Vec<Item>) {
+            for n in nodes {
+                match n {
+                    TreeNode::Folder {
+                        name,
+                        path,
+                        children,
+                    } => {
+                        out.push(
+                            Item::new(format!("folder:{path}"), Kind::Folder, name.clone())
+                                .detail(path.clone()),
+                        );
+                        walk(children, rows, out);
+                    }
+                    TreeNode::Request {
+                        name, path, method, ..
+                    } => {
+                        let row = rows.get(path);
+                        let url = row.map(|r| r.url.as_str()).unwrap_or_default();
+                        out.push(
+                            Item::new(format!("req:{path}"), Kind::Request, name.clone())
+                                .detail(path.clone())
+                                .extra(format!("{method} {url}"))
+                                .tags(row.map(|r| r.tags.clone()).unwrap_or_default()),
+                        );
+                    }
+                    TreeNode::Doc { name, path } => {
+                        out.push(
+                            Item::new(format!("doc:{path}"), Kind::Doc, name.clone())
+                                .detail(path.clone()),
+                        );
+                    }
+                }
+            }
+        }
+        let mut out = Vec::new();
+        for c in &self.collections {
+            walk(&c.tree, &self.search_rows, &mut out);
+        }
+        for (key, row) in &self.search_rows {
+            for (i, h) in row.headings.iter().enumerate() {
+                out.push(
+                    Item::new(format!("head:{key}#{i}"), Kind::Doc, h.clone()).detail(key.clone()),
+                );
+            }
         }
         out
     }
@@ -613,14 +745,53 @@ pub struct Recent {
     pub last: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct SessionTab {
     pub key: String,
     pub preview: bool,
     pub pinned: bool,
+    /// `""` for request tabs; otherwise `docs`, `run`, `env`, `history`, `sync` or `keys`.
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub title: String,
+    /// Vertical scroll offset of the editor area (pixels, positive = scrolled down).
+    #[serde(default)]
+    pub scroll: f32,
 }
 
-#[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq, Eq)]
+/// Window layout remembered per workspace (SPEC §17.1).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct Layout {
+    pub left_open: bool,
+    pub left_width: f32,
+    /// `project`, `history`, `environments` or `sync`.
+    pub panel: String,
+    pub bottom_open: bool,
+    /// `console` or `problems`.
+    pub bottom_tab: String,
+    pub bottom_height: f32,
+    pub split_vertical: bool,
+    pub group_by_kind: bool,
+}
+
+impl Default for Layout {
+    fn default() -> Self {
+        Layout {
+            left_open: true,
+            left_width: 260.0,
+            panel: "project".into(),
+            bottom_open: false,
+            bottom_tab: "console".into(),
+            bottom_height: 200.0,
+            split_vertical: true,
+            group_by_kind: false,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq)]
 pub struct Session {
     pub tabs: Vec<SessionTab>,
     pub active: Option<String>,
@@ -629,6 +800,11 @@ pub struct Session {
     /// Active environment, remembered per workspace.
     #[serde(default)]
     pub active_env: Option<String>,
+    #[serde(default)]
+    pub layout: Layout,
+    /// Recently closed tabs, oldest first, for "reopen closed tab" after a restart.
+    #[serde(default)]
+    pub closed: Vec<SessionTab>,
 }
 
 pub fn load_recent(dir: &Path) -> Recent {
@@ -675,6 +851,21 @@ pub fn save_session(dir: &Path, root: &Path, s: &Session) {
     }
     if let Ok(t) = serde_json::to_string(s) {
         let _ = std::fs::write(p, t);
+    }
+}
+
+/// Most recently run palette/quick-search item ids (recency boost), newest first.
+pub fn load_recent_ids(dir: &Path) -> Vec<String> {
+    std::fs::read_to_string(dir.join("palette-recent.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+pub fn save_recent_ids(dir: &Path, ids: &[String]) {
+    let _ = std::fs::create_dir_all(dir);
+    if let Ok(t) = serde_json::to_string(ids) {
+        let _ = std::fs::write(dir.join("palette-recent.json"), t);
     }
 }
 

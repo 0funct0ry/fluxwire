@@ -58,6 +58,36 @@ actions!(
         Connect,
         Dismiss,
         Quit,
+        CloseOtherTabs,
+        CloseTabsToRight,
+        CloseCleanTabs,
+        CloseAllTabs,
+        CopyTabPath,
+        ShowParams,
+        ShowHeaders,
+        ShowBody,
+        ShowAuth,
+        ShowScripts,
+        ShowTests,
+        ShowDocsTab,
+        ShowSettings,
+        ShowResponseBody,
+        ShowResponseHeaders,
+        ShowResponseCookies,
+        ShowResponseTimeline,
+        ShowResponseTests,
+        ShowResponseConsole,
+        ToggleMethodMenu,
+        NewEnvironment,
+        RenameEnvironment,
+        DuplicateEnvironment,
+        DeleteEnvironment,
+        NewWindow,
+        OpenKeybindings,
+        ReloadKeymap,
+        OpenKeymapFile,
+        OpenSettingsFile,
+        OpenResultBeside,
     ]
 );
 
@@ -225,7 +255,268 @@ pub static ACTIONS: &[ActionInfo] = &[
     a!("websocket: connect or disconnect", Connect, None, None),
     a!("modal: dismiss", Dismiss, Some("escape"), None),
     a!("app: quit", Quit, Some("secondary-q"), None),
+    a!("tab: close others", CloseOtherTabs, None, None),
+    a!("tab: close to the right", CloseTabsToRight, None, None),
+    a!("tab: close clean tabs", CloseCleanTabs, None, None),
+    a!("tab: close all", CloseAllTabs, None, None),
+    a!("tab: copy path", CopyTabPath, None, None),
+    a!("request: show params", ShowParams, None, None),
+    a!("request: show headers", ShowHeaders, None, None),
+    a!("request: show body", ShowBody, None, None),
+    a!("request: show auth", ShowAuth, None, None),
+    a!("request: show scripts", ShowScripts, None, None),
+    a!("request: show tests", ShowTests, None, None),
+    a!("request: show docs", ShowDocsTab, None, None),
+    a!("request: show settings", ShowSettings, None, None),
+    a!("response: show body", ShowResponseBody, None, None),
+    a!("response: show headers", ShowResponseHeaders, None, None),
+    a!("response: show cookies", ShowResponseCookies, None, None),
+    a!("response: show timeline", ShowResponseTimeline, None, None),
+    a!("response: show tests", ShowResponseTests, None, None),
+    a!("response: show console", ShowResponseConsole, None, None),
+    a!("request: choose method", ToggleMethodMenu, None, None),
+    a!("environment: new", NewEnvironment, None, None),
+    a!("environment: rename active", RenameEnvironment, None, None),
+    a!(
+        "environment: duplicate active",
+        DuplicateEnvironment,
+        None,
+        None
+    ),
+    a!("environment: delete active", DeleteEnvironment, None, None),
+    a!("workspace: new window", NewWindow, None, None),
+    a!("keymap: open keybindings", OpenKeybindings, None, None),
+    a!("keymap: reload", ReloadKeymap, None, None),
+    a!("keymap: open keymap.toml", OpenKeymapFile, None, None),
+    a!("settings: open settings.toml", OpenSettingsFile, None, None),
+    a!(
+        "quick search: open result beside",
+        OpenResultBeside,
+        Some("secondary-enter"),
+        Some("Modal")
+    ),
 ];
+
+/// Finds an action by `fluxwire::Send`, bare `Send`, or a namespaced alias such as
+/// `request::Send` (SPEC §17.6): only the last path segment has to match.
+pub fn find_action(name: &str) -> Option<&'static ActionInfo> {
+    let short = name.trim().rsplit("::").next().unwrap_or_default();
+    if short.is_empty() {
+        return None;
+    }
+    ACTIONS
+        .iter()
+        .find(|a| a.name.rsplit("::").next() == Some(short))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BindingSource {
+    Default,
+    User,
+}
+
+/// One effective binding, for the Keybindings tab and the palette.
+#[derive(Clone, Debug)]
+pub struct BindingRow {
+    pub action: &'static str,
+    pub label: &'static str,
+    pub keys: String,
+    pub context: Option<String>,
+    pub source: BindingSource,
+}
+
+/// A warning about `keymap.toml`, shown in Problems.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeymapIssue {
+    pub line: usize,
+    pub code: &'static str,
+    pub message: String,
+}
+
+/// What is bound right now, and what is wrong with the user's file.
+#[derive(Clone, Debug, Default)]
+pub struct KeymapState {
+    pub rows: Vec<BindingRow>,
+    pub issues: Vec<KeymapIssue>,
+}
+
+impl gpui::Global for KeymapState {}
+
+impl KeymapState {
+    /// Display label of the first binding of `action` (`fluxwire::Send`), if any.
+    pub fn label_for(&self, action: &str) -> Option<String> {
+        self.rows
+            .iter()
+            .find(|r| r.action == action)
+            .map(|r| crate::ui::kbd_label(&r.keys))
+    }
+}
+
+fn norm_keys(keys: &str) -> String {
+    keys.split_whitespace()
+        .map(|k| {
+            let mut parts: Vec<String> = k.to_lowercase().split('-').map(str::to_string).collect();
+            let key = parts.pop().unwrap_or_default();
+            for p in &mut parts {
+                if p == "secondary" {
+                    *p = if cfg!(target_os = "macos") {
+                        "cmd"
+                    } else {
+                        "ctrl"
+                    }
+                    .into();
+                }
+            }
+            parts.sort();
+            parts.push(key);
+            parts.join("-")
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Defaults plus the user's overrides. A user binding for an action replaces that action's
+/// default bindings; an empty action (or `none`) unbinds the keystroke. Invalid entries become
+/// issues and are skipped.
+pub fn resolve_keymap(
+    user: &fluxwire_format::Keymap,
+) -> (Vec<(KeyBindingSpec, &'static ActionInfo)>, KeymapState) {
+    let mut issues: Vec<KeymapIssue> = user
+        .errors
+        .iter()
+        .map(|(line, m)| KeymapIssue {
+            line: *line,
+            code: "K001",
+            message: m.clone(),
+        })
+        .collect();
+    let mut valid: Vec<(&fluxwire_format::KeymapEntry, Option<&'static ActionInfo>)> = Vec::new();
+    for e in &user.entries {
+        if e.keystroke.split_whitespace().next().is_none()
+            || e.keystroke
+                .split_whitespace()
+                .any(|k| gpui::Keystroke::parse(k).is_err())
+        {
+            issues.push(KeymapIssue {
+                line: e.line,
+                code: "K004",
+                message: format!("`{}` is not a valid keystroke", e.keystroke),
+            });
+            continue;
+        }
+        if let Some(c) = &e.context
+            && gpui::KeyBindingContextPredicate::parse(c).is_err()
+        {
+            issues.push(KeymapIssue {
+                line: e.line,
+                code: "K005",
+                message: format!("`{c}` is not a valid key context"),
+            });
+            continue;
+        }
+        let a = e.action.trim();
+        if a.is_empty() || a.eq_ignore_ascii_case("none") {
+            valid.push((e, None));
+        } else if let Some(info) = find_action(a) {
+            valid.push((e, Some(info)));
+        } else {
+            issues.push(KeymapIssue {
+                line: e.line,
+                code: "K003",
+                message: format!("unknown action `{a}`"),
+            });
+        }
+    }
+    let rebound: Vec<&str> = valid
+        .iter()
+        .filter_map(|(_, i)| i.map(|i| i.name))
+        .collect();
+    let mut out: Vec<(KeyBindingSpec, &'static ActionInfo)> = Vec::new();
+    for a in ACTIONS {
+        let Some(keys) = a.binding else { continue };
+        if rebound.contains(&a.name) {
+            continue;
+        }
+        let nk = norm_keys(keys);
+        let unbound = valid.iter().any(|(e, i)| {
+            i.is_none() && norm_keys(&e.keystroke) == nk && e.context.as_deref() == a.context
+        });
+        if !unbound {
+            out.push((
+                KeyBindingSpec {
+                    keys: keys.to_string(),
+                    context: a.context.map(str::to_string),
+                    source: BindingSource::Default,
+                    line: 0,
+                },
+                a,
+            ));
+        }
+    }
+    for (e, info) in &valid {
+        if let Some(info) = info {
+            out.push((
+                KeyBindingSpec {
+                    keys: e.keystroke.clone(),
+                    context: e.context.clone(),
+                    source: BindingSource::User,
+                    line: e.line,
+                },
+                info,
+            ));
+        }
+    }
+    // Same keystroke and context on two actions where the user is involved: the later one wins.
+    for (i, (spec, info)) in out.iter().enumerate() {
+        if spec.source != BindingSource::User {
+            continue;
+        }
+        let nk = norm_keys(&spec.keys);
+        if let Some((_, other)) = out.iter().enumerate().find(|(j, (o, oi))| {
+            *j != i && norm_keys(&o.keys) == nk && o.context == spec.context && oi.name != info.name
+        }) {
+            issues.push(KeymapIssue {
+                line: spec.line,
+                code: "K002",
+                message: format!(
+                    "`{}` is bound to both `{}` and `{}`; the later binding wins",
+                    spec.keys, info.label, other.1.label
+                ),
+            });
+        }
+    }
+    let rows = out
+        .iter()
+        .map(|(spec, info)| BindingRow {
+            action: info.name,
+            label: info.label,
+            keys: spec.keys.clone(),
+            context: spec.context.clone(),
+            source: spec.source,
+        })
+        .collect();
+    (out, KeymapState { rows, issues })
+}
+
+#[derive(Clone, Debug)]
+pub struct KeyBindingSpec {
+    pub keys: String,
+    pub context: Option<String>,
+    pub source: BindingSource,
+    pub line: usize,
+}
+
+/// Rebinds every key from the defaults and `user`, live. Returns the issues found.
+pub fn apply_keymap(cx: &mut App, user: &fluxwire_format::Keymap) {
+    let (bindings, state) = resolve_keymap(user);
+    cx.clear_key_bindings();
+    cx.bind_keys(
+        bindings
+            .iter()
+            .map(|(spec, info)| (info.bind)(&spec.keys, spec.context.as_deref())),
+    );
+    cx.set_global(state);
+}
 
 pub fn key_bindings() -> Vec<KeyBinding> {
     ACTIONS
@@ -237,9 +528,9 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         .collect()
 }
 
-/// Registers bindings with GPUI.
+/// Registers the default bindings with GPUI (the user keymap is applied by the workspace).
 pub fn install(cx: &mut App) {
-    cx.bind_keys(key_bindings());
+    apply_keymap(cx, &fluxwire_format::Keymap::default());
 }
 
 #[cfg(test)]

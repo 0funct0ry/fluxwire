@@ -1241,3 +1241,276 @@ fn filters_restore_and_response_dropdown(cx: &mut TestAppContext) {
     });
     wait_until(&view, cx, "cleared", |w| w.history.entries.is_empty());
 }
+
+// ---- M6: search, tabs, layout, keymap -------------------------------------------------------
+
+fn labels(view: &Entity<Workspace>, cx: &mut VisualTestContext) -> Vec<String> {
+    view.read_with(cx, |w, _| {
+        w.modal_items().into_iter().map(|i| i.label).collect()
+    })
+}
+
+#[gpui::test]
+fn quick_search_prefix_filters(cx: &mut TestAppContext) {
+    let (view, cx, root) = setup_with(cx, "payments-api", "prefix");
+    write_env_file(&root, "qa");
+    view.update(cx, |w, _| {
+        w.on_env_fs_change(&[root.join("environments/qa.env")])
+    });
+    cx.simulate_keystrokes("secondary-k");
+    cx.simulate_input("@sta");
+    assert_eq!(labels(&view, cx), ["staging"]);
+    cx.simulate_keystrokes("escape secondary-k");
+    cx.simulate_input("/refunds");
+    let folders = labels(&view, cx);
+    assert!(folders.iter().any(|l| l == "refunds"), "{folders:?}");
+    assert!(view.read_with(cx, |w, _| {
+        w.modal_items()
+            .iter()
+            .all(|i| matches!(i.run, crate::workspace::ItemRun::Folder(_)))
+    }));
+    cx.simulate_keystrokes("escape secondary-k");
+    cx.simulate_input(">toggle theme");
+    assert_eq!(
+        labels(&view, cx).first().map(String::as_str),
+        Some("theme: toggle")
+    );
+}
+
+fn write_env_file(root: &Path, name: &str) {
+    std::fs::write(root.join(format!("environments/{name}.env")), "A=1\n").unwrap();
+}
+
+#[gpui::test]
+fn quick_search_matches_urls_and_highlights(cx: &mut TestAppContext) {
+    let (view, cx) = setup(cx);
+    cx.simulate_keystrokes("secondary-k");
+    cx.simulate_input("create refund");
+    let hl = view.read_with(cx, |w, _| {
+        w.modal
+            .as_ref()
+            .unwrap()
+            .results
+            .first()
+            .map(|i| i.indices.clone())
+            .unwrap()
+    });
+    assert!(
+        !hl.is_empty(),
+        "matched characters are reported for highlighting"
+    );
+}
+
+#[gpui::test]
+fn secondary_enter_opens_beside_the_active_tab(cx: &mut TestAppContext) {
+    let (view, cx) = setup(cx);
+    view.update_in(cx, |w, window, cx| {
+        w.open_request("payments/list-payments.flux.md", true, window, cx);
+        w.open_request(CREATE, true, window, cx); // CREATE active, LIST after it
+    });
+    cx.simulate_keystrokes("secondary-k");
+    cx.simulate_input("create refund");
+    cx.simulate_keystrokes("secondary-enter");
+    let ks = keys(&view, cx);
+    let at = |k: &str| ks.iter().position(|x| x == k).unwrap();
+    assert_eq!(
+        at("refunds/create-refund.flux.md"),
+        at(CREATE) + 1,
+        "{ks:?}"
+    );
+}
+
+#[gpui::test]
+fn ctrl_tab_switcher_uses_recency_and_commits_on_release(cx: &mut TestAppContext) {
+    let (view, cx) = setup(cx);
+    view.update_in(cx, |w, window, cx| {
+        w.open_request("payments/list-payments.flux.md", true, window, cx);
+        w.open_request("refunds/create-refund.flux.md", true, window, cx);
+    });
+    let active = |view: &Entity<Workspace>, cx: &mut VisualTestContext| {
+        view.read_with(cx, |w, _| w.tabs.active().map(|t| t.key.clone()))
+    };
+    assert_eq!(
+        active(&view, cx).as_deref(),
+        Some("refunds/create-refund.flux.md")
+    );
+    cx.simulate_keystrokes("ctrl-tab");
+    assert_eq!(
+        active(&view, cx).as_deref(),
+        Some("payments/list-payments.flux.md")
+    );
+    cx.simulate_keystrokes("ctrl-tab");
+    assert_eq!(active(&view, cx).as_deref(), Some(CREATE));
+    view.update(cx, |w, _| w.commit_switcher());
+    // CREATE is now most recent, then LIST was previewed only (never committed), so refunds is next.
+    let order = view.read_with(cx, |w, _| {
+        w.tabs
+            .mru_order()
+            .into_iter()
+            .filter_map(|id| w.tabs.get(id).map(|t| t.key.clone()))
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(order[0], CREATE);
+}
+
+#[gpui::test]
+fn close_to_the_right_and_reopen(cx: &mut TestAppContext) {
+    let (view, cx) = setup(cx);
+    view.update_in(cx, |w, window, cx| {
+        w.open_request("payments/list-payments.flux.md", true, window, cx);
+        w.open_request("refunds/create-refund.flux.md", true, window, cx);
+        let id = w.tabs.id_for_key(CREATE).unwrap();
+        w.tabs.activate(id);
+    });
+    cx.dispatch_action(crate::actions::CloseTabsToRight);
+    assert_eq!(keys(&view, cx), [CREATE]);
+    cx.simulate_keystrokes("secondary-shift-t");
+    assert_eq!(keys(&view, cx).len(), 2);
+    cx.dispatch_action(crate::actions::CloseAllTabs);
+    assert!(keys(&view, cx).is_empty());
+}
+
+#[gpui::test]
+fn layout_round_trips_through_the_session(cx: &mut TestAppContext) {
+    let (view, cx) = setup(cx);
+    cx.dispatch_action(crate::actions::ToggleSplitOrientation);
+    cx.dispatch_action(crate::actions::ShowProblems);
+    cx.dispatch_action(crate::actions::GroupTabsByKind);
+    cx.dispatch_action(crate::actions::ShowHistoryPanel);
+    view.update(cx, |w, _| w.left_width = 333.0);
+    let session = view.read_with(cx, |w, _| w.session());
+    let json = serde_json::to_string(&session).unwrap();
+    let back: crate::project::Session = serde_json::from_str(&json).unwrap();
+    // A fresh window picks the layout up.
+    let (fresh, cx) = cx.add_window_view(Workspace::new);
+    fresh.update(cx, |w, _| w.apply_layout(&back.layout));
+    let l = fresh.read_with(cx, |w, _| w.layout());
+    assert!(!l.split_vertical && l.bottom_open && l.group_by_kind);
+    assert_eq!(
+        (l.panel.as_str(), l.bottom_tab.as_str(), l.left_width),
+        ("history", "problems", 333.0)
+    );
+    // Old session files without a layout still load.
+    let old: crate::project::Session =
+        serde_json::from_str(r#"{"tabs":[],"active":null,"unsaved":{}}"#).unwrap();
+    assert_eq!(old.layout, crate::project::Layout::default());
+}
+
+#[gpui::test]
+fn non_request_tabs_and_scroll_are_restored(cx: &mut TestAppContext) {
+    let (view, cx) = setup(cx);
+    view.update(cx, |w, _| {
+        w.open_tab(
+            "keybindings",
+            "Keybindings",
+            crate::tabs::TabKind::Keybindings,
+            true,
+        );
+        w.open_tab("sync", "Sync", crate::tabs::TabKind::Sync, true);
+    });
+    let s = view.read_with(cx, |w, _| w.session());
+    let kinds: Vec<_> = s.tabs.iter().map(|t| t.kind.as_str()).collect();
+    assert_eq!(kinds, ["", "keys", "sync"]);
+    let (fresh, cx) = cx.add_window_view(Workspace::new);
+    fresh.update(cx, |w, cx| {
+        for t in s.tabs.iter().filter(|t| !t.kind.is_empty()) {
+            assert!(w.restore_other_tab(t, cx));
+        }
+    });
+    assert_eq!(keys(&fresh, cx), ["keybindings", "sync"]);
+}
+
+fn keymap_dir(text: &str) -> PathBuf {
+    static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("fluxwire-keymap-{}-{n}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("keymap.toml"), text).unwrap();
+    dir
+}
+
+fn send_keys(view: &Entity<Workspace>, cx: &mut VisualTestContext) -> Vec<String> {
+    view.update_in(cx, |_, window, _| {
+        window
+            .bindings_for_action(&crate::actions::Send)
+            .iter()
+            .map(|b| {
+                b.keystrokes()
+                    .iter()
+                    .map(|k| k.inner().unparse())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .collect()
+    })
+}
+
+#[gpui::test]
+fn keymap_override_rebinds_send_without_restart(cx: &mut TestAppContext) {
+    let (view, cx) = setup(cx);
+    let before = send_keys(&view, cx);
+    assert!(before.iter().any(|k| k.contains("enter")), "{before:?}");
+    let dir = keymap_dir("[[bindings]]\n\"cmd-r\" = \"request::Send\"\n");
+    cx.update(|_, cx| cx.set_global(crate::envs::ConfigDir(dir.clone())));
+    view.update(cx, |w, cx| w.reload_keymap(cx));
+    let after = send_keys(&view, cx);
+    assert_eq!(after.len(), 1, "{after:?}");
+    assert!(
+        after[0].contains('r') && !after[0].contains("enter"),
+        "{after:?}"
+    );
+    // Editing the file again takes effect on the next reload.
+    std::fs::write(dir.join("keymap.toml"), "").unwrap();
+    view.update(cx, |w, cx| w.reload_keymap(cx));
+    assert_eq!(send_keys(&view, cx), before);
+}
+
+#[gpui::test]
+fn keymap_problems_are_listed(cx: &mut TestAppContext) {
+    let (view, cx) = setup(cx);
+    let dir = keymap_dir(
+        "[[bindings]]\n\"cmd-r\" = \"request::Send\"\n[[bindings]]\n\"cmd-r\" = \"file::Save\"\n[[bindings]]\n\"cmd-x\" = \"nope::Missing\"\n\"a-b\" = \"Send\"\n",
+    );
+    cx.update(|_, cx| cx.set_global(crate::envs::ConfigDir(dir)));
+    view.update(cx, |w, cx| w.reload_keymap(cx));
+    let codes: Vec<&str> = view.read_with(cx, |w, _| {
+        w.all_problems()
+            .into_iter()
+            .filter(|p| p.key == "keymap.toml")
+            .map(|p| p.code)
+            .collect()
+    });
+    assert!(codes.contains(&"K003"), "{codes:?}");
+    assert!(codes.contains(&"K004"), "{codes:?}");
+    assert!(codes.contains(&"K002"), "{codes:?}");
+}
+
+#[gpui::test]
+fn keybindings_tab_lists_every_action(cx: &mut TestAppContext) {
+    let (view, cx) = setup(cx);
+    cx.dispatch_action(crate::actions::OpenKeybindings);
+    assert!(view.read_with(cx, |w, _| {
+        w.tabs.active().is_some_and(|t| t.key == "keybindings")
+    }));
+    let rows = view.update(cx, |w, cx| {
+        let state = cx.global::<crate::actions::KeymapState>().clone();
+        w.keybinding_rows(&state)
+    });
+    for a in ACTIONS {
+        assert!(
+            rows.iter().any(|r| r.label == a.label),
+            "{} missing",
+            a.label
+        );
+    }
+}
+
+#[gpui::test]
+fn every_action_is_reachable_from_the_palette(cx: &mut TestAppContext) {
+    let (view, cx) = setup(cx);
+    cx.simulate_keystrokes("secondary-shift-p");
+    let all = labels(&view, cx);
+    for a in ACTIONS {
+        assert!(all.iter().any(|l| l == a.label), "{} not listed", a.label);
+    }
+}

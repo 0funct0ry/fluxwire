@@ -9,6 +9,7 @@ pub enum TabKind {
     Environment,
     History,
     Sync,
+    Keybindings,
 }
 
 impl TabKind {
@@ -22,6 +23,7 @@ impl TabKind {
             TabKind::Environment => "⚙".into(),
             TabKind::History => "⟲".into(),
             TabKind::Sync => "⇅".into(),
+            TabKind::Keybindings => "⌨".into(),
         }
     }
 
@@ -35,7 +37,7 @@ impl TabKind {
         }
     }
 
-    fn group_order(&self) -> u8 {
+    pub fn group_order(&self) -> u8 {
         match self {
             TabKind::Http { .. } => 0,
             TabKind::WebSocket => 1,
@@ -44,6 +46,7 @@ impl TabKind {
             TabKind::Environment => 4,
             TabKind::History => 5,
             TabKind::Sync => 6,
+            TabKind::Keybindings => 7,
         }
     }
 }
@@ -60,12 +63,17 @@ pub struct Tab {
     pub dirty: bool,
 }
 
+/// Closed tabs remembered for reopen.
+const CLOSED_LIMIT: usize = 20;
+
 #[derive(Default, Debug)]
 pub struct Tabs {
     tabs: Vec<Tab>,
     active: Option<u64>,
     next_id: u64,
     closed: Vec<Tab>,
+    /// Tab ids, most recently activated first (Ctrl+Tab order).
+    mru: Vec<u64>,
     pub group_by_kind: bool,
 }
 
@@ -90,6 +98,36 @@ impl Tabs {
         self.tabs.iter().find(|t| t.id == id)
     }
 
+    /// Activate `id` and move it to the front of the recency list.
+    fn set_active(&mut self, id: u64) {
+        self.active = Some(id);
+        self.mru.retain(|m| *m != id);
+        self.mru.insert(0, id);
+    }
+
+    /// Tabs by recency, most recent first; tabs never activated follow in tab order.
+    pub fn mru_order(&self) -> Vec<u64> {
+        let mut out: Vec<u64> = self
+            .mru
+            .iter()
+            .copied()
+            .filter(|id| self.get(*id).is_some())
+            .collect();
+        for t in &self.tabs {
+            if !out.contains(&t.id) {
+                out.push(t.id);
+            }
+        }
+        out
+    }
+
+    /// Show `id` without changing the recency order (Ctrl+Tab while the modifier is held).
+    pub fn peek(&mut self, id: u64) {
+        if self.get(id).is_some() {
+            self.active = Some(id);
+        }
+    }
+
     fn get_mut(&mut self, id: u64) -> Option<&mut Tab> {
         self.tabs.iter_mut().find(|t| t.id == id)
     }
@@ -106,7 +144,7 @@ impl Tabs {
             pinned: false,
             dirty: false,
         });
-        self.active = Some(id);
+        self.set_active(id);
         id
     }
 
@@ -114,7 +152,7 @@ impl Tabs {
     /// append a new preview tab.
     pub fn open_preview(&mut self, key: &str, title: &str, kind: TabKind) -> u64 {
         if let Some(id) = self.tabs.iter().find(|t| t.key == key).map(|t| t.id) {
-            self.active = Some(id);
+            self.set_active(id);
             return id;
         }
         if let Some(pos) = self.tabs.iter().position(|t| t.preview && !t.pinned) {
@@ -129,7 +167,7 @@ impl Tabs {
                 pinned: false,
                 dirty: false,
             };
-            self.active = Some(id);
+            self.set_active(id);
             return id;
         }
         self.insert_new(key, title, kind, true)
@@ -141,7 +179,7 @@ impl Tabs {
             if let Some(t) = self.get_mut(id) {
                 t.preview = false;
             }
-            self.active = Some(id);
+            self.set_active(id);
             return id;
         }
         self.insert_new(key, title, kind, false)
@@ -191,7 +229,7 @@ impl Tabs {
 
     pub fn activate(&mut self, id: u64) {
         if self.get(id).is_some() {
-            self.active = Some(id);
+            self.set_active(id);
         }
     }
 
@@ -220,7 +258,11 @@ impl Tabs {
             return;
         };
         let tab = self.tabs.remove(pos);
+        self.mru.retain(|m| *m != id);
         self.closed.push(tab);
+        if self.closed.len() > CLOSED_LIMIT {
+            self.closed.remove(0);
+        }
         if self.active == Some(id) {
             let next = pos.min(self.tabs.len().saturating_sub(1));
             self.active = self.tabs.get(next).map(|t| t.id);
@@ -239,9 +281,84 @@ impl Tabs {
         }
     }
 
+    /// Close every unpinned tab after `id` in tab order.
+    pub fn close_to_right(&mut self, id: u64) {
+        let Some(pos) = self.tabs.iter().position(|t| t.id == id) else {
+            return;
+        };
+        let ids: Vec<u64> = self.tabs[pos + 1..]
+            .iter()
+            .filter(|t| !t.pinned)
+            .map(|t| t.id)
+            .collect();
+        for i in ids {
+            self.close(i);
+        }
+    }
+
+    /// Close every unpinned tab without unsaved edits.
+    pub fn close_clean(&mut self) {
+        let ids: Vec<u64> = self
+            .tabs
+            .iter()
+            .filter(|t| !t.dirty && !t.pinned)
+            .map(|t| t.id)
+            .collect();
+        for i in ids {
+            self.close(i);
+        }
+    }
+
+    /// Close every unpinned tab.
+    pub fn close_all(&mut self) {
+        let ids: Vec<u64> = self
+            .tabs
+            .iter()
+            .filter(|t| !t.pinned)
+            .map(|t| t.id)
+            .collect();
+        for i in ids {
+            self.close(i);
+        }
+    }
+
+    /// Reopens the most recently closed tab, keeping its pin.
     pub fn reopen_closed(&mut self) -> Option<u64> {
         let t = self.closed.pop()?;
-        Some(self.open_permanent(&t.key, &t.title, t.kind))
+        let id = self.open_permanent(&t.key, &t.title, t.kind);
+        if t.pinned {
+            self.toggle_pin(id);
+        }
+        Some(id)
+    }
+
+    /// Removes and returns the most recently closed tab without reopening it.
+    pub fn pop_closed(&mut self) -> Option<Tab> {
+        self.closed.pop()
+    }
+
+    pub fn closed_tabs(&self) -> &[Tab] {
+        &self.closed
+    }
+
+    /// Restores the closed-tab stack from a saved session (oldest first).
+    pub fn set_closed(&mut self, closed: Vec<(String, String, TabKind, bool)>) {
+        self.closed = closed
+            .into_iter()
+            .map(|(key, title, kind, pinned)| {
+                let id = self.next_id;
+                self.next_id += 1;
+                Tab {
+                    id,
+                    key,
+                    title,
+                    kind,
+                    preview: false,
+                    pinned,
+                    dirty: false,
+                }
+            })
+            .collect();
     }
 
     pub fn cycle(&mut self, delta: isize) {
@@ -258,6 +375,20 @@ impl Tabs {
     }
 
     /// Display order: as stored, or grouped by kind (stable) when `group_by_kind` is set.
+    /// Move tab `id` to sit right after tab `after` (open "beside").
+    pub fn place_after(&mut self, id: u64, after: u64) {
+        let Some(from) = self.tabs.iter().position(|t| t.id == id) else {
+            return;
+        };
+        let tab = self.tabs.remove(from);
+        let at = self
+            .tabs
+            .iter()
+            .position(|t| t.id == after)
+            .map_or(self.tabs.len(), |i| i + 1);
+        self.tabs.insert(at, tab);
+    }
+
     pub fn display_order(&self) -> Vec<&Tab> {
         let mut v: Vec<&Tab> = self.tabs.iter().collect();
         if self.group_by_kind {
@@ -349,5 +480,54 @@ mod tests {
         t.group_by_kind = true;
         let keys: Vec<_> = t.display_order().iter().map(|x| x.key.clone()).collect();
         assert_eq!(keys, ["a", "ws"]);
+    }
+
+    #[test]
+    fn mru_order_follows_activation_and_peek_does_not_reorder() {
+        let mut t = Tabs::new();
+        let a = t.open_permanent("a", "a", TabKind::Docs);
+        let b = t.open_permanent("b", "b", TabKind::Docs);
+        let c = t.open_permanent("c", "c", TabKind::Docs);
+        assert_eq!(t.mru_order(), [c, b, a]);
+        t.activate(a);
+        assert_eq!(t.mru_order(), [a, c, b]);
+        t.peek(b);
+        assert_eq!(t.active_id(), Some(b));
+        assert_eq!(t.mru_order(), [a, c, b]);
+    }
+
+    #[test]
+    fn close_variants_respect_pins_and_dirty() {
+        let mut t = Tabs::new();
+        let a = t.open_permanent("a", "a", TabKind::Docs);
+        let b = t.open_permanent("b", "b", TabKind::Docs);
+        let c = t.open_permanent("c", "c", TabKind::Docs);
+        let d = t.open_permanent("d", "d", TabKind::Docs);
+        t.toggle_pin(d); // sorts to front: d a b c
+        t.set_dirty(c, true);
+        t.close_to_right(a);
+        assert_eq!(t.all().iter().map(|x| x.id).collect::<Vec<_>>(), [d, a]);
+        let e = t.open_permanent("e", "e", TabKind::Docs);
+        t.set_dirty(e, true);
+        t.close_clean();
+        assert_eq!(t.all().iter().map(|x| x.id).collect::<Vec<_>>(), [d, e]);
+        t.close_all();
+        assert_eq!(t.all().iter().map(|x| x.id).collect::<Vec<_>>(), [d]);
+        let _ = b;
+    }
+
+    #[test]
+    fn closed_stack_is_bounded_and_reopen_keeps_pin() {
+        let mut t = Tabs::new();
+        for i in 0..30 {
+            let id = t.open_permanent(&format!("k{i}"), "t", TabKind::Docs);
+            if i == 29 {
+                t.toggle_pin(id);
+            }
+            t.close(id);
+        }
+        assert_eq!(t.closed_tabs().len(), 20);
+        let id = t.reopen_closed().unwrap();
+        assert!(t.get(id).unwrap().pinned);
     }
 }
