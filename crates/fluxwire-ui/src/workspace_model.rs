@@ -283,12 +283,15 @@ fn rows(text: &str, diags: &[Diagnostic]) -> Vec<IndexRow> {
         .collect()
 }
 
-pub struct Project {
+pub struct Workspace {
     pub root: PathBuf,
     pub name: String,
     pub collections: Vec<LoadedCollection>,
     /// Collections that could not be opened, with the reason (e.g. format too new).
     pub errors: Vec<(PathBuf, OpenError)>,
+    /// Keys of collections removed from this Workspace. Collections are discovered on disk, so
+    /// "remove" hides them (remembered in the session) instead of touching any file.
+    pub hidden: std::collections::HashSet<String>,
     pub docs: HashMap<String, OpenDoc>,
     index: BTreeMap<String, Vec<IndexRow>>,
     /// Quick-search data per indexed file (URL, tags, doc headings).
@@ -358,13 +361,14 @@ pub fn read_git_branch(root: &Path) -> Option<String> {
     None
 }
 
-impl Project {
-    /// Open a folder. Errors only if it holds no openable collection and at least one failed.
-    pub fn open(root: &Path) -> Result<Project, OpenError> {
+impl Workspace {
+    /// Open a folder. Errors only if it is missing; a Collection that fails to load is kept in
+    /// `errors` and the rest of the Workspace still opens.
+    pub fn open(root: &Path) -> Result<Workspace, OpenError> {
         if !root.is_dir() {
             return Err(OpenError::NotFound(root.to_path_buf()));
         }
-        let mut p = Project {
+        let mut p = Workspace {
             root: root.to_path_buf(),
             name: root.file_name().map_or_else(
                 || root.display().to_string(),
@@ -372,17 +376,13 @@ impl Project {
             ),
             collections: vec![],
             errors: vec![],
+            hidden: Default::default(),
             docs: HashMap::new(),
             index: BTreeMap::new(),
             search_rows: BTreeMap::new(),
             branch: read_git_branch(root),
         };
         p.rescan();
-        if p.collections.is_empty()
-            && let Some((_, e)) = p.errors.first()
-        {
-            return Err(e.clone());
-        }
         Ok(p)
     }
 
@@ -416,6 +416,9 @@ impl Project {
         self.collections.clear();
         self.errors.clear();
         for dir in find_collections(&self.root) {
+            if self.hidden.contains(&self.key_of(&dir)) {
+                continue;
+            }
             match scan(&dir) {
                 Ok(c) => {
                     let key = self.key_of(&dir);
@@ -766,7 +769,7 @@ pub struct SessionTab {
 pub struct Layout {
     pub left_open: bool,
     pub left_width: f32,
-    /// `project`, `history`, `environments` or `sync`.
+    /// `workspace`, `history`, `environments` or `sync`.
     pub panel: String,
     pub bottom_open: bool,
     /// `console` or `problems`.
@@ -781,7 +784,7 @@ impl Default for Layout {
         Layout {
             left_open: true,
             left_width: 260.0,
-            panel: "project".into(),
+            panel: "workspace".into(),
             bottom_open: false,
             bottom_tab: "console".into(),
             bottom_height: 200.0,
@@ -805,6 +808,9 @@ pub struct Session {
     /// Recently closed tabs, oldest first, for "reopen closed tab" after a restart.
     #[serde(default)]
     pub closed: Vec<SessionTab>,
+    /// Collections removed from the Workspace (keys), so they stay hidden on reopen.
+    #[serde(default)]
+    pub hidden_collections: Vec<String>,
 }
 
 pub fn load_recent(dir: &Path) -> Recent {
@@ -886,7 +892,7 @@ mod tests {
 
     #[test]
     fn opens_fixture_and_prefixes_keys() {
-        let p = Project::open(&fixture()).unwrap();
+        let p = Workspace::open(&fixture()).unwrap();
         assert_eq!(p.collections.len(), 1);
         assert!(
             p.all_requests()
@@ -901,7 +907,7 @@ mod tests {
         let root = tmp("nested");
         fluxwire_format::create_collection(&root.join("api"), "Api").unwrap();
         fluxwire_format::create_request(&root.join("api"), "Hello", "", false).unwrap();
-        let p = Project::open(&root).unwrap();
+        let p = Workspace::open(&root).unwrap();
         assert_eq!(p.all_requests()[0].0, "api/hello.flux.md");
         assert_eq!(
             p.collection_dir_for("api/hello.flux.md").unwrap(),
@@ -910,25 +916,26 @@ mod tests {
     }
 
     #[test]
-    fn format_too_new_refuses() {
+    fn format_too_new_is_an_error_row() {
         let root = tmp("toonew");
         std::fs::write(
             root.join("fluxwire.toml"),
             "[collection]\nname=\"x\"\nformat = 2\n",
         )
         .unwrap();
-        match Project::open(&root) {
-            Err(OpenError::FormatTooNew { found: 2, .. }) => {}
-            Err(e) => panic!("{e}"),
-            Ok(_) => panic!("should refuse"),
-        }
+        let ws = Workspace::open(&root).expect("workspace opens");
+        assert!(ws.collections.is_empty());
+        assert!(matches!(
+            ws.errors[0].1,
+            OpenError::FormatTooNew { found: 2, .. }
+        ));
     }
 
     #[test]
     fn edit_save_roundtrip_changes_only_edited_line() {
         let root = tmp("edit");
         copy_dir(&fixture(), &root);
-        let mut p = Project::open(&root).unwrap();
+        let mut p = Workspace::open(&root).unwrap();
         let key = "payments/get-payment.flux.md";
         let before = std::fs::read_to_string(root.join(key)).unwrap();
         let d = p.open_doc(key).unwrap();
@@ -960,7 +967,7 @@ mod tests {
             root.join("future-grpc.flux.md"),
         )
         .unwrap();
-        let mut p = Project::open(&root).unwrap();
+        let mut p = Workspace::open(&root).unwrap();
         let d = p.open_doc("future-grpc.flux.md").unwrap();
         assert!(!d.parsed.runnable());
         assert!(!d.parsed.other_content().is_empty());
@@ -976,7 +983,7 @@ mod tests {
     fn external_change_reloads_clean_and_conflicts_dirty() {
         let root = tmp("watch");
         copy_dir(&fixture(), &root);
-        let mut p = Project::open(&root).unwrap();
+        let mut p = Workspace::open(&root).unwrap();
         let key = "payments/list-payments.flux.md";
         p.open_doc(key).unwrap();
         let path = root.join(key);
@@ -1020,7 +1027,7 @@ mod tests {
             root.join("malformed.flux.md"),
         )
         .unwrap();
-        let p = Project::open(&root).unwrap();
+        let p = Workspace::open(&root).unwrap();
         let pr = p.problems();
         assert!(pr.iter().any(|x| x.code == "F101"), "{pr:?}");
         assert!(pr.iter().all(|x| x.line >= 1));

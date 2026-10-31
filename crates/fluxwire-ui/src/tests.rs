@@ -7,7 +7,7 @@ use gpui::{Entity, TestAppContext, VisualTestContext};
 use crate::{
     actions::{self, ACTIONS},
     theme::{Appearance, Theme, theme},
-    workspace::{ModalKind, Workspace},
+    workspace::{ModalKind, WorkspaceView},
 };
 
 fn copy_dir(from: &Path, to: &Path) {
@@ -40,30 +40,30 @@ fn setup_with<'a>(
     cx: &'a mut TestAppContext,
     fixture: &str,
     tag: &str,
-) -> (Entity<Workspace>, &'a mut VisualTestContext, PathBuf) {
+) -> (Entity<WorkspaceView>, &'a mut VisualTestContext, PathBuf) {
     cx.update(|cx| {
         cx.set_global(Theme::one_dark());
         actions::install(cx);
     });
     let root = scratch(fixture, tag);
-    let (view, cx) = cx.add_window_view(Workspace::new);
+    let (view, cx) = cx.add_window_view(WorkspaceView::new);
     let r = root.clone();
     view.update_in(cx, |w, window, cx| {
-        w.open_project(&r, window, cx);
+        w.open_workspace(&r, window, cx);
         w.open_request("payments/create-payment.flux.md", true, window, cx);
     });
     cx.run_until_parked();
     (view, cx, root)
 }
 
-fn setup(cx: &mut TestAppContext) -> (Entity<Workspace>, &mut VisualTestContext) {
+fn setup(cx: &mut TestAppContext) -> (Entity<WorkspaceView>, &mut VisualTestContext) {
     let (v, cx, _) = setup_with(cx, "payments-api", "shell");
     (v, cx)
 }
 
-fn keys(view: &Entity<Workspace>, cx: &mut VisualTestContext) -> Vec<String> {
+fn keys(view: &Entity<WorkspaceView>, cx: &mut VisualTestContext) -> Vec<String> {
     view.read_with(cx, |w, _| {
-        w.tabs.all().iter().map(|t| t.key.clone()).collect()
+        w.scope.tabs.all().iter().map(|t| t.key.clone()).collect()
     })
 }
 
@@ -85,7 +85,9 @@ fn preview_tab_is_replaced_then_a_permanent_tab_stays(cx: &mut TestAppContext) {
         w.open_request(REFUND, false, window, cx)
     });
     assert_eq!(keys(&view, cx), [CREATE, LIST, REFUND]);
-    let previews = view.read_with(cx, |w, _| w.tabs.all().iter().filter(|t| t.preview).count());
+    let previews = view.read_with(cx, |w, _| {
+        w.scope.tabs.all().iter().filter(|t| t.preview).count()
+    });
     assert_eq!(previews, 1);
 }
 
@@ -96,7 +98,7 @@ fn pinning_and_closing_tabs(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("secondary-shift-p");
     cx.simulate_input("tab: pin");
     cx.simulate_keystrokes("enter");
-    let pinned = view.read_with(cx, |w, _| w.tabs.active().map(|t| t.pinned));
+    let pinned = view.read_with(cx, |w, _| w.scope.tabs.active().map(|t| t.pinned));
     assert_eq!(pinned, Some(true));
     assert_eq!(keys(&view, cx)[0], GET, "pinned tab sorts first");
 
@@ -128,12 +130,12 @@ fn palette_lists_every_registered_action(cx: &mut TestAppContext) {
 #[gpui::test]
 fn palette_filters_and_runs_an_action(cx: &mut TestAppContext) {
     let (view, cx) = setup(cx);
-    assert!(view.read_with(cx, |w, _| !w.bottom_open));
+    assert!(view.read_with(cx, |w, _| !w.scope.bottom_open));
     cx.simulate_keystrokes("secondary-shift-p");
     cx.simulate_input("toggle bottom");
     assert_eq!(view.read_with(cx, |w, _| w.modal_items().len()), 1);
     cx.simulate_keystrokes("enter");
-    assert!(view.read_with(cx, |w, _| w.bottom_open && w.modal.is_none()));
+    assert!(view.read_with(cx, |w, _| w.scope.bottom_open && w.modal.is_none()));
 }
 
 #[gpui::test]
@@ -149,9 +151,9 @@ fn quick_search_opens_a_request(cx: &mut TestAppContext) {
 fn dock_and_bottom_toggle_bindings(cx: &mut TestAppContext) {
     let (view, cx) = setup(cx);
     cx.simulate_keystrokes("secondary-b");
-    assert!(view.read_with(cx, |w, _| !w.left_open));
+    assert!(view.read_with(cx, |w, _| !w.scope.left_open));
     cx.simulate_keystrokes("secondary-j");
-    assert!(view.read_with(cx, |w, _| w.bottom_open));
+    assert!(view.read_with(cx, |w, _| w.scope.bottom_open));
 }
 
 #[gpui::test]
@@ -204,19 +206,20 @@ fn views_contain_no_hard_coded_colors() {
 #[gpui::test]
 fn method_dropdown_opens_selects_and_closes(cx: &mut TestAppContext) {
     let (view, cx) = setup(cx);
-    let method = |view: &Entity<Workspace>, cx: &mut VisualTestContext| {
+    let method = |view: &Entity<WorkspaceView>, cx: &mut VisualTestContext| {
         view.update(cx, |w, _| w.active_ui().map(|u| u.method))
     };
     assert_eq!(method(&view, cx), Some(1)); // POST
-    view.update(cx, |w, _| w.method_menu = true);
+    view.update(cx, |w, _| w.scope.method_menu = true);
     // Choosing an item sets the method (not "the next one"), edits the file and closes the menu.
     view.update(cx, |w, cx| {
-        w.method_menu = false;
+        w.scope.method_menu = false;
         w.set_method(4, cx);
     });
     assert_eq!(method(&view, cx), Some(4));
     let text = view.read_with(cx, |w, _| {
-        w.project
+        w.scope
+            .workspace
             .as_ref()
             .unwrap()
             .doc(CREATE)
@@ -225,21 +228,34 @@ fn method_dropdown_opens_selects_and_closes(cx: &mut TestAppContext) {
             .clone()
     });
     assert!(text.contains("DELETE {{baseUrl}}/v1/payments"), "{text}");
-    view.update(cx, |w, _| w.method_menu = true);
+    view.update(cx, |w, _| w.scope.method_menu = true);
     cx.simulate_keystrokes("escape");
-    assert!(view.read_with(cx, |w, _| !w.method_menu));
+    assert!(view.read_with(cx, |w, _| !w.scope.method_menu));
 }
 
-fn doc_text(view: &Entity<Workspace>, cx: &mut VisualTestContext, key: &str) -> String {
+fn doc_text(view: &Entity<WorkspaceView>, cx: &mut VisualTestContext, key: &str) -> String {
     view.read_with(cx, |w, _| {
-        w.project.as_ref().unwrap().doc(key).unwrap().text.clone()
+        w.scope
+            .workspace
+            .as_ref()
+            .unwrap()
+            .doc(key)
+            .unwrap()
+            .text
+            .clone()
     })
 }
 
-fn dirty(view: &Entity<Workspace>, cx: &mut VisualTestContext, key: &str) -> bool {
+fn dirty(view: &Entity<WorkspaceView>, cx: &mut VisualTestContext, key: &str) -> bool {
     view.read_with(cx, |w, _| {
-        w.project.as_ref().unwrap().doc(key).unwrap().dirty()
-            && w.tabs.all().iter().any(|t| t.key == key && t.dirty)
+        w.scope
+            .workspace
+            .as_ref()
+            .unwrap()
+            .doc(key)
+            .unwrap()
+            .dirty()
+            && w.scope.tabs.all().iter().any(|t| t.key == key && t.dirty)
     })
 }
 
@@ -247,7 +263,7 @@ fn dirty(view: &Entity<Workspace>, cx: &mut VisualTestContext, key: &str) -> boo
 fn opening_a_folder_builds_the_tree_from_disk(cx: &mut TestAppContext) {
     let (view, cx) = setup(cx);
     view.read_with(cx, |w, _| {
-        let p = w.project.as_ref().unwrap();
+        let p = w.scope.workspace.as_ref().unwrap();
         assert!(p.all_requests().len() >= 7);
         assert_eq!(p.problem_count(), 0);
         assert_eq!(w.workspace_label(), p.name);
@@ -294,7 +310,8 @@ fn text_mode_and_form_edit_the_same_document(cx: &mut TestAppContext) {
     // The form sees the same document: the request is still parsed.
     view.update(cx, |w, cx| w.toggle_text_mode(cx));
     assert!(view.read_with(cx, |w, _| {
-        w.project
+        w.scope
+            .workspace
             .as_ref()
             .unwrap()
             .doc(CREATE)
@@ -303,7 +320,8 @@ fn text_mode_and_form_edit_the_same_document(cx: &mut TestAppContext) {
             .request()
             .is_some()
             || !w
-                .project
+                .scope
+                .workspace
                 .as_ref()
                 .unwrap()
                 .doc(CREATE)
@@ -344,9 +362,11 @@ fn header_cell_edit_goes_through_the_span_editor(cx: &mut TestAppContext) {
 #[gpui::test]
 fn new_request_prompt_creates_file_and_opens_tab(cx: &mut TestAppContext) {
     let (view, cx, root) = setup_with(cx, "payments-api", "new");
-    let count = view.read_with(cx, |w, _| w.project.as_ref().unwrap().all_requests().len());
+    let count = view.read_with(cx, |w, _| {
+        w.scope.workspace.as_ref().unwrap().all_requests().len()
+    });
     cx.simulate_keystrokes("secondary-n");
-    assert!(view.read_with(cx, |w, _| w.modal.is_none() && w.inline.is_some()));
+    assert!(view.read_with(cx, |w, _| w.modal.is_none() && w.scope.inline.is_some()));
     cx.run_until_parked();
     cx.simulate_input("Capture payment");
     cx.simulate_keystrokes("enter");
@@ -359,7 +379,9 @@ fn new_request_prompt_creates_file_and_opens_tab(cx: &mut TestAppContext) {
             && text.contains("```http\nGET")
     );
     assert!(keys(&view, cx).contains(&"payments/capture-payment.flux.md".to_string()));
-    let after = view.read_with(cx, |w, _| w.project.as_ref().unwrap().all_requests().len());
+    let after = view.read_with(cx, |w, _| {
+        w.scope.workspace.as_ref().unwrap().all_requests().len()
+    });
     assert_eq!(after, count + 1);
 }
 
@@ -397,7 +419,8 @@ fn external_edit_reloads_clean_tab_and_flags_dirty_one(cx: &mut TestAppContext) 
     std::fs::write(&path, orig.replace("INR", "USD")).unwrap();
     view.update(cx, |w, cx| w.on_fs_changes(std::slice::from_ref(&path), cx));
     assert!(view.read_with(cx, |w, _| {
-        w.project
+        w.scope
+            .workspace
             .as_ref()
             .unwrap()
             .doc(CREATE)
@@ -420,7 +443,8 @@ fn unsupported_file_saves_byte_identical_and_is_not_runnable(cx: &mut TestAppCon
     let before = std::fs::read(root.join("future-grpc.flux.md")).unwrap();
     view.read_with(cx, |w, _| {
         let d = w
-            .project
+            .scope
+            .workspace
             .as_ref()
             .unwrap()
             .doc("future-grpc.flux.md")
@@ -445,7 +469,8 @@ fn unsupported_file_saves_byte_identical_and_is_not_runnable(cx: &mut TestAppCon
 fn malformed_file_opens_with_problems_and_click_jumps_to_span(cx: &mut TestAppContext) {
     let (view, cx, _root) = setup_with(cx, "format-edge", "bad");
     let problem = view.read_with(cx, |w, _| {
-        w.project
+        w.scope
+            .workspace
             .as_ref()
             .unwrap()
             .problems()
@@ -456,22 +481,23 @@ fn malformed_file_opens_with_problems_and_click_jumps_to_span(cx: &mut TestAppCo
     view.update_in(cx, |w, window, cx| w.goto_problem(&problem, window, cx));
     view.read_with(cx, |w, _| {
         let d = w
-            .project
+            .scope
+            .workspace
             .as_ref()
             .unwrap()
             .doc("malformed.flux.md")
             .unwrap();
         assert!(d.text_mode);
         assert_eq!(
-            d.editors[&crate::project::Target::Text].cursor,
+            d.editors[&crate::workspace_model::Target::Text].cursor,
             problem.span.start
         );
-        assert_eq!(w.tabs.active().unwrap().key, "malformed.flux.md");
+        assert_eq!(w.scope.tabs.active().unwrap().key, "malformed.flux.md");
     });
 }
 
 #[gpui::test]
-fn collection_with_newer_format_is_refused(cx: &mut TestAppContext) {
+fn collection_with_newer_format_is_an_error_row(cx: &mut TestAppContext) {
     cx.update(|cx| {
         cx.set_global(Theme::one_dark());
         actions::install(cx);
@@ -483,11 +509,12 @@ fn collection_with_newer_format_is_refused(cx: &mut TestAppContext) {
         "[collection]\nname = \"x\"\nformat = 2\n",
     )
     .unwrap();
-    let (view, cx) = cx.add_window_view(Workspace::new);
-    view.update_in(cx, |w, window, cx| w.open_project(&dir, window, cx));
+    let (view, cx) = cx.add_window_view(WorkspaceView::new);
+    view.update_in(cx, |w, window, cx| w.open_workspace(&dir, window, cx));
     view.read_with(cx, |w, _| {
-        assert!(w.project.is_none());
-        assert!(w.open_error.as_deref().unwrap().contains("format 2"));
+        let ws = w.scope.workspace.as_ref().expect("workspace still opens");
+        assert!(ws.collections.is_empty());
+        assert!(ws.errors[0].1.to_string().contains("format 2"));
     });
 }
 
@@ -522,16 +549,17 @@ fn test_server(stall: bool) -> u16 {
 
 /// Scripts only run in trusted collections (SPEC §21); tests that send a scripted request
 /// trust the collection of `key` for the session.
-fn trust_collection_of(view: &Entity<Workspace>, cx: &mut VisualTestContext, key: &str) {
+fn trust_collection_of(view: &Entity<WorkspaceView>, cx: &mut VisualTestContext, key: &str) {
     view.update(cx, |w, _| {
         let root = w.collection_root_of(key).expect("collection root");
-        w.session_trust.insert(root);
+        w.scope.session_trust.insert(root);
     });
 }
 
-fn set_doc_text(view: &Entity<Workspace>, cx: &mut VisualTestContext, key: &str, text: String) {
+fn set_doc_text(view: &Entity<WorkspaceView>, cx: &mut VisualTestContext, key: &str, text: String) {
     view.update(cx, |w, _| {
-        w.project
+        w.scope
+            .workspace
             .as_mut()
             .unwrap()
             .doc_mut(key)
@@ -541,10 +569,10 @@ fn set_doc_text(view: &Entity<Workspace>, cx: &mut VisualTestContext, key: &str,
 }
 
 fn wait_until(
-    view: &Entity<Workspace>,
+    view: &Entity<WorkspaceView>,
     cx: &mut VisualTestContext,
     what: &str,
-    f: impl Fn(&Workspace) -> bool,
+    f: impl Fn(&WorkspaceView) -> bool,
 ) {
     for _ in 0..500 {
         cx.run_until_parked();
@@ -576,17 +604,22 @@ fn scripts_wait_for_trust_then_run_and_feed_runtime_variables(cx: &mut TestAppCo
 
     cx.simulate_keystrokes("secondary-enter");
     view.read_with(cx, |w, _| {
-        assert_eq!(w.trust_prompt, w.tabs.active_id(), "the first send asks");
-        assert!(w.responses.values().all(|r| r.result.is_none()));
+        assert_eq!(
+            w.scope.trust_prompt,
+            w.scope.tabs.active_id(),
+            "the first send asks"
+        );
+        assert!(w.scope.responses.values().all(|r| r.result.is_none()));
     });
 
     view.update(cx, |w, cx| w.set_collection_trust(true, cx));
     wait_until(&view, cx, "the scripted send", |w| {
-        w.responses.values().any(|r| r.result.is_some())
+        w.scope.responses.values().any(|r| r.result.is_some())
     });
     view.read_with(cx, |w, _| {
-        assert!(w.trust_prompt.is_none());
+        assert!(w.scope.trust_prompt.is_none());
         let res = w
+            .scope
             .responses
             .values()
             .next()
@@ -608,19 +641,19 @@ fn scripts_wait_for_trust_then_run_and_feed_runtime_variables(cx: &mut TestAppCo
                 ("has an id", true)
             ]
         );
-        assert_eq!(w.envs.runtime["paymentId"].0, "pay_1");
-        assert_eq!(w.envs.runtime["stamp"].0, "s1");
+        assert_eq!(w.scope.envs.runtime["paymentId"].0, "pay_1");
+        assert_eq!(w.scope.envs.runtime["stamp"].0, "s1");
         assert!(
-            w.console.iter().any(|l| l.contains("before send")),
+            w.scope.console.iter().any(|l| l.contains("before send")),
             "{:?}",
-            w.console
+            w.scope.console
         );
     });
 
     view.update(cx, |w, cx| w.set_collection_trust(false, cx));
     view.read_with(cx, |w, _| {
         let root = w.collection_root_of(CREATE).unwrap();
-        assert!(!w.session_trust.contains(&root));
+        assert!(!w.scope.session_trust.contains(&root));
     });
 }
 
@@ -632,10 +665,10 @@ fn send_shows_the_response_without_saving(cx: &mut TestAppContext) {
     let on_disk = std::fs::read_to_string(root.join(CREATE)).unwrap();
     cx.simulate_keystrokes("secondary-enter");
     wait_until(&view, cx, "the response body", |w| {
-        w.responses.values().any(|r| r.shown.is_some())
+        w.scope.responses.values().any(|r| r.shown.is_some())
     });
     view.read_with(cx, |w, _| {
-        let r = w.responses.values().next().unwrap();
+        let r = w.scope.responses.values().next().unwrap();
         let res = r.result.as_ref().unwrap();
         let x = res.outcome.as_ref().unwrap().exchange.as_ref().unwrap();
         assert_eq!(x.status, 201);
@@ -646,9 +679,9 @@ fn send_shows_the_response_without_saving(cx: &mut TestAppContext) {
             shown.text
         );
         assert!(
-            w.console.iter().any(|l| l.contains("201 Created")),
+            w.scope.console.iter().any(|l| l.contains("201 Created")),
             "{:?}",
-            w.console
+            w.scope.console
         );
         assert!(!w.is_sending());
     });
@@ -673,6 +706,7 @@ fn cancel_ends_an_in_flight_send(cx: &mut TestAppContext) {
     wait_until(&view, cx, "the cancelled result", |w| !w.is_sending());
     view.read_with(cx, |w, _| {
         let res = w
+            .scope
             .responses
             .values()
             .next()
@@ -695,10 +729,11 @@ fn files_that_cannot_run_are_not_sent(cx: &mut TestAppContext) {
     );
     cx.simulate_keystrokes("secondary-enter");
     wait_until(&view, cx, "the refusal", |w| {
-        w.responses.values().any(|r| r.result.is_some())
+        w.scope.responses.values().any(|r| r.result.is_some())
     });
     view.read_with(cx, |w, _| {
         let res = w
+            .scope
             .responses
             .values()
             .next()
@@ -720,11 +755,11 @@ fn unresolved_variables_warn_once_then_send_anyway(cx: &mut TestAppContext) {
     view.read_with(cx, |w, _| {
         let n = w.notice.clone().unwrap_or_default();
         assert!(n.contains("{{idemKey}}") && n.contains("Send again"), "{n}");
-        assert!(w.responses.is_empty(), "the first send only warns");
+        assert!(w.scope.responses.is_empty(), "the first send only warns");
     });
     cx.simulate_keystrokes("secondary-enter");
     wait_until(&view, cx, "the second send to finish", |w| {
-        w.responses.values().any(|r| r.result.is_some())
+        w.scope.responses.values().any(|r| r.result.is_some())
     });
 }
 
@@ -737,7 +772,8 @@ fn pasting_a_curl_command_fills_the_request(cx: &mut TestAppContext) {
     ));
     cx.simulate_keystrokes("secondary-l secondary-v");
     let text = view.read_with(cx, |w, _| {
-        w.project
+        w.scope
+            .workspace
             .as_ref()
             .unwrap()
             .doc(CREATE)
@@ -755,7 +791,8 @@ fn pasting_a_curl_command_fills_the_request(cx: &mut TestAppContext) {
     cx.write_to_clipboard(gpui::ClipboardItem::new_string("/more".into()));
     cx.simulate_keystrokes("secondary-v");
     let text = view.read_with(cx, |w, _| {
-        w.project
+        w.scope
+            .workspace
             .as_ref()
             .unwrap()
             .doc(CREATE)
@@ -801,7 +838,7 @@ fn clearing_the_url_keeps_the_method(cx: &mut TestAppContext) {
     }
     let method = |cx: &mut VisualTestContext| {
         view.read_with(cx, |w, _| {
-            let d = w.project.as_ref().unwrap().doc(CREATE).unwrap();
+            let d = w.scope.workspace.as_ref().unwrap().doc(CREATE).unwrap();
             (d.parsed.request().unwrap().method.clone(), d.text.clone())
         })
     };
@@ -820,7 +857,8 @@ fn url_selection_is_replaced_copied_and_deleted(cx: &mut TestAppContext) {
     set_doc_text(&view, cx, CREATE, get_doc_text(1));
     let target = |cx: &mut VisualTestContext| {
         view.read_with(cx, |w, _| {
-            w.project
+            w.scope
+                .workspace
                 .as_ref()
                 .unwrap()
                 .doc(CREATE)
@@ -842,7 +880,7 @@ fn url_selection_is_replaced_copied_and_deleted(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("secondary-a backspace");
     assert_eq!(target(cx), "");
     view.read_with(cx, |w, _| {
-        let d = w.project.as_ref().unwrap().doc(CREATE).unwrap();
+        let d = w.scope.workspace.as_ref().unwrap().doc(CREATE).unwrap();
         assert_eq!(d.parsed.request().unwrap().method, "GET");
     });
 }
@@ -850,7 +888,7 @@ fn url_selection_is_replaced_copied_and_deleted(cx: &mut TestAppContext) {
 // ---- M4: environments, variables, secrets ---------------------------------------------------
 
 fn write_env(
-    view: &Entity<Workspace>,
+    view: &Entity<WorkspaceView>,
     cx: &mut VisualTestContext,
     root: &Path,
     file: &str,
@@ -861,9 +899,10 @@ fn write_env(
     view.update(cx, |w, _| w.on_env_fs_change(&[p]));
 }
 
-fn last_url(view: &Entity<Workspace>, cx: &mut VisualTestContext) -> String {
+fn last_url(view: &Entity<WorkspaceView>, cx: &mut VisualTestContext) -> String {
     view.read_with(cx, |w, _| {
         let r = w
+            .scope
             .responses
             .values()
             .next()
@@ -875,7 +914,7 @@ fn last_url(view: &Entity<Workspace>, cx: &mut VisualTestContext) -> String {
     })
 }
 
-fn picker_labels(view: &Entity<Workspace>, cx: &mut VisualTestContext) -> Vec<String> {
+fn picker_labels(view: &Entity<WorkspaceView>, cx: &mut VisualTestContext) -> Vec<String> {
     view.read_with(cx, |w, _| {
         w.modal_items().into_iter().map(|i| i.label).collect()
     })
@@ -904,7 +943,7 @@ fn switching_environment_changes_the_resolved_url_and_the_request_sent(cx: &mut 
     view.update(cx, |w, cx| w.set_active_env(Some("local".into()), cx));
     cx.simulate_keystrokes("secondary-enter");
     wait_until(&view, cx, "the local send", |w| {
-        w.responses.values().any(|r| r.result.is_some())
+        w.scope.responses.values().any(|r| r.result.is_some())
     });
     assert!(
         last_url(&view, cx).contains(&format!(":{p_local}/")),
@@ -927,8 +966,8 @@ fn switching_environment_changes_the_resolved_url_and_the_request_sent(cx: &mut 
     );
     cx.simulate_keystrokes("secondary-enter");
     wait_until(&view, cx, "the staging send", |w| {
-        w.responses.values().all(|r| r.sending.is_none())
-            && w.responses.values().any(|r| {
+        w.scope.responses.values().all(|r| r.sending.is_none())
+            && w.scope.responses.values().any(|r| {
                 r.result
                     .as_ref()
                     .and_then(|x| x.outcome.as_ref())
@@ -948,7 +987,7 @@ fn environment_picker_lists_real_environments_and_switches(cx: &mut TestAppConte
     cx.simulate_input("stag");
     cx.simulate_keystrokes("enter");
     view.read_with(cx, |w, _| {
-        assert_eq!(w.envs.active.as_deref(), Some("staging"))
+        assert_eq!(w.scope.envs.active.as_deref(), Some("staging"))
     });
     assert_eq!(view.read_with(cx, |w, _| w.env_label()), "staging");
 }
@@ -961,7 +1000,8 @@ fn environment_files_can_be_created_renamed_duplicated_and_deleted(cx: &mut Test
     cx.simulate_keystrokes("enter");
     assert!(root.join("environments/qa.env").exists());
     assert_eq!(
-        view.read_with(cx, |w, _| w.envs.active.clone()).as_deref(),
+        view.read_with(cx, |w, _| w.scope.envs.active.clone())
+            .as_deref(),
         Some("qa")
     );
     view.update_in(cx, |w, window, cx| w.start_rename_env("qa", window, cx));
@@ -1012,14 +1052,14 @@ fn secrets_are_masked_revealed_for_a_while_and_never_leak(cx: &mut TestAppContex
         "{tip:?}"
     );
     view.update(cx, |w, cx| w.reveal_secret("tok", cx));
-    assert!(view.read_with(cx, |w, _| w.envs.is_revealed("tok")));
+    assert!(view.read_with(cx, |w, _| w.scope.envs.is_revealed("tok")));
     view.update(cx, |w, _| {
-        w.envs.reveal.insert(
+        w.scope.envs.reveal.insert(
             "tok".into(),
             std::time::Instant::now() - std::time::Duration::from_secs(1),
         );
     });
-    assert!(!view.read_with(cx, |w, _| w.envs.is_revealed("tok")));
+    assert!(!view.read_with(cx, |w, _| w.scope.envs.is_revealed("tok")));
 
     // Copy as cURL masks by value, wherever the secret landed.
     view.update(cx, |w, cx| w.copy_curl(false, cx));
@@ -1039,10 +1079,10 @@ fn secrets_are_masked_revealed_for_a_while_and_never_leak(cx: &mut TestAppContex
     // The Console (and the response label) never show it.
     cx.simulate_keystrokes("secondary-enter");
     wait_until(&view, cx, "the send", |w| {
-        w.responses.values().any(|r| r.result.is_some())
+        w.scope.responses.values().any(|r| r.result.is_some())
     });
     view.read_with(cx, |w, _| {
-        let log = w.console.join("\n");
+        let log = w.scope.console.join("\n");
         assert!(!log.contains("hunter2-value"), "{log}");
         assert!(log.contains("‹secret:tok›"), "{log}");
     });
@@ -1108,7 +1148,7 @@ fn typing_open_braces_offers_variables_and_tab_completes(cx: &mut TestAppContext
     cx.simulate_keystrokes("secondary-l");
     cx.simulate_input("{{cust");
     view.read_with(cx, |w, _| {
-        let c = w.envs.completion.as_ref().expect("suggestions");
+        let c = w.scope.envs.completion.as_ref().expect("suggestions");
         assert_eq!(c.names, ["customerId"]);
     });
     cx.simulate_keystrokes("tab");
@@ -1119,7 +1159,7 @@ fn typing_open_braces_offers_variables_and_tab_completes(cx: &mut TestAppContext
             .unwrap(),
         "GET http://x.test/{{customerId}}"
     );
-    view.read_with(cx, |w, _| assert!(w.envs.completion.is_none()));
+    view.read_with(cx, |w, _| assert!(w.scope.envs.completion.is_none()));
 }
 
 #[gpui::test]
@@ -1140,7 +1180,13 @@ fn unresolved_variables_are_listed_in_problems(cx: &mut TestAppContext) {
         assert_eq!(v.len(), 1, "{v:?}");
         assert!(v[0].message.contains("{{nope}}"));
         assert_eq!(
-            &w.project.as_ref().unwrap().doc(CREATE).unwrap().text[v[0].span.start..v[0].span.end],
+            &w.scope
+                .workspace
+                .as_ref()
+                .unwrap()
+                .doc(CREATE)
+                .unwrap()
+                .text[v[0].span.start..v[0].span.end],
             "{{nope}}"
         );
         assert!(w.problem_total() >= 1);
@@ -1182,12 +1228,14 @@ fn active_environment_is_part_of_the_session(cx: &mut TestAppContext) {
     // An environment that no longer exists falls back to the first one.
     view.update(cx, |w, _| w.init_active_env(Some("gone".into())));
     assert_eq!(
-        view.read_with(cx, |w, _| w.envs.active.clone()).as_deref(),
+        view.read_with(cx, |w, _| w.scope.envs.active.clone())
+            .as_deref(),
         Some("local")
     );
     view.update(cx, |w, _| w.init_active_env(Some("staging".into())));
     assert_eq!(
-        view.read_with(cx, |w, _| w.envs.active.clone()).as_deref(),
+        view.read_with(cx, |w, _| w.scope.envs.active.clone())
+            .as_deref(),
         Some("staging")
     );
 }
@@ -1199,7 +1247,7 @@ fn doc_for(port: u16, path: &str) -> String {
 }
 
 /// Send the active request and wait until `n` history entries are listed.
-fn send_and_record(view: &Entity<Workspace>, cx: &mut VisualTestContext, n: usize) {
+fn send_and_record(view: &Entity<WorkspaceView>, cx: &mut VisualTestContext, n: usize) {
     cx.simulate_keystrokes("secondary-enter");
     wait_until(view, cx, "history entry", move |w| {
         w.history.entries.len() == n && !w.is_sending()
@@ -1226,7 +1274,7 @@ fn every_send_is_recorded_newest_first_and_opens_read_only(cx: &mut TestAppConte
         w.history.cache.contains_key(&oldest)
     });
     view.read_with(cx, |w, _| {
-        let t = w.tabs.active().unwrap();
+        let t = w.scope.tabs.active().unwrap();
         assert_eq!(t.key, format!("history/{oldest}"));
         assert!(t.preview);
         let e = &w.history.cache[&oldest];
@@ -1283,13 +1331,15 @@ fn filters_restore_and_response_dropdown(cx: &mut TestAppContext) {
     // response-pane dropdown shows the earlier response, then goes back
     view.update(cx, |w, cx| w.show_history_response(first, cx));
     wait_until(&view, cx, "earlier response", |w| {
-        w.responses
+        w.scope
+            .responses
             .values()
             .any(|r| r.viewing.is_some() && r.shown.is_some())
     });
     view.update(cx, |w, cx| w.history_back_to_latest(cx));
     wait_until(&view, cx, "latest response", |w| {
-        w.responses
+        w.scope
+            .responses
             .values()
             .any(|r| r.viewing.is_none() && r.shown.is_some())
     });
@@ -1300,7 +1350,8 @@ fn filters_restore_and_response_dropdown(cx: &mut TestAppContext) {
         w.history_restore(first, CREATE.to_string(), window, cx)
     });
     wait_until(&view, cx, "restored", |w| {
-        w.project
+        w.scope
+            .workspace
             .as_ref()
             .and_then(|p| p.doc(CREATE))
             .is_some_and(|d| d.text.contains("/v1/one"))
@@ -1317,7 +1368,7 @@ fn filters_restore_and_response_dropdown(cx: &mut TestAppContext) {
 
 // ---- M6: search, tabs, layout, keymap -------------------------------------------------------
 
-fn labels(view: &Entity<Workspace>, cx: &mut VisualTestContext) -> Vec<String> {
+fn labels(view: &Entity<WorkspaceView>, cx: &mut VisualTestContext) -> Vec<String> {
     view.read_with(cx, |w, _| {
         w.modal_items().into_iter().map(|i| i.label).collect()
     })
@@ -1400,8 +1451,8 @@ fn ctrl_tab_switcher_uses_recency_and_commits_on_release(cx: &mut TestAppContext
         w.open_request("payments/list-payments.flux.md", true, window, cx);
         w.open_request("refunds/create-refund.flux.md", true, window, cx);
     });
-    let active = |view: &Entity<Workspace>, cx: &mut VisualTestContext| {
-        view.read_with(cx, |w, _| w.tabs.active().map(|t| t.key.clone()))
+    let active = |view: &Entity<WorkspaceView>, cx: &mut VisualTestContext| {
+        view.read_with(cx, |w, _| w.scope.tabs.active().map(|t| t.key.clone()))
     };
     assert_eq!(
         active(&view, cx).as_deref(),
@@ -1417,10 +1468,11 @@ fn ctrl_tab_switcher_uses_recency_and_commits_on_release(cx: &mut TestAppContext
     view.update(cx, |w, _| w.commit_switcher());
     // CREATE is now most recent, then LIST was previewed only (never committed), so refunds is next.
     let order = view.read_with(cx, |w, _| {
-        w.tabs
+        w.scope
+            .tabs
             .mru_order()
             .into_iter()
-            .filter_map(|id| w.tabs.get(id).map(|t| t.key.clone()))
+            .filter_map(|id| w.scope.tabs.get(id).map(|t| t.key.clone()))
             .collect::<Vec<_>>()
     });
     assert_eq!(order[0], CREATE);
@@ -1432,8 +1484,8 @@ fn close_to_the_right_and_reopen(cx: &mut TestAppContext) {
     view.update_in(cx, |w, window, cx| {
         w.open_request("payments/list-payments.flux.md", true, window, cx);
         w.open_request("refunds/create-refund.flux.md", true, window, cx);
-        let id = w.tabs.id_for_key(CREATE).unwrap();
-        w.tabs.activate(id);
+        let id = w.scope.tabs.id_for_key(CREATE).unwrap();
+        w.scope.tabs.activate(id);
     });
     cx.dispatch_action(crate::actions::CloseTabsToRight);
     assert_eq!(keys(&view, cx), [CREATE]);
@@ -1450,12 +1502,12 @@ fn layout_round_trips_through_the_session(cx: &mut TestAppContext) {
     cx.dispatch_action(crate::actions::ShowProblems);
     cx.dispatch_action(crate::actions::GroupTabsByKind);
     cx.dispatch_action(crate::actions::ShowHistoryPanel);
-    view.update(cx, |w, _| w.left_width = 333.0);
+    view.update(cx, |w, _| w.scope.left_width = 333.0);
     let session = view.read_with(cx, |w, _| w.session());
     let json = serde_json::to_string(&session).unwrap();
-    let back: crate::project::Session = serde_json::from_str(&json).unwrap();
+    let back: crate::workspace_model::Session = serde_json::from_str(&json).unwrap();
     // A fresh window picks the layout up.
-    let (fresh, cx) = cx.add_window_view(Workspace::new);
+    let (fresh, cx) = cx.add_window_view(WorkspaceView::new);
     fresh.update(cx, |w, _| w.apply_layout(&back.layout));
     let l = fresh.read_with(cx, |w, _| w.layout());
     assert!(!l.split_vertical && l.bottom_open && l.group_by_kind);
@@ -1464,9 +1516,69 @@ fn layout_round_trips_through_the_session(cx: &mut TestAppContext) {
         ("history", "problems", 333.0)
     );
     // Old session files without a layout still load.
-    let old: crate::project::Session =
+    let old: crate::workspace_model::Session =
         serde_json::from_str(r#"{"tabs":[],"active":null,"unsaved":{}}"#).unwrap();
-    assert_eq!(old.layout, crate::project::Layout::default());
+    assert_eq!(old.layout, crate::workspace_model::Layout::default());
+}
+
+#[gpui::test]
+fn legacy_panel_value_loads_as_workspace_and_only_workspace_is_written(cx: &mut TestAppContext) {
+    let (view, cx) = setup(cx);
+    let legacy = ["proj", "ect"].concat();
+    let l = crate::workspace_model::Layout {
+        panel: legacy,
+        ..Default::default()
+    };
+    assert_eq!(crate::workspace_model::Layout::default().panel, "workspace");
+    // Loading maps the old value onto the Workspace panel (asserted through the fresh view below).
+    view.update(cx, |w, _| {
+        w.apply_layout(&l);
+        assert_eq!(w.layout().panel, "workspace");
+    });
+}
+
+#[test]
+fn old_keymap_names_are_aliases() {
+    let old_label = ["panel: ", "proj", "ect"].concat();
+    let old_name = ["ShowPro", "jectPanel"].concat();
+    for n in [old_label, old_name] {
+        let a = crate::actions::find_action(&n).expect("alias resolves");
+        assert_eq!(a.label, "panel: workspace");
+    }
+}
+
+#[test]
+fn source_has_no_legacy_noun() {
+    let word = ["proj", "ect"].concat();
+    let crates = concat!(env!("CARGO_MANIFEST_DIR"), "/..");
+    let mut bad = Vec::new();
+    let mut stack: Vec<std::path::PathBuf> = std::fs::read_dir(crates)
+        .unwrap()
+        .map(|e| e.unwrap().path().join("src"))
+        .filter(|p| p.is_dir())
+        .collect();
+    while let Some(dir) = stack.pop() {
+        for e in std::fs::read_dir(&dir).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().is_some_and(|x| x == "rs") {
+                let src = std::fs::read_to_string(&p).unwrap();
+                for (i, line) in src.lines().enumerate() {
+                    let l = line.to_lowercase();
+                    let allowed = line.contains("ProjectDirs") || l.contains("legacy-project");
+                    if l.contains(&word) && !allowed {
+                        bad.push(format!("{}:{}", p.display(), i + 1));
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "Fluxwire has no {} concept; use Workspace, Collection, Folder, or Request (SPEC §3): {bad:?}",
+        ["Pro", "ject"].concat()
+    );
 }
 
 #[gpui::test]
@@ -1484,7 +1596,7 @@ fn non_request_tabs_and_scroll_are_restored(cx: &mut TestAppContext) {
     let s = view.read_with(cx, |w, _| w.session());
     let kinds: Vec<_> = s.tabs.iter().map(|t| t.kind.as_str()).collect();
     assert_eq!(kinds, ["", "keys", "sync"]);
-    let (fresh, cx) = cx.add_window_view(Workspace::new);
+    let (fresh, cx) = cx.add_window_view(WorkspaceView::new);
     fresh.update(cx, |w, cx| {
         for t in s.tabs.iter().filter(|t| !t.kind.is_empty()) {
             assert!(w.restore_other_tab(t, cx));
@@ -1502,7 +1614,7 @@ fn keymap_dir(text: &str) -> PathBuf {
     dir
 }
 
-fn send_keys(view: &Entity<Workspace>, cx: &mut VisualTestContext) -> Vec<String> {
+fn send_keys(view: &Entity<WorkspaceView>, cx: &mut VisualTestContext) -> Vec<String> {
     view.update_in(cx, |_, window, _| {
         window
             .bindings_for_action(&crate::actions::Send)
@@ -1563,7 +1675,10 @@ fn keybindings_tab_lists_every_action(cx: &mut TestAppContext) {
     let (view, cx) = setup(cx);
     cx.dispatch_action(crate::actions::OpenKeybindings);
     assert!(view.read_with(cx, |w, _| {
-        w.tabs.active().is_some_and(|t| t.key == "keybindings")
+        w.scope
+            .tabs
+            .active()
+            .is_some_and(|t| t.key == "keybindings")
     }));
     let rows = view.update(cx, |w, cx| {
         let state = cx.global::<crate::actions::KeymapState>().clone();
@@ -1628,19 +1743,19 @@ fn websocket_connects_sends_a_saved_message_and_disconnects(cx: &mut TestAppCont
     let port = ws_echo_server();
     view.update_in(cx, |w, window, cx| w.open_request(WS_KEY, true, window, cx));
     set_doc_text(&view, cx, WS_KEY, ws_doc_text(port));
-    let id = view.read_with(cx, |w, _| w.tabs.active_id().unwrap());
+    let id = view.read_with(cx, |w, _| w.scope.tabs.active_id().unwrap());
     view.update(cx, |w, cx| w.ws_toggle(cx));
     wait_until(&view, cx, "the upgrade", |w| w.ws_connected(id));
     view.update(cx, |w, cx| w.ws_send_saved(0, cx));
     wait_until(&view, cx, "the echoed frame", |w| {
-        w.responses[&id].log.counts() == (1, 1)
+        w.scope.responses[&id].log.counts() == (1, 1)
     });
     view.update(cx, |w, cx| w.ws_toggle(cx));
     wait_until(&view, cx, "the session to end", |w| {
-        w.responses[&id].sending.is_none()
+        w.scope.responses[&id].sending.is_none()
     });
     view.read_with(cx, |w, _| {
-        let r = &w.responses[&id];
+        let r = &w.scope.responses[&id];
         let res = r.result.as_ref().unwrap();
         assert!(res.error.is_none(), "{:?}", res.error);
         let s = res.outcome.as_ref().unwrap().session.as_ref().unwrap();
@@ -1658,9 +1773,10 @@ fn websocket_connects_sends_a_saved_message_and_disconnects(cx: &mut TestAppCont
 fn save_as_message_inserts_a_block_with_a_span_edit(cx: &mut TestAppContext) {
     let (view, cx, _root) = setup_with(cx, "payments-api", "ws-save");
     view.update_in(cx, |w, window, cx| w.open_request(WS_KEY, true, window, cx));
-    let id = view.read_with(cx, |w, _| w.tabs.active_id().unwrap());
+    let id = view.read_with(cx, |w, _| w.scope.tabs.active_id().unwrap());
     let before = view.read_with(cx, |w, _| {
-        w.project
+        w.scope
+            .workspace
             .as_ref()
             .unwrap()
             .doc(WS_KEY)
@@ -1669,11 +1785,11 @@ fn save_as_message_inserts_a_block_with_a_span_edit(cx: &mut TestAppContext) {
             .clone()
     });
     view.update(cx, |w, cx| {
-        w.composers.entry(id).or_default().text = "{\"op\":\"ping\"}".into();
+        w.scope.composers.entry(id).or_default().text = "{\"op\":\"ping\"}".into();
         w.ws_save_composer(cx);
     });
     view.read_with(cx, |w, _| {
-        let doc = w.project.as_ref().unwrap().doc(WS_KEY).unwrap();
+        let doc = w.scope.workspace.as_ref().unwrap().doc(WS_KEY).unwrap();
         let msgs = doc.parsed.messages();
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[1].text, "{\"op\":\"ping\"}");
@@ -1701,23 +1817,27 @@ fn folder_run_runs_every_request_and_tags_history(cx: &mut TestAppContext) {
     }
     view.update(cx, |w, cx| {
         w.open_run_tab("bulk", cx);
-        let id = w.tabs.active_id().unwrap();
+        let id = w.scope.tabs.active_id().unwrap();
         w.start_run(id, cx);
     });
     wait_until(&view, cx, "the run to finish", |w| {
-        w.runs.values().any(|r| r.result.is_some())
+        w.scope.runs.values().any(|r| r.result.is_some())
     });
     view.read_with(cx, |w, _| {
-        let r = w.runs.values().next().unwrap();
+        let r = w.scope.runs.values().next().unwrap();
         let res = r.result.as_ref().unwrap();
         let s = res.summary();
         assert_eq!((s.passed, s.failed), (3, 0), "{s:?}");
         assert_eq!(r.entries.len(), 3);
-        let cmd = w.run_cli_command(w.tabs.active_id().unwrap()).unwrap();
+        let cmd = w
+            .run_cli_command(w.scope.tabs.active_id().unwrap())
+            .unwrap();
         assert!(cmd.starts_with("fluxwire run bulk"), "{cmd}");
     });
     // every request of the run wrote a history entry tagged with its run id
-    let run_id = view.read_with(cx, |w, _| w.runs.values().next().unwrap().run_id.clone());
+    let run_id = view.read_with(cx, |w, _| {
+        w.scope.runs.values().next().unwrap().run_id.clone()
+    });
     wait_until(&view, cx, "run history", |w| {
         let (Some(store), Some(ws)) = (&w.history.store, &w.history.ws_key) else {
             return false;
@@ -1727,5 +1847,651 @@ fn folder_run_runs_every_request_and_tags_history(cx: &mut TestAppContext) {
             ..Default::default()
         };
         store.list(ws, &f).map(|l| l.len() == 3).unwrap_or(false)
+    });
+}
+
+#[gpui::test]
+fn closing_a_workspace_cancels_runs_and_drops_all_scoped_state(cx: &mut TestAppContext) {
+    let (view, cx, root) = setup_with(cx, "payments-api", "close-ws");
+    let ws_port = ws_echo_server();
+    view.update_in(cx, |w, window, cx| w.open_request(WS_KEY, true, window, cx));
+    set_doc_text(&view, cx, WS_KEY, ws_doc_text(ws_port));
+    let ws_tab = view.read_with(cx, |w, _| w.scope.tabs.active_id().unwrap());
+    view.update(cx, |w, cx| w.ws_toggle(cx));
+    wait_until(&view, cx, "the upgrade", |w| w.ws_connected(ws_tab));
+
+    let slow = test_server(true);
+    let dir = root.join("slow");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("a.flux.md"),
+        format!(
+            "---\nname: A\nseq: 0\n---\n\n# A\n\n```http\nGET http://127.0.0.1:{slow}/x\n```\n"
+        ),
+    )
+    .unwrap();
+    view.update(cx, |w, cx| {
+        w.open_run_tab("slow", cx);
+        let id = w.scope.tabs.active_id().unwrap();
+        w.start_run(id, cx);
+    });
+    let (ws_cancel, run_cancel) = view.read_with(cx, |w, _| {
+        assert_eq!(w.scope.running(), 2);
+        (
+            w.scope.responses[&ws_tab]
+                .sending
+                .as_ref()
+                .unwrap()
+                .cancel
+                .clone(),
+            w.scope
+                .runs
+                .values()
+                .next()
+                .unwrap()
+                .cancel
+                .clone()
+                .unwrap(),
+        )
+    });
+    view.update(cx, |w, _| w.close_workspace());
+    assert!(ws_cancel.is_cancelled() && run_cancel.is_cancelled());
+    cx.run_until_parked();
+    view.read_with(cx, |w, _| {
+        assert!(w.scope.workspace.is_none());
+        assert!(w.scope.tabs.all().is_empty());
+        assert!(w.scope.responses.is_empty() && w.scope.runs.is_empty());
+        assert!(w.scope.envs.runtime.is_empty() && w.scope.envs.states.is_empty());
+        assert!(w.scope.console.is_empty() && w.scope.search.is_empty());
+        assert!(w.history.ws_key.is_none() && w.recent.last.is_none());
+    });
+}
+
+#[gpui::test]
+fn shift_w_closes_the_workspace_and_only_app_actions_remain(cx: &mut TestAppContext) {
+    let (view, cx) = setup(cx);
+    cx.simulate_keystrokes("secondary-shift-w");
+    assert!(view.read_with(cx, |w, _| w.scope.workspace.is_none()));
+    // A bound key for an unavailable action does nothing.
+    cx.simulate_keystrokes("secondary-n");
+    assert!(view.read_with(cx, |w, _| w.scope.tabs.all().is_empty()));
+    view.read_with(cx, |w, _| {
+        assert!(w.action_available("fluxwire::OpenWorkspace"));
+        assert!(w.action_available("fluxwire::NewWorkspace"));
+        assert!(!w.action_available("fluxwire::CloseWorkspace"));
+        assert!(!w.action_available("fluxwire::Send"));
+    });
+}
+
+// ---- M9.01: workspace lifecycle -------------------------------------------------------------
+
+fn bare(cx: &mut TestAppContext) -> (Entity<WorkspaceView>, &mut VisualTestContext) {
+    cx.update(|cx| {
+        cx.set_global(Theme::one_dark());
+        actions::install(cx);
+    });
+    cx.add_window_view(WorkspaceView::new)
+}
+
+fn fresh_dir(tag: &str) -> PathBuf {
+    let d = std::env::temp_dir().join(format!("fluxwire-m901-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+#[gpui::test]
+fn new_workspace_creates_only_the_directory_and_lands_on_the_empty_state(cx: &mut TestAppContext) {
+    let (view, cx) = bare(cx);
+    let parent = fresh_dir("newws");
+    view.update_in(cx, |w, window, cx| {
+        w.start_new_workspace(window, cx);
+        let Some(crate::dialogs::Dialog::NewWorkspace(f)) = &mut w.dialog else {
+            panic!("dialog");
+        };
+        f.location = parent.clone();
+        f.name = crate::ui::TextEdit::new("demo");
+    });
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    let demo = parent.join("demo");
+    view.read_with(cx, |w, _| {
+        let ws = w.scope.workspace.as_ref().expect("workspace opened");
+        assert_eq!(ws.root, demo);
+        assert!(ws.collections.is_empty() && ws.errors.is_empty());
+        assert!(w.dialog.is_none());
+    });
+    assert_eq!(std::fs::read_dir(&demo).unwrap().count(), 0);
+}
+
+#[gpui::test]
+fn new_workspace_dialog_rejects_bad_names(cx: &mut TestAppContext) {
+    let (view, cx) = bare(cx);
+    let parent = fresh_dir("badws");
+    view.update_in(cx, |w, window, cx| {
+        w.start_new_workspace(window, cx);
+        let Some(crate::dialogs::Dialog::NewWorkspace(f)) = &mut w.dialog else {
+            panic!("dialog");
+        };
+        f.location = parent.clone();
+        f.name = crate::ui::TextEdit::new("a/b");
+    });
+    cx.simulate_keystrokes("enter");
+    view.read_with(cx, |w, _| {
+        assert!(w.scope.workspace.is_none());
+        assert!(w.dialog.is_some(), "Create stays disabled");
+    });
+    assert!(!parent.join("a").exists());
+}
+
+#[gpui::test]
+fn new_collection_creates_files_selects_and_opens_it(cx: &mut TestAppContext) {
+    let (view, cx) = bare(cx);
+    let root = fresh_dir("newcoll");
+    view.update_in(cx, |w, window, cx| {
+        w.open_workspace(&root, window, cx);
+        w.start_new_collection(
+            Some("Requests live in a collection. Create one first."),
+            window,
+            cx,
+        );
+        let Some(crate::dialogs::Dialog::NewCollection(f)) = &mut w.dialog else {
+            panic!("dialog");
+        };
+        f.name = crate::ui::TextEdit::new("Payments");
+    });
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    let dir = root.join("payments");
+    for f in ["fluxwire.toml", "collection.flux.md", ".gitignore"] {
+        assert!(dir.join(f).is_file(), "{f}");
+    }
+    assert!(dir.join("environments").is_dir());
+    view.read_with(cx, |w, _| {
+        let ws = w.scope.workspace.as_ref().unwrap();
+        assert_eq!(ws.collections.len(), 1);
+        assert_eq!(w.scope.selected.as_deref(), Some("payments"));
+        assert_eq!(
+            w.scope.tabs.active().map(|t| t.key.as_str()),
+            Some("payments/collection.flux.md")
+        );
+    });
+}
+
+#[gpui::test]
+fn add_existing_collection_outcomes(cx: &mut TestAppContext) {
+    let (view, cx) = bare(cx);
+    let root = fresh_dir("addcoll");
+    std::fs::create_dir_all(root.join("loaded")).unwrap();
+    fluxwire_format::create_collection(&root.join("loaded"), "Loaded").unwrap();
+    std::fs::create_dir_all(root.join("plain")).unwrap();
+    let outside = fresh_dir("addcoll-out");
+    view.update_in(cx, |w, window, cx| w.open_workspace(&root, window, cx));
+    // already loaded: notice, no dialog
+    view.update_in(cx, |w, window, cx| {
+        w.add_collection_dir(&root.join("loaded"), window, cx)
+    });
+    view.read_with(cx, |w, _| {
+        assert!(
+            w.notice
+                .as_deref()
+                .unwrap()
+                .contains("already part of this workspace")
+        );
+        assert!(w.dialog.is_none());
+    });
+    // no fluxwire.toml: confirm, then create
+    view.update_in(cx, |w, window, cx| {
+        w.add_collection_dir(&root.join("plain"), window, cx)
+    });
+    view.read_with(cx, |w, _| {
+        assert!(matches!(w.dialog, Some(crate::dialogs::Dialog::Confirm(_))))
+    });
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert!(root.join("plain/fluxwire.toml").is_file());
+    // outside the root: offers to open it as the workspace; nothing changes
+    view.update_in(cx, |w, window, cx| {
+        w.add_collection_dir(&outside, window, cx)
+    });
+    view.read_with(cx, |w, _| {
+        let Some(crate::dialogs::Dialog::Confirm(c)) = &w.dialog else {
+            panic!("confirm");
+        };
+        assert!(c.lines[0].contains("outside this workspace"));
+        assert!(matches!(
+            c.buttons[0].1,
+            crate::dialogs::ConfirmAction::OpenAsWorkspace(_)
+        ));
+    });
+    cx.simulate_keystrokes("escape");
+    assert!(std::fs::read_dir(&outside).unwrap().next().is_none());
+    // too deep: refused with the rule
+    let deep = root.join("a/b/c/d/e");
+    std::fs::create_dir_all(&deep).unwrap();
+    view.update_in(cx, |w, window, cx| w.add_collection_dir(&deep, window, cx));
+    view.read_with(cx, |w, _| {
+        let Some(crate::dialogs::Dialog::Confirm(c)) = &w.dialog else {
+            panic!("confirm");
+        };
+        assert!(c.lines[0].contains("levels below"));
+    });
+}
+
+fn confirm_of(
+    view: &Entity<WorkspaceView>,
+    cx: &mut VisualTestContext,
+) -> (String, Vec<String>, Vec<String>) {
+    view.read_with(cx, |w, _| {
+        let Some(crate::dialogs::Dialog::Confirm(c)) = &w.dialog else {
+            panic!("expected a confirm dialog");
+        };
+        (
+            c.title.clone(),
+            c.lines.clone(),
+            c.buttons.iter().map(|b| b.0.clone()).collect(),
+        )
+    })
+}
+
+#[gpui::test]
+fn closing_with_unsaved_requests_asks_and_each_button_does_its_thing(cx: &mut TestAppContext) {
+    let (view, cx, root) = setup_with(cx, "payments-api", "close-dirty");
+    let on_disk = std::fs::read_to_string(root.join(CREATE)).unwrap();
+    set_doc_text(&view, cx, CREATE, format!("{on_disk}\nedited\n"));
+    cx.simulate_keystrokes("secondary-shift-w");
+    let (title, lines, buttons) = confirm_of(&view, cx);
+    assert!(title.starts_with("Close "));
+    assert!(lines[0].starts_with("1 unsaved request"), "{lines:?}");
+    assert_eq!(
+        buttons,
+        ["Save all and close", "Discard and close", "Cancel"]
+    );
+    // Esc cancels: the workspace stays open and the edit is kept
+    cx.simulate_keystrokes("escape");
+    view.read_with(cx, |w, _| {
+        assert!(w.scope.workspace.is_some() && w.dialog.is_none());
+    });
+    // Discard: closed, file untouched
+    cx.simulate_keystrokes("secondary-shift-w");
+    view.update_in(cx, |w, window, cx| {
+        w.run_confirm_action(
+            crate::dialogs::ConfirmAction::Close(
+                crate::dialogs::AfterClose::Welcome,
+                crate::dialogs::CloseMode::Discard,
+            ),
+            window,
+            cx,
+        )
+    });
+    assert!(view.read_with(cx, |w, _| w.scope.workspace.is_none()));
+    assert_eq!(std::fs::read_to_string(root.join(CREATE)).unwrap(), on_disk);
+}
+
+#[gpui::test]
+fn save_all_and_close_writes_the_file(cx: &mut TestAppContext) {
+    let (view, cx, root) = setup_with(cx, "payments-api", "close-save");
+    let on_disk = std::fs::read_to_string(root.join(CREATE)).unwrap();
+    set_doc_text(&view, cx, CREATE, format!("{on_disk}\nsaved\n"));
+    cx.simulate_keystrokes("secondary-shift-w");
+    cx.simulate_keystrokes("enter"); // default button: Save all and close
+    assert!(view.read_with(cx, |w, _| w.scope.workspace.is_none()));
+    assert!(
+        std::fs::read_to_string(root.join(CREATE))
+            .unwrap()
+            .ends_with("saved\n")
+    );
+}
+
+#[gpui::test]
+fn closing_with_a_running_folder_run_offers_stop_and_close(cx: &mut TestAppContext) {
+    let (view, cx, root) = setup_with(cx, "payments-api", "close-running");
+    let slow = test_server(true);
+    let dir = root.join("slow");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("a.flux.md"),
+        format!(
+            "---\nname: A\nseq: 0\n---\n\n# A\n\n```http\nGET http://127.0.0.1:{slow}/x\n```\n"
+        ),
+    )
+    .unwrap();
+    view.update(cx, |w, cx| {
+        w.open_run_tab("slow", cx);
+        let id = w.scope.tabs.active_id().unwrap();
+        w.start_run(id, cx);
+    });
+    cx.simulate_keystrokes("secondary-shift-w");
+    let (_, lines, buttons) = confirm_of(&view, cx);
+    assert_eq!(lines, ["1 running"]);
+    assert_eq!(buttons, ["Stop and close", "Cancel"]);
+    cx.simulate_keystrokes("enter");
+    assert!(view.read_with(cx, |w, _| w.scope.workspace.is_none()));
+}
+
+#[gpui::test]
+fn closing_clears_recent_last_and_reopening_restores_tabs(cx: &mut TestAppContext) {
+    let state = fresh_dir("state");
+    cx.update(|cx| cx.set_global(crate::workspace::StateDir(state.clone())));
+    let (view, cx, root) = setup_with(cx, "payments-api", "close-restore");
+    view.read_with(cx, |w, _| assert!(w.recent.last.is_some()));
+    cx.simulate_keystrokes("secondary-shift-w");
+    view.read_with(cx, |w, _| {
+        assert!(w.scope.workspace.is_none() && w.recent.last.is_none());
+    });
+    let saved = crate::workspace_model::load_recent(&state);
+    assert!(saved.last.is_none() && !saved.workspaces.is_empty());
+    view.update_in(cx, |w, window, cx| w.open_workspace(&root, window, cx));
+    cx.run_until_parked();
+    assert_eq!(keys(&view, cx), [CREATE]);
+}
+
+#[gpui::test]
+fn new_request_without_collections_opens_new_collection_and_single_collection_is_flagged(
+    cx: &mut TestAppContext,
+) {
+    let (view, cx) = bare(cx);
+    let root = fresh_dir("noreq");
+    view.update_in(cx, |w, window, cx| w.open_workspace(&root, window, cx));
+    cx.simulate_keystrokes("secondary-n");
+    view.read_with(cx, |w, _| {
+        let Some(crate::dialogs::Dialog::NewCollection(f)) = &w.dialog else {
+            panic!("New collection dialog");
+        };
+        assert!(f.note.as_deref().unwrap().contains("Create one first"));
+        assert!(!w.is_single_collection());
+    });
+}
+
+#[gpui::test]
+fn the_payments_workspace_is_a_single_collection(cx: &mut TestAppContext) {
+    let (view, cx) = setup(cx);
+    assert!(view.read_with(cx, |w, _| w.is_single_collection()));
+}
+
+// ---- URL bar caret and new-request URL ------------------------------------------------------
+
+fn url_of(view: &Entity<WorkspaceView>, cx: &mut VisualTestContext) -> String {
+    view.read_with(cx, |w, _| {
+        let k = w.active_key().unwrap();
+        w.scope
+            .workspace
+            .as_ref()
+            .unwrap()
+            .doc(&k)
+            .unwrap()
+            .parsed
+            .request()
+            .unwrap()
+            .target
+            .clone()
+    })
+}
+
+#[gpui::test]
+fn url_bar_has_a_movable_caret_and_selection(cx: &mut TestAppContext) {
+    let (view, cx) = setup(cx);
+    view.update_in(cx, |w, window, _| window.focus(&w.url_focus));
+    let base = url_of(&view, cx);
+    // typing appends at the caret (end by default)
+    cx.simulate_keystrokes("x");
+    assert_eq!(url_of(&view, cx), format!("{base}x"));
+    // arrows move the caret; typing inserts there
+    cx.simulate_keystrokes("left left y");
+    assert_eq!(
+        url_of(&view, cx),
+        format!("{}y{}x", &base[..base.len() - 1], &base[base.len() - 1..])
+    );
+    // home + delete removes the first character
+    cx.simulate_keystrokes("home delete");
+    assert_eq!(url_of(&view, cx).chars().count(), base.chars().count() + 1);
+    // backspace at the start does nothing; end + backspace removes the last character
+    cx.simulate_keystrokes("home backspace");
+    assert_eq!(url_of(&view, cx).chars().count(), base.chars().count() + 1);
+    cx.simulate_keystrokes("end backspace");
+    assert_eq!(url_of(&view, cx).chars().count(), base.chars().count());
+    // shift+left selects; typing replaces the selection
+    let before = url_of(&view, cx);
+    cx.simulate_keystrokes("shift-left shift-left z");
+    let expect: String = before
+        .chars()
+        .take(before.chars().count() - 2)
+        .collect::<String>()
+        + "z";
+    assert_eq!(url_of(&view, cx), expect);
+    // a click places the caret (no selection) and select-all selects everything
+    cx.simulate_keystrokes("secondary-a");
+    view.read_with(cx, |w, _| {
+        assert_eq!(w.scope.url_sel, Some((0, expect.chars().count())));
+    });
+    cx.simulate_keystrokes("left");
+    view.read_with(cx, |w, _| assert_eq!(w.scope.url_sel, Some((0, 0))));
+}
+
+fn new_request_text(root: &std::path::Path, env_file: Option<&str>) -> String {
+    std::fs::create_dir_all(root.join("environments")).unwrap();
+    fluxwire_format::create_collection(root, "C").unwrap();
+    if let Some(e) = env_file {
+        std::fs::write(root.join("environments/local.env"), e).unwrap();
+    }
+    std::fs::read_to_string(root.join("fluxwire.toml")).unwrap()
+}
+
+#[gpui::test]
+fn new_request_url_uses_base_url_only_when_the_active_environment_defines_it(
+    cx: &mut TestAppContext,
+) {
+    for (tag, env, expect) in [
+        ("nourl-none", None, "GET \n"),
+        ("nourl-empty", Some("other=1\n"), "GET \n"),
+        (
+            "nourl-set",
+            Some("baseUrl=http://x\n"),
+            "GET {{baseUrl}}/\n",
+        ),
+    ] {
+        let root = fresh_dir(tag);
+        new_request_text(&root, env);
+        let (view, cx) = bare(cx);
+        view.update_in(cx, |w, window, cx| {
+            w.open_workspace(&root, window, cx);
+            w.start_new(false, false, window, cx);
+            w.scope.inline.as_mut().unwrap().text = crate::ui::TextEdit::new("Thing");
+            w.confirm_inline(window, cx);
+        });
+        let text = std::fs::read_to_string(root.join("thing.flux.md")).unwrap();
+        assert!(
+            text.contains(&format!("```http\n{expect}")),
+            "{tag}: {text:?}"
+        );
+    }
+}
+
+#[gpui::test]
+fn workspace_node_opens_the_tree_context_menu_without_changing_the_selection(
+    cx: &mut TestAppContext,
+) {
+    let (view, cx) = setup(cx);
+    let before = view.read_with(cx, |w, _| w.scope.selected.clone());
+    view.update(cx, |w, cx| {
+        w.open_tree_menu(
+            "",
+            crate::workspace::MenuKind::Workspace,
+            Default::default(),
+            cx,
+        )
+    });
+    view.read_with(cx, |w, _| {
+        let m = w.scope.tree_menu.as_ref().expect("menu open");
+        assert_eq!(m.kind, crate::workspace::MenuKind::Workspace);
+        assert_eq!(w.scope.selected, before);
+    });
+    cx.simulate_keystrokes("escape");
+    assert!(view.read_with(cx, |w, _| w.scope.tree_menu.is_none()));
+}
+
+#[gpui::test]
+fn dialog_name_field_has_a_movable_caret(cx: &mut TestAppContext) {
+    let (view, cx) = bare(cx);
+    view.update_in(cx, |w, window, cx| w.start_new_workspace(window, cx));
+    cx.simulate_keystrokes("a c left b");
+    let name = |view: &Entity<WorkspaceView>, cx: &mut VisualTestContext| {
+        view.read_with(cx, |w, _| match &w.dialog {
+            Some(crate::dialogs::Dialog::NewWorkspace(f)) => {
+                (f.name.text().to_string(), f.name.cursor())
+            }
+            _ => panic!("dialog"),
+        })
+    };
+    assert_eq!(name(&view, cx), ("abc".to_string(), 2));
+    cx.simulate_keystrokes("home delete");
+    assert_eq!(name(&view, cx), ("bc".to_string(), 0));
+    cx.simulate_keystrokes("end shift-left shift-left x");
+    assert_eq!(name(&view, cx), ("x".to_string(), 1));
+}
+
+// ---- collection rename / remove / delete ----------------------------------------------------
+
+fn two_collections(tag: &str) -> PathBuf {
+    let root = fresh_dir(tag);
+    for n in ["a", "b"] {
+        std::fs::create_dir_all(root.join(n)).unwrap();
+        fluxwire_format::create_collection(&root.join(n), &n.to_uppercase()).unwrap();
+    }
+    root
+}
+
+fn collection_names(view: &Entity<WorkspaceView>, cx: &mut VisualTestContext) -> Vec<String> {
+    view.read_with(cx, |w, _| {
+        w.scope
+            .workspace
+            .as_ref()
+            .unwrap()
+            .collections
+            .iter()
+            .map(|c| c.collection.config.collection.name.clone())
+            .collect()
+    })
+}
+
+#[gpui::test]
+fn rename_collection_updates_its_name_on_disk_and_in_the_tree(cx: &mut TestAppContext) {
+    let (view, cx) = bare(cx);
+    let root = two_collections("rencoll");
+    view.update_in(cx, |w, window, cx| {
+        w.open_workspace(&root, window, cx);
+        w.start_rename_collection("a", window, cx);
+        w.modal.as_mut().unwrap().query = crate::ui::TextEdit::new("Alpha");
+    });
+    cx.simulate_keystrokes("enter");
+    assert_eq!(collection_names(&view, cx), ["Alpha", "B"]);
+    let toml = std::fs::read_to_string(root.join("a/fluxwire.toml")).unwrap();
+    assert!(
+        toml.contains("name = \"Alpha\"") && toml.contains("format = 1"),
+        "{toml}"
+    );
+    assert!(root.join("a").is_dir(), "the folder keeps its name");
+}
+
+#[gpui::test]
+fn remove_collection_hides_it_without_touching_files_and_add_existing_brings_it_back(
+    cx: &mut TestAppContext,
+) {
+    let (view, cx) = bare(cx);
+    let root = two_collections("rmcoll");
+    view.update_in(cx, |w, window, cx| {
+        w.open_workspace(&root, window, cx);
+        w.remove_collection("a", cx);
+    });
+    assert_eq!(collection_names(&view, cx), ["B"]);
+    assert!(root.join("a/fluxwire.toml").is_file(), "files untouched");
+    view.read_with(cx, |w, _| {
+        assert_eq!(w.session().hidden_collections, ["a"]);
+    });
+    view.update_in(cx, |w, window, cx| {
+        w.add_collection_dir(&root.join("a"), window, cx)
+    });
+    assert_eq!(collection_names(&view, cx), ["A", "B"]);
+    view.read_with(cx, |w, _| {
+        assert!(w.session().hidden_collections.is_empty())
+    });
+}
+
+#[gpui::test]
+fn delete_collection_asks_first_and_cancel_keeps_it(cx: &mut TestAppContext) {
+    let (view, cx) = bare(cx);
+    let root = two_collections("delcoll");
+    view.update_in(cx, |w, window, cx| {
+        w.open_workspace(&root, window, cx);
+        w.confirm_delete_collection("a", window, cx);
+    });
+    let (title, _, buttons) = confirm_of(&view, cx);
+    assert!(title.starts_with("Move A to the trash"), "{title}");
+    assert_eq!(buttons, ["Move to trash", "Cancel"]);
+    cx.simulate_keystrokes("escape");
+    assert_eq!(collection_names(&view, cx), ["A", "B"]);
+    assert!(root.join("a").is_dir());
+}
+
+#[gpui::test]
+fn the_workspace_root_collection_cannot_be_deleted_from_the_menu(cx: &mut TestAppContext) {
+    let (view, cx) = setup(cx);
+    view.update_in(cx, |w, window, cx| {
+        w.confirm_delete_collection("", window, cx)
+    });
+    view.read_with(cx, |w, _| {
+        assert!(w.dialog.is_none());
+        assert!(
+            w.notice
+                .as_deref()
+                .unwrap()
+                .contains("workspace folder itself")
+        );
+    });
+}
+
+#[gpui::test]
+fn workspace_switcher_lists_recents_and_offers_new_workspace(cx: &mut TestAppContext) {
+    let (view, cx, root) = setup_with(cx, "payments-api", "switcher");
+    let other = fresh_dir("switch-other");
+    view.update_in(cx, |w, window, cx| {
+        w.recent.workspaces = vec![
+            root.display().to_string(),
+            other.display().to_string(),
+            "/definitely/missing/ws".into(),
+        ];
+        w.open_modal(ModalKind::Workspaces, window, cx);
+    });
+    let items = view.read_with(cx, |w, _| w.modal_items());
+    assert_eq!(items[0].label, "New workspace…");
+    assert!(
+        items[1].detail.starts_with("current"),
+        "{:?}",
+        items[1].detail
+    );
+    assert!(
+        items[3].detail.starts_with("Not found"),
+        "{:?}",
+        items[3].detail
+    );
+    // typing filters; Enter on the first entry opens the same New workspace dialog
+    cx.simulate_input("new");
+    cx.simulate_keystrokes("enter");
+    view.read_with(cx, |w, _| {
+        assert!(w.modal.is_none());
+        assert!(matches!(
+            w.dialog,
+            Some(crate::dialogs::Dialog::NewWorkspace(_))
+        ));
+    });
+    cx.simulate_keystrokes("escape");
+    // choosing another recent workspace switches to it
+    view.update_in(cx, |w, window, cx| {
+        w.open_modal(ModalKind::Workspaces, window, cx)
+    });
+    cx.simulate_keystrokes("down down enter");
+    cx.run_until_parked();
+    view.read_with(cx, |w, _| {
+        assert_eq!(w.scope.workspace.as_ref().unwrap().root, other);
     });
 }

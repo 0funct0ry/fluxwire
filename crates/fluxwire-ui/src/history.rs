@@ -28,7 +28,7 @@ use crate::{
     tabs::{Tab, TabKind},
     theme::Theme,
     ui::{TextEdit, row},
-    workspace::Workspace,
+    workspace::WorkspaceView,
 };
 
 const PAGE: usize = 200;
@@ -262,12 +262,16 @@ pub(crate) fn record_of(e: &Entry) -> HistoryRecord {
     }
 }
 
-impl Workspace {
+impl WorkspaceView {
     // ---- store plumbing ---------------------------------------------------------------------
 
     /// The workspace changed (opened or closed): reload the panel for its history.
-    pub fn history_project_changed(&mut self, cx: &mut Context<Self>) {
-        self.history.ws_key = self.project.as_ref().map(|p| workspace_key(&p.root));
+    pub fn history_workspace_changed(&mut self, cx: &mut Context<Self>) {
+        self.history.ws_key = self
+            .scope
+            .workspace
+            .as_ref()
+            .map(|p| workspace_key(&p.root));
         self.history.entries.clear();
         self.history.cache.clear();
         self.history.diffs.clear();
@@ -356,10 +360,10 @@ impl Workspace {
 
     /// Record a finished send (called from `finish_run`); the write happens off the UI thread.
     pub fn history_record(&mut self, tab_id: u64, res: &RunResult, cx: &mut Context<Self>) {
-        let (Some(store), Some(ws), Some(project), Some(rec)) = (
+        let (Some(store), Some(wskey), Some(ws), Some(rec)) = (
             self.history.store.clone(),
             self.history.ws_key.clone(),
-            self.project.as_ref(),
+            self.scope.workspace.as_ref(),
             res.history.as_ref(),
         ) else {
             return;
@@ -367,12 +371,12 @@ impl Workspace {
         if res.error.as_ref().is_some_and(|e| e.is_cancelled()) {
             return;
         }
-        let Some(key) = self.tabs.get(tab_id).map(|t| t.key.clone()) else {
+        let Some(key) = self.scope.tabs.get(tab_id).map(|t| t.key.clone()) else {
             return;
         };
-        let Some(doc) = project.doc(&key) else { return };
-        let abs = project.abs_of(&key);
-        let collection = project
+        let Some(doc) = ws.doc(&key) else { return };
+        let abs = ws.abs_of(&key);
+        let collection = ws
             .collections
             .iter()
             .filter(|c| abs.starts_with(&c.root))
@@ -407,14 +411,14 @@ impl Workspace {
                 || res.phases.iter().map(|p| p.duration_ms).sum(),
                 |o| o.total_ms,
             ),
-            env: self.envs.active.clone(),
+            env: self.scope.envs.active.clone(),
             dirty: doc.dirty(),
             run_id: None,
             summary: rec.summary.clone(),
             payload: rec.payload.clone(),
         };
         let red = Redactor::with_secrets(res.secrets.clone());
-        let task = blocking(move || store.insert(&ws, entry, &red));
+        let task = blocking(move || store.insert(&wskey, entry, &red));
         cx.spawn(async move |this, cx| {
             task.await;
             this.update(cx, |this, cx| this.history_reload(cx)).ok();
@@ -562,7 +566,7 @@ impl Workspace {
             let Some(e) = this.history.cache.get(&id).cloned() else {
                 return;
             };
-            let Some(p) = this.project.as_mut() else {
+            let Some(p) = this.scope.workspace.as_mut() else {
                 return;
             };
             let Ok(doc) = p.open_doc(&key) else {
@@ -608,7 +612,7 @@ impl Workspace {
         };
         let active = self.active_key();
         let collection = active.as_ref().and_then(|k| {
-            let p = self.project.as_ref()?;
+            let p = self.scope.workspace.as_ref()?;
             let abs = p.abs_of(k);
             p.collections
                 .iter()
@@ -643,7 +647,7 @@ impl Workspace {
 
     /// Show an earlier stored response in the active request's response pane.
     pub fn show_history_response(&mut self, id: i64, cx: &mut Context<Self>) {
-        let Some(tab_id) = self.tabs.active_id() else {
+        let Some(tab_id) = self.scope.tabs.active_id() else {
             return;
         };
         self.history.dropdown = false;
@@ -751,13 +755,12 @@ impl Workspace {
             .font_family(BUFFER_FONT)
             .text_size(px(12.))
             .overflow_hidden()
-            .child(if self.history.text.text().is_empty() {
-                div()
-                    .text_color(t.text_placeholder)
-                    .child("Filter by name or URL")
-            } else {
-                div().child(self.history.text.text().to_string())
-            });
+            .child(crate::ui::field_text(
+                &self.history.text,
+                "Filter by name or URL",
+                t,
+                self.is_focused(&self.history_focus),
+            ));
         let rows = self.history.rows.clone();
         let list = if self.history.ws_key.is_none() {
             div()
@@ -779,7 +782,7 @@ impl Workspace {
                 "history-list",
                 n,
                 cx.processor(
-                    move |this: &mut Workspace, range: std::ops::Range<usize>, _w, cx| {
+                    move |this: &mut WorkspaceView, range: std::ops::Range<usize>, _w, cx| {
                         let t = crate::theme::theme(cx).clone();
                         let rows = this.history.rows.clone();
                         range
@@ -879,7 +882,7 @@ impl Workspace {
                 };
                 let id = e.id;
                 let key = format!("history/{id}");
-                let active = self.tabs.active().is_some_and(|a| a.key == key);
+                let active = self.scope.tabs.active().is_some_and(|a| a.key == key);
                 let picked = self.history.pick == Some(id);
                 self.tree_row(t, ("hist", i).into(), 0, active)
                     .gap_2()

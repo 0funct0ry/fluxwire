@@ -26,7 +26,7 @@ use crate::{
     tabs::Tab,
     theme::Theme,
     ui::{TextEdit, row},
-    workspace::{Panel, Workspace},
+    workspace::{Panel, WorkspaceView},
 };
 
 /// Where a request is in the run.
@@ -78,7 +78,7 @@ pub struct RunTab {
 }
 
 impl RunTab {
-    fn new(folder: String, cx: &mut Context<Workspace>) -> Self {
+    fn new(folder: String, cx: &mut Context<WorkspaceView>) -> Self {
         Self {
             folder,
             sequential: false,
@@ -187,12 +187,12 @@ fn shell_quote(s: &str) -> String {
     }
 }
 
-impl Workspace {
+impl WorkspaceView {
     /// The folder key a run acts on: the selected folder (or the folder of the selected
     /// request), else the first collection.
     fn run_target_key(&self) -> Option<String> {
-        let project = self.project.as_ref()?;
-        let sel = self.selected.clone().unwrap_or_default();
+        let ws = self.scope.workspace.as_ref()?;
+        let sel = self.scope.selected.clone().unwrap_or_default();
         let key = if sel.ends_with(".md") {
             sel.rsplit_once('/')
                 .map(|(f, _)| f.to_string())
@@ -203,7 +203,7 @@ impl Workspace {
         if !key.is_empty() && self.collection_root_of(&key).is_some() {
             return Some(key);
         }
-        project.collections.first().map(|c| c.key.clone())
+        ws.collections.first().map(|c| c.key.clone())
     }
 
     /// Open the Folder run tab for the selection (palette, Cmd+Shift+R).
@@ -229,22 +229,23 @@ impl Workspace {
             crate::tabs::TabKind::FolderRun,
             true,
         );
-        if let Some(id) = self.tabs.active_id() {
+        if let Some(id) = self.scope.tabs.active_id() {
             self.run_entry(id, cx);
         }
         cx.notify();
     }
 
     fn run_entry(&mut self, tab_id: u64, cx: &mut Context<Self>) -> &mut RunTab {
-        if !self.runs.contains_key(&tab_id) {
+        if !self.scope.runs.contains_key(&tab_id) {
             let folder = self
+                .scope
                 .tabs
                 .get(tab_id)
                 .and_then(|t| t.key.strip_prefix("run/").map(String::from))
                 .unwrap_or_default();
-            self.runs.insert(tab_id, RunTab::new(folder, cx));
+            self.scope.runs.insert(tab_id, RunTab::new(folder, cx));
         }
-        self.runs.get_mut(&tab_id).expect("just inserted")
+        self.scope.runs.get_mut(&tab_id).expect("just inserted")
     }
 
     /// Start (or restart) the run in `tab_id` from its options.
@@ -263,7 +264,8 @@ impl Workspace {
             return;
         };
         let abs = self
-            .project
+            .scope
+            .workspace
             .as_ref()
             .map(|p| p.abs_of(&folder))
             .unwrap_or_default();
@@ -272,7 +274,8 @@ impl Workspace {
             .map(|p| p.to_string_lossy().replace('\\', "/"))
             .unwrap_or_default();
         let coll = self
-            .project
+            .scope
+            .workspace
             .as_ref()
             .and_then(|p| p.collections.iter().find(|c| c.root == root));
         let net = fluxwire_runner::net_config_from_dir(&root);
@@ -296,16 +299,17 @@ impl Workspace {
         let trusted = self.collection_trusted(&root, cx);
         let env_state = self.env_state(&root);
         let globals: Vec<(String, String)> = self
+            .scope
             .envs
             .settings
             .globals
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
-        let runtime = self.envs.runtime.clone();
-        let env = self.envs.active.clone();
-        let allow_process_env = self.envs.settings.allow_process_env;
-        let dirty = self.project.as_ref().map_or(0, |p| {
+        let runtime = self.scope.envs.runtime.clone();
+        let env = self.scope.envs.active.clone();
+        let allow_process_env = self.scope.envs.settings.allow_process_env;
+        let dirty = self.scope.workspace.as_ref().map_or(0, |p| {
             let prefix = format!("{folder}/");
             p.dirty_keys()
                 .iter()
@@ -403,6 +407,7 @@ impl Workspace {
                 let alive = this
                     .update(cx, |this, cx| {
                         let live = this
+                            .scope
                             .runs
                             .get(&tab_id)
                             .is_some_and(|r| r.seq == seq && r.running());
@@ -422,7 +427,7 @@ impl Workspace {
     }
 
     pub fn cancel_run(&mut self, tab_id: u64, cx: &mut Context<Self>) {
-        if let Some(c) = self.runs.get(&tab_id).and_then(|r| r.cancel.clone()) {
+        if let Some(c) = self.scope.runs.get(&tab_id).and_then(|r| r.cancel.clone()) {
             c.cancel();
         }
         cx.notify();
@@ -436,7 +441,7 @@ impl Workspace {
         ev: FolderRunEvent,
         cx: &mut Context<Self>,
     ) {
-        let Some(r) = self.runs.get_mut(&tab_id).filter(|r| r.seq == seq) else {
+        let Some(r) = self.scope.runs.get_mut(&tab_id).filter(|r| r.seq == seq) else {
             return;
         };
         match ev {
@@ -488,6 +493,7 @@ impl Workspace {
                 r.result = Some(Arc::new(*res));
                 r.rebuild_flat();
                 let folder = self
+                    .scope
                     .runs
                     .get(&tab_id)
                     .map(|r| r.folder.clone())
@@ -495,7 +501,7 @@ impl Workspace {
                 if let Some(root) = self.collection_root_of(&folder) {
                     self.persist_cookies(&root);
                 }
-                if let Some(res) = self.runs.get(&tab_id).and_then(|r| r.result.clone()) {
+                if let Some(res) = self.scope.runs.get(&tab_id).and_then(|r| r.result.clone()) {
                     let s = res.summary();
                     self.notice = Some(format!(
                         "Run finished: {} passed, {} failed, {} skipped in {} ms.",
@@ -519,7 +525,8 @@ impl Workspace {
             return;
         };
         let collection = self
-            .project
+            .scope
+            .workspace
             .as_ref()
             .and_then(|p| {
                 let abs = p.abs_of(&run.request.key);
@@ -548,7 +555,7 @@ impl Workspace {
                 .unwrap_or_else(|| res.label.clone()),
             status: x.map(|x| i64::from(x.status)),
             total_ms: res.outcome.as_ref().map_or(0.0, |o| o.total_ms),
-            env: self.envs.active.clone(),
+            env: self.scope.envs.active.clone(),
             dirty: false,
             run_id: Some(run_id.to_string()),
             summary: rec.summary.clone(),
@@ -564,6 +571,7 @@ impl Workspace {
 
     pub fn rerun_failed(&mut self, tab_id: u64, cx: &mut Context<Self>) {
         let Some(keys) = self
+            .scope
             .runs
             .get(&tab_id)
             .and_then(|r| r.result.as_ref())
@@ -582,7 +590,7 @@ impl Workspace {
     }
 
     pub fn export_run(&mut self, tab_id: u64, junit: bool, cx: &mut Context<Self>) {
-        let Some(res) = self.runs.get(&tab_id).and_then(|r| r.result.clone()) else {
+        let Some(res) = self.scope.runs.get(&tab_id).and_then(|r| r.result.clone()) else {
             return;
         };
         let (name, text) = if junit {
@@ -591,7 +599,8 @@ impl Workspace {
             ("fluxwire-run.json", to_json(&res))
         };
         let dir = self
-            .project
+            .scope
+            .workspace
             .as_ref()
             .map(|p| p.root.clone())
             .unwrap_or_else(|| PathBuf::from("."));
@@ -613,7 +622,7 @@ impl Workspace {
 
     /// The equivalent `fluxwire run` invocation (SPEC §18).
     pub fn run_cli_command(&self, tab_id: u64) -> Option<String> {
-        let r = self.runs.get(&tab_id)?;
+        let r = self.scope.runs.get(&tab_id)?;
         let mut parts = vec!["fluxwire".to_string(), "run".into()];
         let path = if r.folder.is_empty() {
             ".".to_string()
@@ -621,7 +630,7 @@ impl Workspace {
             r.folder.clone()
         };
         parts.push(shell_quote(&path));
-        if let Some(e) = &self.envs.active {
+        if let Some(e) = &self.scope.envs.active {
             parts.push("--env".into());
             parts.push(shell_quote(e));
         }
@@ -633,7 +642,8 @@ impl Workspace {
         if let Some(d) = &r.data_file {
             parts.push("--data".into());
             let shown = self
-                .project
+                .scope
+                .workspace
                 .as_ref()
                 .and_then(|p| d.strip_prefix(&p.root).ok())
                 .unwrap_or(d);
@@ -684,12 +694,12 @@ impl Workspace {
 
     /// Show only this run's requests in the History panel.
     pub fn show_run_in_history(&mut self, tab_id: u64, cx: &mut Context<Self>) {
-        let Some(id) = self.runs.get(&tab_id).and_then(|r| r.run_id.clone()) else {
+        let Some(id) = self.scope.runs.get(&tab_id).and_then(|r| r.run_id.clone()) else {
             return;
         };
         self.history.run = Some(id);
-        self.panel = Panel::History;
-        self.left_open = true;
+        self.scope.panel = Panel::History;
+        self.scope.left_open = true;
         self.history_reload(cx);
     }
 
@@ -721,7 +731,7 @@ impl Workspace {
     ) -> AnyElement {
         let id = tab.id;
         let folder = tab.key.strip_prefix("run/").unwrap_or("").to_string();
-        let Some(r) = self.runs.get(&id) else {
+        let Some(r) = self.scope.runs.get(&id) else {
             // Restored tab: no run yet. Options materialise on first interaction.
             return self
                 .page(t, &tab.title, "Folder run")
@@ -831,13 +841,12 @@ impl Workspace {
             .font_family(BUFFER_FONT)
             .text_size(px(12.))
             .overflow_hidden()
-            .child(if r.filter.text().is_empty() {
-                div()
-                    .text_color(t.text_placeholder)
-                    .child("tag:smoke, name:*refund*")
-            } else {
-                div().child(r.filter.text().to_string())
-            });
+            .child(crate::ui::field_text(
+                &r.filter,
+                "tag:smoke, name:*refund*",
+                t,
+                self.is_focused(&r.focus),
+            ));
 
         let data_label = r
             .data_file
@@ -994,9 +1003,9 @@ impl Workspace {
                 "run-list",
                 n,
                 cx.processor(
-                    move |this: &mut Workspace, range: std::ops::Range<usize>, _w, cx| {
+                    move |this: &mut WorkspaceView, range: std::ops::Range<usize>, _w, cx| {
                         let t = crate::theme::theme(cx).clone();
-                        let Some(r) = this.runs.get(&id) else {
+                        let Some(r) = this.scope.runs.get(&id) else {
                             return Vec::new();
                         };
                         range
@@ -1057,7 +1066,7 @@ impl Workspace {
         row_: RunRow,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let Some(r) = self.runs.get(&tab_id) else {
+        let Some(r) = self.scope.runs.get(&tab_id) else {
             return div().into_any_element();
         };
         match row_ {
@@ -1169,7 +1178,7 @@ impl Workspace {
                         d.cursor_pointer().hover(move |s| s.bg(h))
                     })
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(r) = this.runs.get_mut(&tab_id)
+                        if let Some(r) = this.scope.runs.get_mut(&tab_id)
                             && matches!(r.entries[e].slot, Slot::Done(_))
                         {
                             if !r.expanded.remove(&e) {

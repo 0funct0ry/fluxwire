@@ -10,11 +10,11 @@ use gpui::{
 use crate::{
     actions::KeymapState,
     envs::ConfigDir,
-    project::{Layout, SessionTab},
     tabs::TabKind,
     theme::Theme,
     ui::row,
-    workspace::{BottomTab, Panel, Switcher, Workspace},
+    workspace::{BottomTab, Panel, Switcher, WorkspaceView},
+    workspace_model::{Layout, SessionTab},
 };
 
 /// Stable tag for restoring a tab kind from the session file.
@@ -46,7 +46,7 @@ fn kind_from_tag(tag: &str) -> Option<TabKind> {
     })
 }
 
-impl Workspace {
+impl WorkspaceView {
     // ---- Ctrl+Tab recency switcher --------------------------------------------------------
 
     /// One press of next/previous: preview the next tab by recency without reordering it.
@@ -54,7 +54,7 @@ impl Workspace {
         let sw = match self.switcher.take() {
             Some(sw) => sw,
             None => Switcher {
-                order: self.tabs.mru_order(),
+                order: self.scope.tabs.mru_order(),
                 idx: 0,
             },
         };
@@ -63,7 +63,7 @@ impl Workspace {
             return;
         }
         let idx = (sw.idx as isize + delta).rem_euclid(n as isize) as usize;
-        self.tabs.peek(sw.order[idx]);
+        self.scope.tabs.peek(sw.order[idx]);
         self.switcher = Some(Switcher {
             order: sw.order,
             idx,
@@ -75,7 +75,7 @@ impl Workspace {
         if let Some(sw) = self.switcher.take()
             && let Some(id) = sw.order.get(sw.idx)
         {
-            self.tabs.activate(*id);
+            self.scope.tabs.activate(*id);
             self.session_dirty = true;
         }
     }
@@ -103,7 +103,7 @@ impl Workspace {
                         .rounded(px(6.))
                         .shadow_lg()
                         .children(sw.order.iter().enumerate().filter_map(|(i, id)| {
-                            let tab = self.tabs.get(*id)?;
+                            let tab = self.scope.tabs.get(*id)?;
                             Some(
                                 row()
                                     .h(px(26.))
@@ -131,11 +131,11 @@ impl Workspace {
 
     /// Cmd/Ctrl+Shift+T: reopen the last closed tab that can still be opened.
     pub fn reopen_closed_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        while let Some(t) = self.tabs.pop_closed() {
+        while let Some(t) = self.scope.tabs.pop_closed() {
             match t.kind {
                 TabKind::Http { .. } | TabKind::WebSocket => {
                     self.open_request(&t.key, true, window, cx);
-                    if self.tabs.id_for_key(&t.key).is_none() {
+                    if self.scope.tabs.id_for_key(&t.key).is_none() {
                         continue; // file is gone: try the one before it
                     }
                 }
@@ -149,10 +149,10 @@ impl Workspace {
                 _ => self.open_tab(&t.key, &t.title, t.kind.clone(), true),
             }
             if t.pinned
-                && let Some(id) = self.tabs.id_for_key(&t.key)
-                && self.tabs.get(id).is_some_and(|x| !x.pinned)
+                && let Some(id) = self.scope.tabs.id_for_key(&t.key)
+                && self.scope.tabs.get(id).is_some_and(|x| !x.pinned)
             {
-                self.tabs.toggle_pin(id);
+                self.scope.tabs.toggle_pin(id);
             }
             break;
         }
@@ -160,8 +160,10 @@ impl Workspace {
     }
 
     pub fn copy_tab_path(&mut self, id: u64, cx: &mut Context<Self>) {
-        let Some(tab) = self.tabs.get(id) else { return };
-        let text = match (&tab.kind, &self.project) {
+        let Some(tab) = self.scope.tabs.get(id) else {
+            return;
+        };
+        let text = match (&tab.kind, &self.scope.workspace) {
             (TabKind::Http { .. } | TabKind::WebSocket, Some(p)) => {
                 p.abs_of(&tab.key).display().to_string()
             }
@@ -173,7 +175,7 @@ impl Workspace {
     /// Select request sub-tab `ix` (Params … Settings) on the active HTTP tab.
     pub fn show_request_tab(&mut self, ix: usize) {
         if matches!(
-            self.tabs.active().map(|t| &t.kind),
+            self.scope.tabs.active().map(|t| &t.kind),
             Some(TabKind::Http { .. })
         ) && let Some(ui) = self.active_ui()
         {
@@ -183,7 +185,7 @@ impl Workspace {
 
     pub fn show_response_tab(&mut self, ix: usize) {
         if matches!(
-            self.tabs.active().map(|t| &t.kind),
+            self.scope.tabs.active().map(|t| &t.kind),
             Some(TabKind::Http { .. })
         ) && let Some(ui) = self.active_ui()
         {
@@ -196,20 +198,20 @@ impl Workspace {
         t: &Theme,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
-        let (id, pos) = self.tab_menu?;
-        let tab = self.tabs.get(id)?;
-        type Act = fn(&mut Workspace, u64, &mut Window, &mut Context<Workspace>);
+        let (id, pos) = self.scope.tab_menu?;
+        let tab = self.scope.tabs.get(id)?;
+        type Act = fn(&mut WorkspaceView, u64, &mut Window, &mut Context<WorkspaceView>);
         let items: Vec<(&'static str, Act)> = vec![
             (if tab.pinned { "Unpin" } else { "Pin" }, |w, id, _, _| {
-                w.tabs.toggle_pin(id)
+                w.scope.tabs.toggle_pin(id)
             }),
-            ("Close", |w, id, _, _| w.tabs.close(id)),
-            ("Close others", |w, id, _, _| w.tabs.close_others(id)),
+            ("Close", |w, id, _, _| w.scope.tabs.close(id)),
+            ("Close others", |w, id, _, _| w.scope.tabs.close_others(id)),
             ("Close to the right", |w, id, _, _| {
-                w.tabs.close_to_right(id)
+                w.scope.tabs.close_to_right(id)
             }),
-            ("Close clean tabs", |w, _, _, _| w.tabs.close_clean()),
-            ("Close all", |w, _, _, _| w.tabs.close_all()),
+            ("Close clean tabs", |w, _, _, _| w.scope.tabs.close_clean()),
+            ("Close all", |w, _, _, _| w.scope.tabs.close_all()),
             ("Copy path", |w, id, _, cx| w.copy_tab_path(id, cx)),
             ("Reopen closed tab", |w, _, win, cx| {
                 w.reopen_closed_tab(win, cx)
@@ -232,7 +234,7 @@ impl Workspace {
                         .shadow_lg()
                         .occlude()
                         .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                            this.tab_menu = None;
+                            this.scope.tab_menu = None;
                             cx.notify();
                         }))
                         .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
@@ -249,7 +251,7 @@ impl Workspace {
                                 .text_color(t.text)
                                 .hover(move |s| s.bg(hover))
                                 .on_click(cx.listener(move |this, _, w, cx| {
-                                    this.tab_menu = None;
+                                    this.scope.tab_menu = None;
                                     act(this, id, w, cx);
                                     this.session_dirty = true;
                                     cx.notify();
@@ -267,29 +269,29 @@ impl Workspace {
 
     /// Keep `editor_scroll` showing the active tab's own offset: save the old tab's, load the new.
     pub fn sync_scroll(&mut self) {
-        let active = self.tabs.active_id();
-        if self.scroll_for == active {
+        let active = self.scope.tabs.active_id();
+        if self.scope.scroll_for == active {
             return;
         }
-        if let Some(old) = self.scroll_for {
+        if let Some(old) = self.scope.scroll_for {
             let y = -f32::from(self.editor_scroll.offset().y);
-            if let Some(ui) = self.tab_ui.get_mut(&old) {
+            if let Some(ui) = self.scope.tab_ui.get_mut(&old) {
                 ui.scroll = y;
             }
         }
         let y = active
-            .and_then(|id| self.tab_ui.get(&id))
+            .and_then(|id| self.scope.tab_ui.get(&id))
             .map_or(0.0, |u| u.scroll);
         self.editor_scroll.set_offset(gpui::point(px(0.), -px(y)));
-        self.scroll_for = active;
+        self.scope.scroll_for = active;
     }
 
     /// Current scroll of a tab: live for the one on screen, saved otherwise.
     pub fn tab_scroll(&self, id: u64) -> f32 {
-        if self.scroll_for == Some(id) {
+        if self.scope.scroll_for == Some(id) {
             -f32::from(self.editor_scroll.offset().y)
         } else {
-            self.tab_ui.get(&id).map_or(0.0, |u| u.scroll)
+            self.scope.tab_ui.get(&id).map_or(0.0, |u| u.scroll)
         }
     }
 
@@ -297,45 +299,46 @@ impl Workspace {
 
     pub fn layout(&self) -> Layout {
         Layout {
-            left_open: self.left_open,
-            left_width: self.left_width,
-            panel: match self.panel {
-                Panel::Project => "project",
+            left_open: self.scope.left_open,
+            left_width: self.scope.left_width,
+            panel: match self.scope.panel {
+                Panel::Workspace => "workspace",
                 Panel::History => "history",
                 Panel::Environments => "environments",
                 Panel::Sync => "sync",
             }
             .into(),
-            bottom_open: self.bottom_open,
-            bottom_tab: match self.bottom_tab {
+            bottom_open: self.scope.bottom_open,
+            bottom_tab: match self.scope.bottom_tab {
                 BottomTab::Console => "console",
                 BottomTab::Problems => "problems",
             }
             .into(),
-            bottom_height: self.bottom_height,
-            split_vertical: self.split_vertical,
-            group_by_kind: self.tabs.group_by_kind,
+            bottom_height: self.scope.bottom_height,
+            split_vertical: self.scope.split_vertical,
+            group_by_kind: self.scope.tabs.group_by_kind,
         }
     }
 
     pub fn apply_layout(&mut self, l: &Layout) {
-        self.left_open = l.left_open;
-        self.left_width = l.left_width.clamp(180.0, 520.0);
-        self.panel = match l.panel.as_str() {
+        self.scope.left_open = l.left_open;
+        self.scope.left_width = l.left_width.clamp(180.0, 520.0);
+        self.scope.panel = match l.panel.as_str() {
+            "workspace" | "project" => Panel::Workspace, // legacy-project value
             "history" => Panel::History,
             "environments" => Panel::Environments,
             "sync" => Panel::Sync,
-            _ => Panel::Project,
+            _ => Panel::Workspace,
         };
-        self.bottom_open = l.bottom_open;
-        self.bottom_tab = if l.bottom_tab == "problems" {
+        self.scope.bottom_open = l.bottom_open;
+        self.scope.bottom_tab = if l.bottom_tab == "problems" {
             BottomTab::Problems
         } else {
             BottomTab::Console
         };
-        self.bottom_height = l.bottom_height.clamp(80.0, 600.0);
-        self.split_vertical = l.split_vertical;
-        self.tabs.group_by_kind = l.group_by_kind;
+        self.scope.bottom_height = l.bottom_height.clamp(80.0, 600.0);
+        self.scope.split_vertical = l.split_vertical;
+        self.scope.tabs.group_by_kind = l.group_by_kind;
     }
 
     /// Session entry for a tab (open or closed).
@@ -390,7 +393,7 @@ impl Workspace {
             self.recent.last = None;
         }
         if let Some(d) = &self.state_dir {
-            crate::project::save_recent(d, &self.recent);
+            crate::workspace_model::save_recent(d, &self.recent);
         }
     }
 
@@ -441,10 +444,10 @@ impl Workspace {
                         .iter()
                         .any(|p| p.file_name().is_some_and(|n| n == "settings.toml"))
                     {
-                        this.envs.settings = fluxwire_format::load_settings(
+                        this.scope.envs.settings = fluxwire_format::load_settings(
                             batch[0].parent().unwrap_or(std::path::Path::new(".")),
                         );
-                        this.envs.invalidate();
+                        this.scope.envs.invalidate();
                         cx.notify();
                     }
                 });

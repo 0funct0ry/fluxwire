@@ -1,9 +1,10 @@
-//! Body layout, left dock panels (Project, History, Environments, Sync) and the welcome view.
+//! Body layout, left dock panels (Workspace, History, Environments, Sync) and the welcome view.
 
 use fluxwire_model::{RequestKind, TreeNode};
 use gpui::{
     Context, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, ParentElement, Render,
-    StatefulInteractiveElement, Styled, Window, anchored as popover, deferred, div, prelude::*, px,
+    SharedString, StatefulInteractiveElement, Styled, Window, anchored as popover, deferred, div,
+    prelude::*, px,
 };
 
 use crate::{
@@ -11,7 +12,7 @@ use crate::{
     tabs::TabKind,
     theme::Theme,
     ui::{icon, row},
-    workspace::{MenuKind, Panel, Workspace},
+    workspace::{MenuKind, Panel, WorkspaceView},
 };
 
 /// A tree row being dragged to another folder.
@@ -41,7 +42,7 @@ impl Render for DragPreview {
     }
 }
 
-impl Workspace {
+impl WorkspaceView {
     pub(crate) fn render_body(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let t = t.clone();
         div()
@@ -49,7 +50,7 @@ impl Workspace {
             .min_h_0()
             .flex()
             .flex_row()
-            .when(self.left_open, |d| {
+            .when(self.scope.left_open, |d| {
                 d.child(self.render_left_dock(&t, cx)).child(
                     div()
                         .id("dock-resize")
@@ -71,20 +72,20 @@ impl Workspace {
     }
 
     fn render_left_dock(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let title = match self.panel {
-            Panel::Project => "Project",
+        let title = match self.scope.panel {
+            Panel::Workspace => "Workspace",
             Panel::History => "History",
             Panel::Environments => "Environments",
             Panel::Sync => "Sync",
         };
-        let content = match self.panel {
-            Panel::Project => self.render_project(t, cx).into_any_element(),
+        let content = match self.scope.panel {
+            Panel::Workspace => self.render_workspace_tree(t, cx).into_any_element(),
             Panel::History => self.render_history(t, cx).into_any_element(),
             Panel::Environments => self.render_envs(t, cx).into_any_element(),
             Panel::Sync => self.render_sync_panel(t, cx).into_any_element(),
         };
         div()
-            .w(px(self.left_width))
+            .w(px(self.scope.left_width))
             .flex_none()
             .flex()
             .flex_col()
@@ -98,16 +99,7 @@ impl Workspace {
                     .text_color(t.text_muted)
                     .border_b_1()
                     .border_color(t.border_variant)
-                    .child(title)
-                    .child(
-                        div()
-                            .id("dock-plus")
-                            .cursor_pointer()
-                            .on_click(
-                                cx.listener(|this, _, w, cx| this.start_new(false, false, w, cx)),
-                            )
-                            .child(icon("plus", 12., t.text_muted)),
-                    ),
+                    .child(title),
             )
             .child(
                 div()
@@ -174,10 +166,9 @@ impl Workspace {
 
     /// The in-place name entry row for a new request or folder.
     fn inline_row(&self, t: &Theme, depth: usize, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let Some(inline) = &self.inline else {
+        let Some(inline) = &self.scope.inline else {
             return div().into_any_element();
         };
-        let text = inline.text.text().to_string();
         let (glyph, placeholder) = if inline.folder {
             ("folder", "Folder name")
         } else if inline.websocket {
@@ -202,18 +193,21 @@ impl Workspace {
                     .border_color(t.accent)
                     .bg(t.editor)
                     .overflow_hidden()
-                    .child(if text.is_empty() {
-                        div().text_color(t.text_placeholder).child(placeholder)
-                    } else {
-                        div().text_color(t.text).child(text)
-                    })
-                    .child(div().w(px(1.)).h(px(14.)).flex_none().bg(t.accent)),
+                    .child(crate::ui::field_text(
+                        &inline.text,
+                        placeholder,
+                        t,
+                        self.is_focused(&self.inline_focus),
+                    )),
             )
             .into_any_element()
     }
 
     fn inline_here(&self, parent: &str) -> bool {
-        self.inline.as_ref().is_some_and(|i| i.parent == parent)
+        self.scope
+            .inline
+            .as_ref()
+            .is_some_and(|i| i.parent == parent)
     }
 
     /// Vertical-dots button shown on row hover (or while that row's menu is open).
@@ -226,7 +220,7 @@ impl Workspace {
         idx: usize,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let open = self.tree_menu.as_ref().is_some_and(|m| m.key == key);
+        let open = self.scope.tree_menu.as_ref().is_some_and(|m| m.key == key);
         let key = key.to_string();
         self.row_icon_button(t, ("row-dots", idx), "ellipsis-vertical")
             .when(!open, |d| {
@@ -239,46 +233,21 @@ impl Workspace {
             .into_any_element()
     }
 
-    fn render_project(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_workspace_tree(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let mut rows: Vec<gpui::AnyElement> = vec![];
-        let Some(p) = &self.project else {
+        let Some(p) = &self.scope.workspace else {
             return div().into_any_element();
         };
-        let selected = self.selected.clone();
+        let selected = self.scope.selected.clone();
         let mut idx = 0usize;
+        if let Some(h) = self.render_workspace_header(t, cx) {
+            rows.push(h);
+        }
         if p.collections.is_empty() {
             rows.push(
                 div()
-                    .p_3()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .text_size(px(12.))
-                    .text_color(t.text_muted)
-                    .child(match p.errors.first() {
-                        Some((dir, e)) => format!("{}: {e}", dir.display()),
-                        None => "No collection in this folder (no fluxwire.toml).".to_string(),
-                    })
-                    .child(
-                        div()
-                            .id("create-collection-here")
-                            .px_3()
-                            .h(px(26.))
-                            .flex()
-                            .items_center()
-                            .rounded(px(4.))
-                            .border_1()
-                            .border_color(t.border)
-                            .cursor_pointer()
-                            .hover({
-                                let h = t.element_hover;
-                                move |s| s.bg(h)
-                            })
-                            .on_click(
-                                cx.listener(|this, _, w, cx| this.create_collection_here(w, cx)),
-                            )
-                            .child("Create a collection here"),
-                    )
+                    .p_2()
+                    .child(self.render_collection_actions(t, true, cx))
                     .into_any_element(),
             );
         }
@@ -293,7 +262,7 @@ impl Workspace {
             let drop_key = ckey.clone();
             let menu_key = ckey.clone();
             let (nk1, nk2, nk3) = (ckey.clone(), ckey.clone(), ckey.clone());
-            let menu_open = self.tree_menu.as_ref().is_some_and(|m| m.key == ckey);
+            let menu_open = self.scope.tree_menu.as_ref().is_some_and(|m| m.key == ckey);
             rows.push(
                 row()
                     .id(("coll", idx))
@@ -431,7 +400,7 @@ impl Workspace {
                 name,
                 children,
             } => {
-                let collapsed = self.collapsed.contains(path);
+                let collapsed = self.scope.collapsed.contains(path);
                 let group = format!("tree-row-{idx}");
                 let dots = self.row_dots(t, &group, path, MenuKind::Folder, *idx, cx);
                 let key = path.clone();
@@ -450,9 +419,9 @@ impl Workspace {
                     )
                     .group(group.clone())
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.selected = Some(key.clone());
-                        if !this.collapsed.remove(&key) {
-                            this.collapsed.insert(key.clone());
+                        this.scope.selected = Some(key.clone());
+                        if !this.scope.collapsed.remove(&key) {
+                            this.scope.collapsed.insert(key.clone());
                         }
                         cx.notify();
                     }))
@@ -509,7 +478,7 @@ impl Workspace {
             } => {
                 let key = path.clone();
                 let menu_key = path.clone();
-                let active = self.tabs.active().is_some_and(|a| a.key == *path);
+                let active = self.scope.tabs.active().is_some_and(|a| a.key == *path);
                 let group = format!("tree-row-{idx}");
                 let dots = self.row_dots(t, &group, path, MenuKind::Request, *idx, cx);
                 let drag = DraggedItem {
@@ -582,9 +551,9 @@ impl Workspace {
         t: &Theme,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
-        let m = self.tree_menu.clone()?;
+        let m = self.scope.tree_menu.clone()?;
         let key = m.key.clone();
-        type Act = fn(&mut Workspace, &str, &mut Window, &mut Context<Workspace>);
+        type Act = fn(&mut WorkspaceView, &str, &mut Window, &mut Context<WorkspaceView>);
         let mut items: Vec<(&'static str, Act)> = vec![];
         match m.kind {
             MenuKind::Folder | MenuKind::Collection => {
@@ -603,25 +572,61 @@ impl Workspace {
                 items.push(("Open", |w, k, win, cx| w.open_request(k, true, win, cx)))
             }
             MenuKind::Doc => {}
+            MenuKind::Workspace => {
+                items.push(("New collection…", |w, _, win, cx| {
+                    w.start_new_collection(None, win, cx)
+                }));
+                items.push(("Add existing collection…", |w, _, win, cx| {
+                    w.start_add_collection(win, cx)
+                }));
+                items.push(("Reveal in file manager", |w, _, _, cx| {
+                    if let Some(root) = w.scope.workspace.as_ref().map(|ws| ws.root.clone()) {
+                        cx.reveal_path(&root);
+                    }
+                }));
+                items.push(("Copy path", |w, _, _, cx| {
+                    if let Some(root) = w.scope.workspace.as_ref().map(|ws| ws.root.clone()) {
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                            root.display().to_string(),
+                        ));
+                    }
+                }));
+                items.push(("Close workspace", |w, _, win, cx| {
+                    w.request_close(crate::dialogs::AfterClose::Welcome, win, cx)
+                }));
+            }
         }
-        if m.kind != MenuKind::Collection {
+        if m.kind == MenuKind::Collection {
             items.push(("Rename", |w, k, win, cx| {
-                w.selected = Some(k.to_string());
+                w.start_rename_collection(k, win, cx)
+            }));
+            items.push(("Remove from workspace", |w, k, _, cx| {
+                w.remove_collection(k, cx)
+            }));
+            items.push(("Delete (move to trash)", |w, k, win, cx| {
+                w.confirm_delete_collection(k, win, cx)
+            }));
+        }
+        if !matches!(m.kind, MenuKind::Collection | MenuKind::Workspace) {
+            items.push(("Rename", |w, k, win, cx| {
+                w.scope.selected = Some(k.to_string());
                 w.start_rename(win, cx)
             }));
             items.push(("Duplicate", |w, k, win, cx| {
-                w.selected = Some(k.to_string());
+                w.scope.selected = Some(k.to_string());
                 w.duplicate_selected(win, cx)
             }));
             items.push(("Delete (move to trash)", |w, k, win, cx| {
-                w.selected = Some(k.to_string());
+                w.scope.selected = Some(k.to_string());
                 w.delete_selected(win, cx)
             }));
         }
-        items.push(("Reveal in file manager", |w, k, _, cx| {
-            w.selected = Some(k.to_string());
-            w.reveal_selected(cx)
-        }));
+        if m.kind != MenuKind::Workspace {
+            items.push(("Reveal in file manager", |w, k, _, cx| {
+                w.scope.selected = Some(k.to_string());
+                w.reveal_selected(cx)
+            }));
+        }
         let t = t.clone();
         Some(
             deferred(
@@ -639,7 +644,7 @@ impl Workspace {
                         .shadow_lg()
                         .occlude()
                         .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                            this.tree_menu = None;
+                            this.scope.tree_menu = None;
                             cx.notify();
                         }))
                         .children(items.into_iter().enumerate().map(|(i, (label, act))| {
@@ -656,7 +661,7 @@ impl Workspace {
                                 .text_color(t.text)
                                 .hover(move |s| s.bg(hover))
                                 .on_click(cx.listener(move |this, _, w, cx| {
-                                    this.tree_menu = None;
+                                    this.scope.tree_menu = None;
                                     act(this, &key, w, cx);
                                     cx.notify();
                                 }))
@@ -680,7 +685,7 @@ impl Workspace {
                     t,
                     "sync-link".into(),
                     0,
-                    self.tabs.active().is_some_and(|a| a.key == "sync"),
+                    self.scope.tabs.active().is_some_and(|a| a.key == "sync"),
                 )
                 .on_click(cx.listener(|this, ev: &gpui::ClickEvent, _, cx| {
                     this.open_tab("sync", "Sync", TabKind::Sync, ev.click_count() >= 2);
@@ -708,13 +713,13 @@ impl Workspace {
 
     pub(crate) fn render_welcome(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let t = t.clone();
-        let button = |id: &'static str, label: &'static str, primary: bool| {
+        let button = |id: &'static str, label: &'static str, keys: &'static str, primary: bool| {
             let t = t.clone();
-            div()
+            row()
                 .id(id)
                 .px_4()
                 .h(px(30.))
-                .flex()
+                .gap_2()
                 .items_center()
                 .rounded(px(4.))
                 .cursor_pointer()
@@ -725,6 +730,12 @@ impl Workspace {
                 })
                 .when(!primary, |d| d.hover(|s| s.bg(t.element_hover)))
                 .child(label)
+                .child(
+                    div()
+                        .text_size(px(11.))
+                        .opacity(0.7)
+                        .child(crate::ui::kbd_label(keys)),
+                )
         };
         div()
             .flex_1()
@@ -733,6 +744,7 @@ impl Workspace {
             .items_center()
             .justify_center()
             .gap_4()
+            .child(icon("logo", 48., t.accent))
             .child(
                 div()
                     .text_size(px(28.))
@@ -740,25 +752,17 @@ impl Workspace {
                     .child("Fluxwire"),
             )
             .child(
-                div()
-                    .text_color(t.text_muted)
-                    .child("API requests that live next to your code."),
-            )
-            .child(
                 row()
                     .gap_2()
-                    .child(button("w-open", "Open folder", true).on_click(
-                        cx.listener(|this, _, w, cx| this.open_folder_dialog(false, w, cx)),
-                    ))
-                    .child(button("w-new", "New collection", false).on_click(
-                        cx.listener(|this, _, w, cx| this.open_folder_dialog(true, w, cx)),
-                    ))
-                    .child(button("w-import", "Import", false).on_click(cx.listener(
-                        |this, _, _, cx| {
-                            this.notice = Some("Import arrives in a later milestone (M11).".into());
-                            cx.notify();
-                        },
-                    ))),
+                    .child(
+                        button("w-open", "Open workspace…", "secondary-o", true)
+                            .on_click(cx.listener(|this, _, w, cx| this.open_folder_dialog(w, cx))),
+                    )
+                    .child(
+                        button("w-new", "New workspace…", "secondary-shift-n", false).on_click(
+                            cx.listener(|this, _, w, cx| this.start_new_workspace(w, cx)),
+                        ),
+                    ),
             )
             .children(self.open_error.clone().map(|e| {
                 div()
@@ -767,78 +771,92 @@ impl Workspace {
                     .text_color(t.deleted)
                     .child(e)
             }))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .items_center()
-                    .child(
-                        div()
-                            .text_size(px(11.))
-                            .text_color(t.text_placeholder)
-                            .child("Recent workspaces"),
-                    )
-                    .children(self.recent.workspaces.clone().into_iter().enumerate().map(
-                        |(i, w)| {
-                            let path = std::path::PathBuf::from(&w);
-                            let new_win = path.clone();
-                            let forget = w.clone();
-                            let name = path
-                                .file_name()
-                                .map_or(w.clone(), |n| n.to_string_lossy().into_owned());
-                            row()
-                                .id(("recent", i))
-                                .w(px(520.))
-                                .px_2()
-                                .h(px(26.))
-                                .gap_2()
-                                .rounded(px(4.))
-                                .cursor_pointer()
-                                .text_size(px(12.))
-                                .hover(|s| s.bg(t.element_hover))
-                                .on_click(cx.listener(move |this, _, w, cx| {
-                                    this.open_project(&path, w, cx)
-                                }))
-                                .child(div().text_color(t.accent).child(name))
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .truncate()
-                                        .font_family(BUFFER_FONT)
-                                        .text_color(t.text_placeholder)
-                                        .child(w),
-                                )
-                                .child(
-                                    div()
-                                        .id(("recent-new-window", i))
-                                        .px_1()
-                                        .text_color(t.text_muted)
-                                        .hover(|s| s.text_color(t.text))
-                                        .on_click(cx.listener(move |_, _, _, cx| {
-                                            crate::workspace::open_window_at(
-                                                cx,
-                                                Some(new_win.clone()),
-                                            );
-                                            cx.stop_propagation();
-                                        }))
-                                        .child("New window"),
-                                )
-                                .child(
-                                    div()
-                                        .id(("recent-forget", i))
-                                        .px_1()
-                                        .text_color(t.text_muted)
-                                        .hover(|s| s.text_color(t.text))
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.forget_recent(&forget);
-                                            cx.stop_propagation();
-                                            cx.notify();
-                                        }))
-                                        .child("×"),
-                                )
-                        },
-                    )),
-            )
+            .when(!self.recent.workspaces.is_empty(), |d| {
+                d.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .items_start()
+                        .child(
+                            div()
+                                .text_size(px(11.))
+                                .text_color(t.text_placeholder)
+                                .child("Recent workspaces"),
+                        )
+                        .children(self.recent.workspaces.clone().into_iter().enumerate().map(
+                            |(i, w)| {
+                                let path = std::path::PathBuf::from(&w);
+                                let missing = !path.is_dir();
+                                let forget = w.clone();
+                                let name = path
+                                    .file_name()
+                                    .map_or(w.clone(), |n| n.to_string_lossy().into_owned());
+                                let group: SharedString = format!("recent-{i}").into();
+                                row()
+                                    .id(("recent", i))
+                                    .group(group.clone())
+                                    .w(px(520.))
+                                    .px_2()
+                                    .h(px(28.))
+                                    .gap_2()
+                                    .rounded(px(4.))
+                                    .cursor_pointer()
+                                    .text_size(px(12.))
+                                    .hover(|s| s.bg(t.element_hover))
+                                    .when(missing, |d| d.text_color(t.text_placeholder))
+                                    .on_click(cx.listener(move |this, _, w, cx| {
+                                        this.open_workspace(&path, w, cx)
+                                    }))
+                                    .child(
+                                        div()
+                                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                                            .when(!missing, |d| d.text_color(t.accent))
+                                            .child(name),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .truncate()
+                                            .font_family(BUFFER_FONT)
+                                            .text_color(t.text_placeholder)
+                                            .child(middle_truncate(&w, 56)),
+                                    )
+                                    .when(missing, |d| d.child("Not found"))
+                                    .child(
+                                        div()
+                                            .id(("recent-forget", i))
+                                            .px_1()
+                                            .invisible()
+                                            .group_hover(group, |s| s.visible())
+                                            .text_color(t.text_muted)
+                                            .hover(|s| s.text_color(t.text))
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.forget_recent(&forget);
+                                                cx.stop_propagation();
+                                                cx.notify();
+                                            }))
+                                            .child("×"),
+                                    )
+                            },
+                        )),
+                )
+            })
     }
+}
+
+/// Shorten the middle of a long path: `/Users/a/…/repo`.
+pub(crate) fn middle_truncate(s: &str, max: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= max {
+        return s.to_string();
+    }
+    let keep = max.saturating_sub(1);
+    let head = keep / 2;
+    let tail = keep - head;
+    format!(
+        "{}…{}",
+        chars[..head].iter().collect::<String>(),
+        chars[chars.len() - tail..].iter().collect::<String>()
+    )
 }

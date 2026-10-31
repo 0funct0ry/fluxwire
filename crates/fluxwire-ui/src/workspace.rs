@@ -1,11 +1,6 @@
 //! The root view: window state, action handlers, title bar, status bar and modals.
 
-use std::{
-    cell::Cell,
-    collections::{HashMap, HashSet},
-    path::PathBuf,
-    rc::Rc,
-};
+use std::{cell::Cell, path::PathBuf, rc::Rc};
 
 use gpui::{
     Bounds, Context, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent,
@@ -17,10 +12,10 @@ use crate::{
     actions::*,
     assets::{BUFFER_FONT, UI_FONT},
     mock::{self, Mock},
-    project::{Project, Recent, Target},
-    tabs::{TabKind, Tabs},
+    tabs::TabKind,
     theme::{Appearance, Theme, theme},
     ui::{TextEdit, icon, kbd_label, row},
+    workspace_model::Recent,
 };
 
 /// Where recent workspaces and sessions are stored. Unset in tests, so nothing touches the disk.
@@ -30,7 +25,7 @@ impl gpui::Global for StateDir {}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Panel {
-    Project,
+    Workspace,
     History,
     Environments,
     Sync,
@@ -47,6 +42,8 @@ pub enum ModalKind {
     Palette,
     QuickSearch,
     Environment,
+    /// Workspace switcher: recent workspaces and "New workspace…".
+    Workspaces,
     /// Single-line text prompt (new request, rename, ...).
     Prompt,
 }
@@ -54,6 +51,7 @@ pub enum ModalKind {
 #[derive(Clone, Debug)]
 pub enum PromptPurpose {
     Rename { key: String },
+    RenameCollection { key: String },
     NewEnvironment,
     RenameEnvironment { name: String },
 }
@@ -75,6 +73,8 @@ pub enum MenuKind {
     Folder,
     Collection,
     Doc,
+    /// The Workspace node itself (header row of the Workspace panel).
+    Workspace,
 }
 
 #[derive(Clone, Debug)]
@@ -118,6 +118,8 @@ pub enum ItemRun {
     Folder(String),
     History(i64),
     Workspace(String),
+    /// "New workspace…" entry of the switcher.
+    NewWorkspace,
 }
 
 #[derive(Clone, Debug)]
@@ -187,70 +189,42 @@ impl Default for TabUi {
 
 pub const METHODS: [&str; 7] = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
 
-pub struct Workspace {
+pub struct WorkspaceView {
+    pub scope: crate::open_workspace::OpenWorkspace,
     pub mock: Mock,
     pub history: crate::history::HistoryState,
     pub history_focus: FocusHandle,
-    pub project: Option<Project>,
-    pub tabs: Tabs,
-    pub tab_ui: HashMap<u64, TabUi>,
-    /// Run state and response per request tab.
-    pub responses: HashMap<u64, crate::response::TabResponse>,
-    /// Send log shown in the bottom dock.
-    pub console: Vec<String>,
-    /// Tab whose send waits on the script trust prompt (SPEC §21).
-    pub trust_prompt: Option<u64>,
-    /// Collections trusted this session when there is no config dir to store the decision in.
-    pub session_trust: HashSet<PathBuf>,
-    pub left_open: bool,
-    pub left_width: f32,
-    pub panel: Panel,
-    pub bottom_open: bool,
-    pub bottom_tab: BottomTab,
-    pub split_vertical: bool,
-    pub envs: crate::envs::EnvStore,
-    pub collapsed: HashSet<String>,
     pub modal: Option<Modal>,
+    /// The focused element, refreshed on every render, so fields know whether to draw a caret.
+    pub focused: Option<FocusHandle>,
+    /// Text origin of the dialog/modal field under the pointer (set while painting).
+    pub field_bounds: Rc<Cell<Bounds<Pixels>>>,
+    pub field_drag: bool,
+    /// Workspace/Collection lifecycle dialogs (New workspace, New collection, confirms).
+    pub dialog: Option<crate::dialogs::Dialog>,
+    pub dialog_focus: FocusHandle,
     pub modal_scroll: ScrollHandle,
     pub switcher: Option<Switcher>,
-    /// Tab context menu: tab id and where it opened.
-    pub tab_menu: Option<(u64, Point<Pixels>)>,
     pub keymap_watcher: Option<fluxwire_format::WatchHandle>,
     pub keymap_issues: Vec<crate::actions::KeymapIssue>,
-    pub bottom_height: f32,
     pub resizing_bottom: bool,
     pub keybind_query: TextEdit,
     pub keybind_focus: FocusHandle,
-    /// Tab whose scroll offset `editor_scroll` currently shows.
-    pub scroll_for: Option<u64>,
-    pub search: fluxwire_search::Index,
     /// Most recently run palette/quick-search item ids, newest first.
     pub recent_ids: Vec<String>,
     pub prompt: Option<PromptPurpose>,
-    pub tree_menu: Option<TreeMenu>,
-    pub inline: Option<InlineNew>,
     pub inline_focus: FocusHandle,
-    /// Selected tree row (workspace-relative key); target of rename/duplicate/delete/new.
-    pub selected: Option<String>,
-    pub cell: Option<CellEdit>,
-    /// Surface that receives editor key presses.
-    pub target: Target,
     /// Transient message for the status bar (errors, notices).
     pub notice: Option<String>,
     pub open_error: Option<String>,
     pub recent: Recent,
     pub state_dir: Option<PathBuf>,
     pub watch_enabled: bool,
-    pub watcher: Option<fluxwire_format::WatchHandle>,
     pub session_dirty: bool,
     pub editor_bounds: Rc<Cell<Bounds<Pixels>>>,
-    /// Selection in the URL bar (char indices, anchor then head) and whether a drag is active.
-    pub url_sel: Option<(usize, usize)>,
-    pub url_drag: bool,
     pub url_bounds: Rc<Cell<Bounds<Pixels>>>,
     pub editor_scroll: ScrollHandle,
     pub resizing: bool,
-    pub method_menu: bool,
     pub root_focus: FocusHandle,
     pub modal_focus: FocusHandle,
     pub url_focus: FocusHandle,
@@ -259,19 +233,12 @@ pub struct Workspace {
     pub editor_focus: FocusHandle,
     pub filter_focus: FocusHandle,
     pub find_focus: FocusHandle,
-    /// WebSocket composers by tab id, and the focus/bounds of the composer editor.
-    pub composers: HashMap<u64, crate::session::Composer>,
     pub composer_focus: FocusHandle,
-    pub composer_active: bool,
     pub composer_bounds: Rc<Cell<Bounds<Pixels>>>,
     pub log_focus: FocusHandle,
-    /// Transcripts of WebSocket History entries opened this session.
-    pub history_logs: HashMap<i64, crate::session_log::SessionLog>,
-    /// Folder run tabs by tab id (SPEC §12).
-    pub runs: HashMap<u64, crate::runs::RunTab>,
 }
 
-impl Workspace {
+impl WorkspaceView {
     /// A window with no workspace open (the welcome view). Restores the last workspace when a
     /// state directory is configured.
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -289,65 +256,43 @@ impl Workspace {
         let state_dir_is_set = state_dir.is_some();
         let recent = state_dir
             .as_deref()
-            .map(crate::project::load_recent)
+            .map(crate::workspace_model::load_recent)
             .unwrap_or_default();
         let settings = cx
             .try_global::<crate::envs::ConfigDir>()
             .map(|c| fluxwire_format::load_settings(&c.0))
             .unwrap_or_default();
         let mut this = Self {
+            scope: crate::open_workspace::OpenWorkspace::default(),
             mock: mock::payments_api(),
             history: crate::history::HistoryState::new(state_dir_is_set),
             history_focus: cx.focus_handle(),
-            project: None,
-            tabs: Tabs::new(),
-            tab_ui: HashMap::new(),
-            responses: HashMap::new(),
-            console: Vec::new(),
-            trust_prompt: None,
-            session_trust: HashSet::new(),
-            left_open: true,
-            left_width: 260.0,
-            panel: Panel::Project,
-            bottom_open: false,
-            bottom_tab: BottomTab::Console,
-            split_vertical: true,
-            envs: crate::envs::EnvStore::default(),
-            collapsed: HashSet::new(),
             modal: None,
+            focused: None,
+            field_bounds: Rc::new(Cell::new(Bounds::default())),
+            field_drag: false,
+            dialog: None,
+            dialog_focus: cx.focus_handle(),
             modal_scroll: ScrollHandle::new(),
             switcher: None,
-            tab_menu: None,
             keymap_watcher: None,
             keymap_issues: Vec::new(),
-            bottom_height: 200.0,
             resizing_bottom: false,
             keybind_query: TextEdit::default(),
             keybind_focus: cx.focus_handle(),
-            scroll_for: None,
-            search: fluxwire_search::Index::new(),
             recent_ids: Vec::new(),
             prompt: None,
-            tree_menu: None,
-            inline: None,
             inline_focus: cx.focus_handle(),
-            selected: None,
-            cell: None,
-            target: Target::Body,
             notice: None,
             open_error: None,
             recent,
             watch_enabled: state_dir.is_some(),
             state_dir,
-            watcher: None,
             session_dirty: false,
             editor_bounds: Rc::new(Cell::new(Bounds::default())),
-            url_sel: None,
-            url_drag: false,
             url_bounds: Rc::new(Cell::new(Bounds::default())),
             editor_scroll: ScrollHandle::new(),
             resizing: false,
-            method_menu: false,
             root_focus,
             modal_focus: cx.focus_handle(),
             url_focus: cx.focus_handle(),
@@ -356,19 +301,15 @@ impl Workspace {
             editor_focus: cx.focus_handle(),
             filter_focus: cx.focus_handle(),
             find_focus: cx.focus_handle(),
-            composers: HashMap::new(),
             composer_focus: cx.focus_handle(),
-            composer_active: false,
             composer_bounds: Rc::new(Cell::new(Bounds::default())),
             log_focus: cx.focus_handle(),
-            history_logs: HashMap::new(),
-            runs: HashMap::new(),
         };
-        this.envs.settings = settings;
+        this.scope.envs.settings = settings;
         this.recent_ids = this
             .state_dir
             .as_deref()
-            .map(crate::project::load_recent_ids)
+            .map(crate::workspace_model::load_recent_ids)
             .unwrap_or_default();
         this.start_session_timer(cx);
         this.reload_keymap(cx);
@@ -383,31 +324,31 @@ impl Workspace {
         if let Some(last) = this.recent.last.clone() {
             let p = PathBuf::from(last);
             if p.is_dir() {
-                this.open_project(&p, window, cx);
+                this.open_workspace(&p, window, cx);
             }
         }
         this
     }
 
     pub fn active_ui(&mut self) -> Option<&mut TabUi> {
-        let id = self.tabs.active_id()?;
-        self.tab_ui.get_mut(&id)
+        let id = self.scope.tabs.active_id()?;
+        self.scope.tab_ui.get_mut(&id)
     }
 
     /// Key of the file shown by the active request tab.
     pub fn active_key(&self) -> Option<String> {
-        let t = self.tabs.active()?;
+        let t = self.scope.tabs.active()?;
         matches!(t.kind, TabKind::Http { .. } | TabKind::WebSocket).then(|| t.key.clone())
     }
 
     /// Open non-request tabs (history, environment, ...), which are still mock-backed.
     pub fn open_tab(&mut self, key: &str, title: &str, kind: TabKind, permanent: bool) {
         let id = if permanent {
-            self.tabs.open_permanent(key, title, kind)
+            self.scope.tabs.open_permanent(key, title, kind)
         } else {
-            self.tabs.open_preview(key, title, kind)
+            self.scope.tabs.open_preview(key, title, kind)
         };
-        self.tab_ui.entry(id).or_default();
+        self.scope.tab_ui.entry(id).or_default();
     }
 
     // ---- modals ---------------------------------------------------------------------------
@@ -436,7 +377,7 @@ impl Workspace {
     pub fn refresh_search_index(&mut self, cx: &gpui::App) {
         use fluxwire_search::{Item, Kind};
         let mut want: Vec<Item> = Vec::new();
-        if let Some(p) = &self.project {
+        if let Some(p) = &self.scope.workspace {
             want.extend(p.search_items());
         }
         want.extend(
@@ -461,23 +402,45 @@ impl Workspace {
             Item::new(format!("ws:{w}"), Kind::Workspace, name).detail(w.clone())
         }));
         let bindings = cx.try_global::<KeymapState>();
-        want.extend(ACTIONS.iter().map(|a| {
-            let keys = match bindings {
-                Some(b) => b.label_for(a.name).unwrap_or_default(),
-                None => a.binding.map(kbd_label).unwrap_or_default(),
-            };
-            Item::new(format!("act:{}", a.name), Kind::Action, a.label).detail(keys)
-        }));
-        self.search.sync(want);
+        want.extend(
+            ACTIONS
+                .iter()
+                .filter(|a| self.action_available(a.name))
+                .map(|a| {
+                    let keys = match bindings {
+                        Some(b) => b.label_for(a.name).unwrap_or_default(),
+                        None => a.binding.map(kbd_label).unwrap_or_default(),
+                    };
+                    Item::new(format!("act:{}", a.name), Kind::Action, a.label).detail(keys)
+                }),
+        );
+        self.scope.search.sync(want);
+    }
+
+    pub fn is_focused(&self, h: &FocusHandle) -> bool {
+        self.focused.as_ref() == Some(h)
+    }
+
+    /// Whether the level an action belongs to is open (SPEC §17.9).
+    pub fn action_available(&self, name: &str) -> bool {
+        match scope_of(name) {
+            Scope::App => true,
+            Scope::Workspace => self.scope.workspace.is_some(),
+            Scope::Collection => self
+                .scope
+                .workspace
+                .as_ref()
+                .is_some_and(|w| !w.collections.is_empty()),
+        }
     }
 
     fn search_results(&mut self, query: &str, cx: &gpui::App) -> Vec<ModalItem> {
         self.refresh_search_index(cx);
-        self.search.set_recency(self.recent_ids.clone());
-        let hits = self.search.query(query, MODAL_LIMIT);
+        self.scope.search.set_recency(self.recent_ids.clone());
+        let hits = self.scope.search.query(query, MODAL_LIMIT);
         hits.into_iter()
             .filter_map(|h| {
-                let item = self.search.item(h.pos)?;
+                let item = self.scope.search.item(h.pos)?;
                 Some(modal_item(item, h.label_indices))
             })
             .collect()
@@ -493,8 +456,40 @@ impl Workspace {
             ModalKind::Palette => self.search_results(&format!(">{q}"), cx),
             ModalKind::QuickSearch => self.search_results(&q, cx),
             ModalKind::Prompt => vec![],
+            ModalKind::Workspaces => {
+                let current = self.scope.workspace.as_ref().map(|w| w.root.clone());
+                let mut v = vec![ModalItem {
+                    id: String::new(),
+                    label: "New workspace…".into(),
+                    detail: crate::ui::kbd_label("secondary-shift-n"),
+                    indices: Vec::new(),
+                    run: ItemRun::NewWorkspace,
+                }];
+                v.extend(self.recent.workspaces.iter().map(|p| {
+                    let path = std::path::Path::new(p);
+                    let name = path
+                        .file_name()
+                        .map_or(p.clone(), |n| n.to_string_lossy().into_owned());
+                    let detail = if current.as_deref() == Some(path) {
+                        format!("current · {p}")
+                    } else if !path.is_dir() {
+                        format!("Not found · {p}")
+                    } else {
+                        p.clone()
+                    };
+                    ModalItem {
+                        id: String::new(),
+                        label: name,
+                        detail,
+                        indices: Vec::new(),
+                        run: ItemRun::Workspace(p.clone()),
+                    }
+                }));
+                v.retain(|i| fuzzy(&q, &i.label) || fuzzy(&q, &i.detail));
+                v
+            }
             ModalKind::Environment => {
-                let active = self.envs.active.clone();
+                let active = self.scope.envs.active.clone();
                 let mut v: Vec<ModalItem> = self
                     .env_names()
                     .into_iter()
@@ -547,7 +542,7 @@ impl Workspace {
         self.recent_ids.insert(0, id.to_string());
         self.recent_ids.truncate(RECENT_IDS);
         if let Some(d) = &self.state_dir {
-            crate::project::save_recent_ids(d, &self.recent_ids);
+            crate::workspace_model::save_recent_ids(d, &self.recent_ids);
         }
     }
 
@@ -562,7 +557,7 @@ impl Workspace {
     ) {
         self.close_modal(window, cx);
         self.remember_recent(&item.id);
-        let prev = self.tabs.active_id();
+        let prev = self.scope.tabs.active_id();
         match item.run {
             ItemRun::Action(i) => window.dispatch_action((ACTIONS[i].build)(), cx),
             ItemRun::Open { key, title, kind } => {
@@ -576,28 +571,38 @@ impl Workspace {
             }
             ItemRun::Environment(name) => self.set_active_env(name, cx),
             ItemRun::Folder(key) => {
-                self.left_open = true;
-                self.panel = Panel::Project;
+                self.scope.left_open = true;
+                self.scope.panel = Panel::Workspace;
                 for part in folder_chain(&key) {
-                    self.collapsed.remove(&part);
+                    self.scope.collapsed.remove(&part);
                 }
-                self.selected = Some(key);
+                self.scope.selected = Some(key);
             }
             ItemRun::History(id) => self.open_history_entry(id, true, cx),
+            ItemRun::NewWorkspace => self.start_new_workspace(window, cx),
             ItemRun::Workspace(path) => {
                 let path = PathBuf::from(path);
-                if beside {
+                if !path.is_dir() {
+                    self.notice = Some(format!("{} was not found.", path.display()));
+                } else if self
+                    .scope
+                    .workspace
+                    .as_ref()
+                    .is_some_and(|w| w.root == path)
+                {
+                    // Already the open workspace.
+                } else if beside {
                     open_window_at(cx, Some(path));
                 } else {
-                    self.open_project(&path, window, cx);
+                    self.request_close(crate::dialogs::AfterClose::Open(path), window, cx);
                 }
             }
         }
         if beside
-            && let (Some(prev), Some(now)) = (prev, self.tabs.active_id())
+            && let (Some(prev), Some(now)) = (prev, self.scope.tabs.active_id())
             && prev != now
         {
-            self.tabs.place_after(now, prev);
+            self.scope.tabs.place_after(now, prev);
         }
         self.session_dirty = true;
         cx.notify();
@@ -688,6 +693,13 @@ impl Workspace {
                     .rounded(px(4.))
                     .text_color(t.text)
                     .font_weight(gpui::FontWeight::MEDIUM)
+                    .id("workspace-switcher")
+                    .cursor_pointer()
+                    .hover(|s| s.bg(t.element_hover))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(
+                        cx.listener(|this, _, w, cx| this.open_modal(ModalKind::Workspaces, w, cx)),
+                    )
                     .child(self.workspace_label())
                     .child(icon("chevron-down", 12., t.text_muted)),
             )
@@ -773,11 +785,11 @@ impl Workspace {
                 .when(active, |d| d.bg(t.element_selected))
                 .hover(|s| s.bg(t.element_hover))
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    if this.panel == p && this.left_open {
-                        this.left_open = false;
+                    if this.scope.panel == p && this.scope.left_open {
+                        this.scope.left_open = false;
                     } else {
-                        this.panel = p;
-                        this.left_open = true;
+                        this.scope.panel = p;
+                        this.scope.left_open = true;
                     }
                     cx.notify();
                 }))
@@ -801,28 +813,28 @@ impl Workspace {
                 row()
                     .gap_1()
                     .child(panel_btn(
-                        "p-project",
+                        "p-workspace",
                         "folder",
-                        Panel::Project,
-                        self.left_open && self.panel == Panel::Project,
+                        Panel::Workspace,
+                        self.scope.left_open && self.scope.panel == Panel::Workspace,
                     ))
                     .child(panel_btn(
                         "p-history",
                         "file-text",
                         Panel::History,
-                        self.left_open && self.panel == Panel::History,
+                        self.scope.left_open && self.scope.panel == Panel::History,
                     ))
                     .child(panel_btn(
                         "p-envs",
                         "layers",
                         Panel::Environments,
-                        self.left_open && self.panel == Panel::Environments,
+                        self.scope.left_open && self.scope.panel == Panel::Environments,
                     ))
                     .child(panel_btn(
                         "p-sync",
                         "refresh-cw",
                         Panel::Sync,
-                        self.left_open && self.panel == Panel::Sync,
+                        self.scope.left_open && self.scope.panel == Panel::Sync,
                     ))
                     .child(
                         div()
@@ -833,16 +845,16 @@ impl Workspace {
                             .justify_center()
                             .rounded(px(4.))
                             .cursor_pointer()
-                            .when(self.bottom_open, |d| d.bg(t.element_selected))
+                            .when(self.scope.bottom_open, |d| d.bg(t.element_selected))
                             .hover(|s| s.bg(t.element_hover))
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.bottom_open = !this.bottom_open;
+                                this.scope.bottom_open = !this.scope.bottom_open;
                                 cx.notify();
                             }))
                             .child(icon(
                                 "terminal",
                                 14.,
-                                if self.bottom_open {
+                                if self.scope.bottom_open {
                                     t.text
                                 } else {
                                     t.text_muted
@@ -862,8 +874,8 @@ impl Workspace {
                     .gap_1()
                     .cursor_pointer()
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.bottom_open = true;
-                        this.bottom_tab = BottomTab::Problems;
+                        this.scope.bottom_open = true;
+                        this.scope.bottom_tab = BottomTab::Problems;
                         cx.notify();
                     }))
                     .child(icon("triangle-alert", 12., t.modified))
@@ -905,11 +917,11 @@ impl Workspace {
             ModalKind::Palette => "Type a command…",
             ModalKind::QuickSearch => "Search requests, folders, environments…",
             ModalKind::Environment => "Switch environment…",
+            ModalKind::Workspaces => "Switch workspace…",
             ModalKind::Prompt => "Name",
         };
         let title = self.prompt_title();
         let selected = m.selected;
-        let query = m.query.text().to_string();
         Some(
             div()
                 .id("modal-backdrop")
@@ -954,12 +966,44 @@ impl Workspace {
                                 .border_b_1()
                                 .border_color(t.border_variant)
                                 .text_size(px(14.))
-                                .child(if query.is_empty() {
-                                    div().text_color(t.text_placeholder).child(placeholder)
-                                } else {
-                                    div().text_color(t.text).child(query)
-                                })
-                                .child(div().w(px(1.)).h(px(15.)).bg(t.accent)),
+                                .cursor_text()
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, ev: &gpui::MouseDownEvent, w, cx| {
+                                        this.field_down(crate::dialogs::FieldKind::Modal, ev, w, cx)
+                                    }),
+                                )
+                                .on_mouse_move(cx.listener(
+                                    |this, ev: &gpui::MouseMoveEvent, w, cx| {
+                                        this.field_move(crate::dialogs::FieldKind::Modal, ev, w, cx)
+                                    },
+                                ))
+                                .on_mouse_up(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _: &gpui::MouseUpEvent, _, _| {
+                                        this.field_drag = false
+                                    }),
+                                )
+                                .child(
+                                    div()
+                                        .relative()
+                                        .flex_1()
+                                        .child(crate::ui::field_text(
+                                            &m.query,
+                                            placeholder,
+                                            &t,
+                                            self.is_focused(&self.modal_focus),
+                                        ))
+                                        .child({
+                                            let cell = self.field_bounds.clone();
+                                            gpui::canvas(
+                                                move |b, _, _| cell.set(b),
+                                                |_, _, _, _| {},
+                                            )
+                                            .absolute()
+                                            .size_full()
+                                        }),
+                                ),
                         )
                         .child(
                             div()
@@ -1145,7 +1189,7 @@ pub fn set_theme(theme: Theme, cx: &mut gpui::App) {
     cx.refresh_windows();
 }
 
-impl Focusable for Workspace {
+impl Focusable for WorkspaceView {
     fn focus_handle(&self, _: &gpui::App) -> FocusHandle {
         self.root_focus.clone()
     }
@@ -1155,17 +1199,24 @@ macro_rules! handlers {
     ($el:expr, $cx:expr, { $($act:ident => |$this:ident, $w:ident, $c:ident| $body:expr),* $(,)? }) => {{
         let mut el = $el;
         $(
-            el = el.on_action($cx.listener(|$this, _: &$act, $w, $c| { let () = { $body }; $c.notify(); }));
+            el = el.on_action($cx.listener(|$this, _: &$act, $w, $c| {
+                if !$this.action_available(stringify!($act)) {
+                    return;
+                }
+                let () = { $body };
+                $c.notify();
+            }));
         )*
         el
     }};
 }
 
-impl Render for Workspace {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+impl Render for WorkspaceView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.focused = window.focused(cx);
         self.sync_scroll();
         let t = theme(cx).clone();
-        let body = if self.project.is_some() {
+        let body = if self.scope.workspace.is_some() {
             self.render_body(&t, cx).into_any_element()
         } else {
             self.render_welcome(&t, cx).into_any_element()
@@ -1184,14 +1235,14 @@ impl Render for Workspace {
             .text_size(px(14.))
             .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, window, cx| {
                 if this.resizing {
-                    this.left_width = f32::from(ev.position.x).clamp(180.0, 520.0);
+                    this.scope.left_width = f32::from(ev.position.x).clamp(180.0, 520.0);
                     cx.notify();
                 }
                 if this.resizing_bottom {
                     // Distance from the pointer to the window bottom, minus the 24 px status bar.
                     let below =
                         f32::from(window.bounds().size.height) - f32::from(ev.position.y) - 24.0;
-                    this.bottom_height = below.clamp(80.0, 600.0);
+                    this.scope.bottom_height = below.clamp(80.0, 600.0);
                     cx.notify();
                 }
             }))
@@ -1219,24 +1270,26 @@ impl Render for Workspace {
             QuickSearch => |this, w, c| this.open_modal(ModalKind::QuickSearch, w, c),
             CommandPalette => |this, w, c| this.open_modal(ModalKind::Palette, w, c),
             SwitchEnvironment => |this, w, c| this.open_modal(ModalKind::Environment, w, c),
+            SwitchWorkspace => |this, w, c| this.open_modal(ModalKind::Workspaces, w, c),
             Dismiss => |this, w, c| {
-                if let Some(sw) = this.switcher.take() { if let Some(first) = sw.order.first() { this.tabs.peek(*first) } return; }
-                let open = this.tab_menu.is_some() || this.method_menu || this.tree_menu.is_some() || this.cell.is_some() || this.inline.is_some() || this.modal.is_some();
-                this.tab_menu = None; this.method_menu = false; this.tree_menu = None; this.cell = None; this.inline = None; this.close_modal(w, c);
+                if this.dialog.is_some() { this.close_dialog(w, c); return; }
+                if let Some(sw) = this.switcher.take() { if let Some(first) = sw.order.first() { this.scope.tabs.peek(*first) } return; }
+                let open = this.scope.tab_menu.is_some() || this.scope.method_menu || this.scope.tree_menu.is_some() || this.scope.cell.is_some() || this.scope.inline.is_some() || this.modal.is_some();
+                this.scope.tab_menu = None; this.scope.method_menu = false; this.scope.tree_menu = None; this.scope.cell = None; this.scope.inline = None; this.close_modal(w, c);
                 // Esc with nothing to dismiss cancels an in-flight send
                 if !open { this.cancel_request(c); }
             },
-            ToggleLeftDock => |this, _w, _c| { this.left_open = !this.left_open; this.session_dirty = true },
-            ToggleBottomDock => |this, _w, _c| { this.bottom_open = !this.bottom_open; this.session_dirty = true },
-            ShowProjectPanel => |this, _w, _c| { this.panel = Panel::Project; this.left_open = true; this.session_dirty = true },
-            ShowHistoryPanel => |this, _w, _c| { this.panel = Panel::History; this.left_open = true; this.session_dirty = true },
+            ToggleLeftDock => |this, _w, _c| { this.scope.left_open = !this.scope.left_open; this.session_dirty = true },
+            ToggleBottomDock => |this, _w, _c| { this.scope.bottom_open = !this.scope.bottom_open; this.session_dirty = true },
+            ShowWorkspacePanel => |this, _w, _c| { this.scope.panel = Panel::Workspace; this.scope.left_open = true; this.session_dirty = true },
+            ShowHistoryPanel => |this, _w, _c| { this.scope.panel = Panel::History; this.scope.left_open = true; this.session_dirty = true },
             ClearHistoryAll => |this, _w, c| this.history_clear(crate::history::ClearScope::All, c),
             ClearHistoryCollection => |this, _w, c| this.history_clear(crate::history::ClearScope::Collection, c),
             ClearHistoryRequest => |this, _w, c| this.history_clear(crate::history::ClearScope::Request, c),
-            ShowEnvironmentsPanel => |this, _w, _c| { this.panel = Panel::Environments; this.left_open = true; this.session_dirty = true },
-            ShowSyncPanel => |this, _w, _c| { this.panel = Panel::Sync; this.left_open = true; this.session_dirty = true },
-            ShowConsole => |this, _w, _c| { this.bottom_tab = BottomTab::Console; this.bottom_open = true; this.session_dirty = true },
-            ShowProblems => |this, _w, _c| { this.bottom_tab = BottomTab::Problems; this.bottom_open = true; this.session_dirty = true },
+            ShowEnvironmentsPanel => |this, _w, _c| { this.scope.panel = Panel::Environments; this.scope.left_open = true; this.session_dirty = true },
+            ShowSyncPanel => |this, _w, _c| { this.scope.panel = Panel::Sync; this.scope.left_open = true; this.session_dirty = true },
+            ShowConsole => |this, _w, _c| { this.scope.bottom_tab = BottomTab::Console; this.scope.bottom_open = true; this.session_dirty = true },
+            ShowProblems => |this, _w, _c| { this.scope.bottom_tab = BottomTab::Problems; this.scope.bottom_open = true; this.session_dirty = true },
             ToggleTheme => |_this, _w, c| {
                 let next = match theme(c).appearance {
                     Appearance::Dark => Appearance::Light,
@@ -1244,18 +1297,18 @@ impl Render for Workspace {
                 };
                 set_theme(Theme::for_appearance(next), c);
             },
-            ToggleSplitOrientation => |this, _w, _c| { this.split_vertical = !this.split_vertical; this.session_dirty = true },
-            CloseTab => |this, _w, _c| if let Some(id) = this.tabs.active_id() { this.tabs.close(id); this.session_dirty = true },
-            PinTab => |this, _w, _c| if let Some(id) = this.tabs.active_id() { this.tabs.toggle_pin(id); this.session_dirty = true },
+            ToggleSplitOrientation => |this, _w, _c| { this.scope.split_vertical = !this.scope.split_vertical; this.session_dirty = true },
+            CloseTab => |this, _w, _c| if let Some(id) = this.scope.tabs.active_id() { this.scope.tabs.close(id); this.session_dirty = true },
+            PinTab => |this, _w, _c| if let Some(id) = this.scope.tabs.active_id() { this.scope.tabs.toggle_pin(id); this.session_dirty = true },
             NextTab => |this, _w, _c| this.switch_tab(1),
             PrevTab => |this, _w, _c| this.switch_tab(-1),
             ReopenClosedTab => |this, w, c| this.reopen_closed_tab(w, c),
-            GroupTabsByKind => |this, _w, _c| { this.tabs.group_by_kind = !this.tabs.group_by_kind; this.session_dirty = true },
-            CloseOtherTabs => |this, _w, _c| if let Some(id) = this.tabs.active_id() { this.tabs.close_others(id); this.session_dirty = true },
-            CloseTabsToRight => |this, _w, _c| if let Some(id) = this.tabs.active_id() { this.tabs.close_to_right(id); this.session_dirty = true },
-            CloseCleanTabs => |this, _w, _c| { this.tabs.close_clean(); this.session_dirty = true },
-            CloseAllTabs => |this, _w, _c| { this.tabs.close_all(); this.session_dirty = true },
-            CopyTabPath => |this, _w, c| if let Some(id) = this.tabs.active_id() { this.copy_tab_path(id, c) },
+            GroupTabsByKind => |this, _w, _c| { this.scope.tabs.group_by_kind = !this.scope.tabs.group_by_kind; this.session_dirty = true },
+            CloseOtherTabs => |this, _w, _c| if let Some(id) = this.scope.tabs.active_id() { this.scope.tabs.close_others(id); this.session_dirty = true },
+            CloseTabsToRight => |this, _w, _c| if let Some(id) = this.scope.tabs.active_id() { this.scope.tabs.close_to_right(id); this.session_dirty = true },
+            CloseCleanTabs => |this, _w, _c| { this.scope.tabs.close_clean(); this.session_dirty = true },
+            CloseAllTabs => |this, _w, _c| { this.scope.tabs.close_all(); this.session_dirty = true },
+            CopyTabPath => |this, _w, c| if let Some(id) = this.scope.tabs.active_id() { this.copy_tab_path(id, c) },
             ShowParams => |this, _w, _c| this.show_request_tab(0),
             ShowHeaders => |this, _w, _c| this.show_request_tab(1),
             ShowBody => |this, _w, _c| this.show_request_tab(2),
@@ -1270,11 +1323,11 @@ impl Render for Workspace {
             ShowResponseTimeline => |this, _w, _c| this.show_response_tab(3),
             ShowResponseTests => |this, _w, _c| this.show_response_tab(4),
             ShowResponseConsole => |this, _w, _c| this.show_response_tab(5),
-            ToggleMethodMenu => |this, _w, _c| this.method_menu = !this.method_menu,
+            ToggleMethodMenu => |this, _w, _c| this.scope.method_menu = !this.scope.method_menu,
             NewEnvironment => |this, w, c| this.start_new_env(w, c),
-            RenameEnvironment => |this, w, c| if let Some(n) = this.envs.active.clone() { this.start_rename_env(&n, w, c) },
-            DuplicateEnvironment => |this, _w, c| if let Some(n) = this.envs.active.clone() { this.duplicate_env(&n, c) },
-            DeleteEnvironment => |this, _w, c| if let Some(n) = this.envs.active.clone() { this.delete_env(&n, c) },
+            RenameEnvironment => |this, w, c| if let Some(n) = this.scope.envs.active.clone() { this.start_rename_env(&n, w, c) },
+            DuplicateEnvironment => |this, _w, c| if let Some(n) = this.scope.envs.active.clone() { this.duplicate_env(&n, c) },
+            DeleteEnvironment => |this, _w, c| if let Some(n) = this.scope.envs.active.clone() { this.delete_env(&n, c) },
             NewWindow => |_this, _w, c| open_window_at(c, None),
             OpenResultBeside => |this, w, c| this.run_selected(true, w, c),
             OpenKeybindings => |this, _w, _c| this.open_tab("keybindings", "Keybindings", TabKind::Keybindings, true),
@@ -1290,18 +1343,20 @@ impl Render for Workspace {
                 this.open_tab(&format!("docs/{folder}"), &format!("Docs: {folder}"), TabKind::Docs, true)
             },
             OpenEnvironment => |this, _w, _c| {
-                if let Some(name) = this.envs.active.clone() {
+                if let Some(name) = this.scope.envs.active.clone() {
                     this.load_env(&name);
                     this.open_tab(&format!("env/{name}"), &name, TabKind::Environment, true)
                 }
             },
             OpenSync => |this, _w, _c| this.open_tab("sync", "Sync", TabKind::Sync, true),
-            CloseWorkspace => |this, _w, _c| this.close_project(),
-            OpenFolder => |this, w, c| this.open_folder_dialog(false, w, c),
-            NewCollection => |this, w, c| this.open_folder_dialog(true, w, c),
-            NewRequest => |this, w, c| this.start_new(false, false, w, c),
-            NewWebSocketRequest => |this, w, c| this.start_new(true, false, w, c),
-            NewFolder => |this, w, c| this.start_new(false, true, w, c),
+            CloseWorkspace => |this, w, c| this.request_close(crate::dialogs::AfterClose::Welcome, w, c),
+            OpenWorkspace => |this, w, c| this.open_folder_dialog(w, c),
+            NewWorkspace => |this, w, c| this.start_new_workspace(w, c),
+            NewCollection => |this, w, c| this.start_new_collection(None, w, c),
+            AddCollection => |this, w, c| this.start_add_collection(w, c),
+            NewRequest => |this, w, c| this.route_new(false, false, w, c),
+            NewWebSocketRequest => |this, w, c| this.route_new(true, false, w, c),
+            NewFolder => |this, w, c| this.route_new(false, true, w, c),
             RenameItem => |this, w, c| this.start_rename(w, c),
             DuplicateItem => |this, w, c| this.duplicate_selected(w, c),
             DeleteItem => |this, w, c| this.delete_selected(w, c),
@@ -1312,9 +1367,9 @@ impl Render for Workspace {
             Save => |this, _w, c| this.save_active(c),
             Import => |this, _w, _c| this.notice = Some("Import arrives in a later milestone (M11).".into()),
             OpenAsText => |this, _w, c| this.toggle_text_mode(c),
-            Quit => |this, _w, c| { this.save_session_now(); c.quit() },
+            Quit => |this, w, c| this.request_close(crate::dialogs::AfterClose::Quit, w, c),
             Send => |this, w, c| if this.is_ws_tab() { this.ws_send_action(w, c) } else { this.send_or_cancel(c) },
-            CancelRequest => |this, _w, c| if !this.cancel_request(c) { this.method_menu = false },
+            CancelRequest => |this, _w, c| if !this.cancel_request(c) { this.scope.method_menu = false },
             CopyAsCurl => |this, _w, c| this.copy_curl(false, c),
             CopyAsCurlWithSecrets => |this, _w, c| this.copy_curl(true, c),
             FindInResponse => |this, w, _c| w.focus(&this.find_focus),
@@ -1326,6 +1381,7 @@ impl Render for Workspace {
             .child(body)
             .child(self.render_status_bar(&t, cx))
             .children(self.render_modal(&t, cx))
+            .children(self.render_dialog(&t, cx))
             .children(self.render_tree_menu(&t, cx))
             .children(self.render_tab_menu(&t, cx))
             .children(self.render_switcher(&t))
@@ -1342,12 +1398,12 @@ pub fn open_window_at(cx: &mut gpui::App, path: Option<PathBuf>) {
         && let Some(path) = path
     {
         handle
-            .update(cx, |ws, window, cx| ws.open_project(&path, window, cx))
+            .update(cx, |ws, window, cx| ws.open_workspace(&path, window, cx))
             .ok();
     }
 }
 
-pub fn open_window(cx: &mut gpui::App) -> anyhow::Result<gpui::WindowHandle<Workspace>> {
+pub fn open_window(cx: &mut gpui::App) -> anyhow::Result<gpui::WindowHandle<WorkspaceView>> {
     use gpui::{Bounds, TitlebarOptions, WindowBounds, WindowOptions, point, size};
     let bounds = Bounds::centered(None, size(px(1280.), px(800.)), cx);
     let handle = cx.open_window(
@@ -1360,7 +1416,7 @@ pub fn open_window(cx: &mut gpui::App) -> anyhow::Result<gpui::WindowHandle<Work
             }),
             ..Default::default()
         },
-        |window, cx| cx.new(|cx| Workspace::new(window, cx)),
+        |window, cx| cx.new(|cx| WorkspaceView::new(window, cx)),
     )?;
     Ok(handle)
 }
@@ -1392,7 +1448,7 @@ pub fn run() {
                 .filter(|p| p.is_dir())
             {
                 handle
-                    .update(cx, |ws, window, cx| ws.open_project(&path, window, cx))
+                    .update(cx, |ws, window, cx| ws.open_workspace(&path, window, cx))
                     .ok();
             }
             cx.activate(true);

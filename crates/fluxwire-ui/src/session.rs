@@ -18,7 +18,7 @@ use crate::{
     session_log::{DirFilter, SessionLog, detail, fmt_offset, preview},
     theme::Theme,
     ui::row,
-    workspace::Workspace,
+    workspace::WorkspaceView,
 };
 
 /// Which log a handler acts on.
@@ -59,25 +59,28 @@ fn lang_of(l: &str) -> Lang {
     }
 }
 
-impl Workspace {
+impl WorkspaceView {
     // ---- connection state ---------------------------------------------------------------------
 
     pub fn is_ws_tab(&self) -> bool {
-        self.tabs
+        self.scope
+            .tabs
             .active()
             .is_some_and(|t| matches!(t.kind, crate::tabs::TabKind::WebSocket))
     }
 
     /// The upgrade finished and the session is live.
     pub fn ws_connected(&self, tab_id: u64) -> bool {
-        self.responses
+        self.scope
+            .responses
             .get(&tab_id)
             .and_then(|r| r.sending.as_ref())
             .is_some_and(|s| s.phases.iter().any(|p| p.name == "upgrade"))
     }
 
     pub fn ws_connecting(&self, tab_id: u64) -> bool {
-        self.responses
+        self.scope
+            .responses
             .get(&tab_id)
             .is_some_and(|r| r.sending.is_some())
             && !self.ws_connected(tab_id)
@@ -85,11 +88,12 @@ impl Workspace {
 
     /// Connect, or close a live session gracefully, or cancel a connection in progress.
     pub fn ws_toggle(&mut self, cx: &mut Context<Self>) {
-        let Some(id) = self.tabs.active_id() else {
+        let Some(id) = self.scope.tabs.active_id() else {
             return;
         };
         if self.ws_connected(id) {
             if let Some(s) = self
+                .scope
                 .responses
                 .get(&id)
                 .and_then(|r| r.sending.as_ref())
@@ -108,7 +112,7 @@ impl Workspace {
     /// Cmd/Ctrl+Enter on a WebSocket tab: connect, or send the composer text when it has focus
     /// (else the selected saved message).
     pub fn ws_send_action(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(id) = self.tabs.active_id() else {
+        let Some(id) = self.scope.tabs.active_id() else {
             return;
         };
         if !self.ws_connected(id) {
@@ -120,17 +124,22 @@ impl Workspace {
             return;
         }
         if self.composer_focus.is_focused(window)
-            && self.composers.get(&id).is_some_and(|c| !c.text.is_empty())
+            && self
+                .scope
+                .composers
+                .get(&id)
+                .is_some_and(|c| !c.text.is_empty())
         {
             self.ws_send_composer(cx);
         } else {
-            let sel = self.tab_ui.get(&id).map_or(0, |u| u.msg_sel);
+            let sel = self.scope.tab_ui.get(&id).map_or(0, |u| u.msg_sel);
             self.ws_send_saved(sel, cx);
         }
     }
 
     fn ws_session(&self, tab_id: u64) -> Option<fluxwire_runner::SessionHandle> {
-        self.responses
+        self.scope
+            .responses
             .get(&tab_id)?
             .sending
             .as_ref()
@@ -139,7 +148,7 @@ impl Workspace {
 
     /// Interpolate variables at send time and queue the frame.
     fn ws_send_text(&mut self, kind: &str, text: &str, file: Option<&str>, cx: &mut Context<Self>) {
-        let Some(id) = self.tabs.active_id() else {
+        let Some(id) = self.scope.tabs.active_id() else {
             return;
         };
         let Some(session) = self.ws_session(id).filter(|_| self.ws_connected(id)) else {
@@ -176,7 +185,7 @@ impl Workspace {
 
     fn saved_messages(&self) -> Vec<MessageBlock> {
         self.active_key()
-            .and_then(|k| self.project.as_ref().and_then(|p| p.doc(&k)))
+            .and_then(|k| self.scope.workspace.as_ref().and_then(|p| p.doc(&k)))
             .map(|d| d.parsed.messages())
             .unwrap_or_default()
     }
@@ -191,10 +200,15 @@ impl Workspace {
     }
 
     pub fn ws_send_composer(&mut self, cx: &mut Context<Self>) {
-        let Some(id) = self.tabs.active_id() else {
+        let Some(id) = self.scope.tabs.active_id() else {
             return;
         };
-        let Some((text, lang)) = self.composers.get(&id).map(|c| (c.text.clone(), c.lang)) else {
+        let Some((text, lang)) = self
+            .scope
+            .composers
+            .get(&id)
+            .map(|c| (c.text.clone(), c.lang))
+        else {
             return;
         };
         let kind = if lang == "binary" { "binary" } else { "text" };
@@ -203,11 +217,16 @@ impl Workspace {
 
     /// "Save as message": insert a `<lang> message <label>` block with a span insert.
     pub fn ws_save_composer(&mut self, cx: &mut Context<Self>) {
-        let Some(id) = self.tabs.active_id() else {
+        let Some(id) = self.scope.tabs.active_id() else {
             return;
         };
         let Some(key) = self.active_key() else { return };
-        let Some((text, lang)) = self.composers.get(&id).map(|c| (c.text.clone(), c.lang)) else {
+        let Some((text, lang)) = self
+            .scope
+            .composers
+            .get(&id)
+            .map(|c| (c.text.clone(), c.lang))
+        else {
             return;
         };
         if text.trim().is_empty() {
@@ -215,7 +234,7 @@ impl Workspace {
             cx.notify();
             return;
         }
-        let Some(doc) = self.project.as_mut().and_then(|p| p.doc_mut(&key)) else {
+        let Some(doc) = self.scope.workspace.as_mut().and_then(|p| p.doc_mut(&key)) else {
             return;
         };
         let taken: Vec<String> = doc.parsed.messages().into_iter().map(|m| m.label).collect();
@@ -238,11 +257,11 @@ impl Workspace {
     // ---- composer input -----------------------------------------------------------------------
 
     pub fn on_composer_key(&mut self, ev: &gpui::KeyDownEvent, cx: &mut Context<Self>) {
-        let Some(id) = self.tabs.active_id() else {
+        let Some(id) = self.scope.tabs.active_id() else {
             return;
         };
         let clip = cx.read_from_clipboard().and_then(|c| c.text());
-        let c = self.composers.entry(id).or_default();
+        let c = self.scope.composers.entry(id).or_default();
         let mut text = std::mem::take(&mut c.text);
         let out = c.state.handle_key(&mut text, ev, clip.as_deref());
         c.text = text;
@@ -252,11 +271,11 @@ impl Workspace {
     }
 
     fn ws_edit_saved(&mut self, idx: usize, cx: &mut Context<Self>) {
-        let Some(id) = self.tabs.active_id() else {
+        let Some(id) = self.scope.tabs.active_id() else {
             return;
         };
         if let Some(m) = self.saved_messages().into_iter().nth(idx) {
-            let c = self.composers.entry(id).or_default();
+            let c = self.scope.composers.entry(id).or_default();
             c.text = m.text;
             c.state = EditorState::default();
             c.lang = match m.language.as_str() {
@@ -265,7 +284,7 @@ impl Workspace {
                 "binary" => "text",
                 _ => "json",
             };
-            if let Some(ui) = self.tab_ui.get_mut(&id) {
+            if let Some(ui) = self.scope.tab_ui.get_mut(&id) {
                 ui.msg_sel = idx;
             }
             cx.notify();
@@ -276,15 +295,15 @@ impl Workspace {
 
     pub fn log_ref(&self, which: LogRef) -> Option<&SessionLog> {
         match which {
-            LogRef::Live(id) => self.responses.get(&id).map(|r| &r.log),
-            LogRef::History(id) => self.history_logs.get(&id),
+            LogRef::Live(id) => self.scope.responses.get(&id).map(|r| &r.log),
+            LogRef::History(id) => self.scope.history_logs.get(&id),
         }
     }
 
     pub fn log_mut(&mut self, which: LogRef) -> Option<&mut SessionLog> {
         match which {
-            LogRef::Live(id) => self.responses.get_mut(&id).map(|r| &mut r.log),
-            LogRef::History(id) => self.history_logs.get_mut(&id),
+            LogRef::Live(id) => self.scope.responses.get_mut(&id).map(|r| &mut r.log),
+            LogRef::History(id) => self.scope.history_logs.get_mut(&id),
         }
     }
 
@@ -415,12 +434,12 @@ impl Workspace {
                 .collect()
         };
 
-        let composer = self.composers.get(&tab_id);
+        let composer = self.scope.composers.get(&tab_id);
         let (text, cursor, lang) = composer.map_or((String::new(), 0, "json"), |c| {
             (c.text.clone(), c.state.cursor, c.lang)
         });
         let spans = highlight(&text, lang_of(lang));
-        let focused = self.composer_active;
+        let focused = self.scope.composer_active;
         let editor = editor_content(
             &text,
             &spans,
@@ -462,8 +481,8 @@ impl Workspace {
                             })
                             .child(l)
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                if let Some(id) = this.tabs.active_id() {
-                                    this.composers.entry(id).or_default().lang = l;
+                                if let Some(id) = this.scope.tabs.active_id() {
+                                    this.scope.composers.entry(id).or_default().lang = l;
                                 }
                                 cx.notify();
                             }))
@@ -497,10 +516,10 @@ impl Workspace {
                         MouseButton::Left,
                         cx.listener(|this, ev: &MouseDownEvent, w, cx| {
                             w.focus(&this.composer_focus);
-                            this.composer_active = true;
-                            if let Some(id) = this.tabs.active_id() {
+                            this.scope.composer_active = true;
+                            if let Some(id) = this.scope.tabs.active_id() {
                                 let bounds = this.composer_bounds.get();
-                                let c = this.composers.entry(id).or_default();
+                                let c = this.scope.composers.entry(id).or_default();
                                 c.state.cursor =
                                     EditorState::offset_for_click(&c.text, bounds, ev.position);
                             }
@@ -574,11 +593,12 @@ impl Workspace {
             .font_family(BUFFER_FONT)
             .text_size(px(12.))
             .overflow_hidden()
-            .child(if log.filter.text().is_empty() {
-                div().text_color(t.text_placeholder).child("Filter text")
-            } else {
-                div().child(log.filter.text().to_string())
-            });
+            .child(crate::ui::field_text(
+                &log.filter,
+                "Filter text",
+                t,
+                self.is_focused(&self.log_focus),
+            ));
         let toolbar = row()
             .flex_none()
             .h(px(30.))
@@ -641,72 +661,74 @@ impl Workspace {
         let list = uniform_list(
             "session-log",
             n,
-            cx.processor(move |this: &mut Workspace, range: Range<usize>, _w, cx| {
-                let t = crate::theme::theme(cx).clone();
-                let Some(log) = this.log_ref(which) else {
-                    return Vec::new();
-                };
-                range
-                    .filter_map(|ix| log.visible_entry(ix))
-                    .map(|e| {
-                        let f: &Frame = &e.frame;
-                        let id = e.id;
-                        let on = log.selected == Some(id);
-                        let kind_color = match f.kind.as_str() {
-                            "close" => t.deleted,
-                            "ping" | "pong" => t.text_placeholder,
-                            _ => t.text_muted,
-                        };
-                        row()
-                            .id(("frame", id as usize))
-                            .h(px(ROW_H))
-                            .px_3()
-                            .gap_3()
-                            .cursor_pointer()
-                            .when(on, |d| d.bg(t.element_selected))
-                            .hover({
-                                let h = t.element_hover;
-                                move |s| s.bg(h)
-                            })
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                if let Some(l) = this.log_mut(which) {
-                                    l.selected = if l.selected == Some(id) {
-                                        None
-                                    } else {
-                                        Some(id)
-                                    };
-                                }
-                                cx.notify();
-                            }))
-                            .child(
-                                div()
-                                    .w(px(14.))
-                                    .text_color(if f.outbound { t.accent } else { t.created })
-                                    .child(if f.outbound { "↑" } else { "↓" }),
-                            )
-                            .child(
-                                div()
-                                    .w(px(80.))
-                                    .text_color(t.text_placeholder)
-                                    .child(fmt_offset(f.ts_ms)),
-                            )
-                            .child(
-                                div()
-                                    .w(px(52.))
-                                    .text_color(kind_color)
-                                    .child(f.kind.clone()),
-                            )
-                            .child(
-                                div()
-                                    .w(px(64.))
-                                    .text_color(t.text_placeholder)
-                                    .child(crate::response::fmt_size(f.size() as u64)),
-                            )
-                            .child(div().flex_1().truncate().child(preview(f)))
-                            .into_any_element()
-                    })
-                    .collect::<Vec<_>>()
-            }),
+            cx.processor(
+                move |this: &mut WorkspaceView, range: Range<usize>, _w, cx| {
+                    let t = crate::theme::theme(cx).clone();
+                    let Some(log) = this.log_ref(which) else {
+                        return Vec::new();
+                    };
+                    range
+                        .filter_map(|ix| log.visible_entry(ix))
+                        .map(|e| {
+                            let f: &Frame = &e.frame;
+                            let id = e.id;
+                            let on = log.selected == Some(id);
+                            let kind_color = match f.kind.as_str() {
+                                "close" => t.deleted,
+                                "ping" | "pong" => t.text_placeholder,
+                                _ => t.text_muted,
+                            };
+                            row()
+                                .id(("frame", id as usize))
+                                .h(px(ROW_H))
+                                .px_3()
+                                .gap_3()
+                                .cursor_pointer()
+                                .when(on, |d| d.bg(t.element_selected))
+                                .hover({
+                                    let h = t.element_hover;
+                                    move |s| s.bg(h)
+                                })
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if let Some(l) = this.log_mut(which) {
+                                        l.selected = if l.selected == Some(id) {
+                                            None
+                                        } else {
+                                            Some(id)
+                                        };
+                                    }
+                                    cx.notify();
+                                }))
+                                .child(
+                                    div()
+                                        .w(px(14.))
+                                        .text_color(if f.outbound { t.accent } else { t.created })
+                                        .child(if f.outbound { "↑" } else { "↓" }),
+                                )
+                                .child(
+                                    div()
+                                        .w(px(80.))
+                                        .text_color(t.text_placeholder)
+                                        .child(fmt_offset(f.ts_ms)),
+                                )
+                                .child(
+                                    div()
+                                        .w(px(52.))
+                                        .text_color(kind_color)
+                                        .child(f.kind.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .w(px(64.))
+                                        .text_color(t.text_placeholder)
+                                        .child(crate::response::fmt_size(f.size() as u64)),
+                                )
+                                .child(div().flex_1().truncate().child(preview(f)))
+                                .into_any_element()
+                        })
+                        .collect::<Vec<_>>()
+                },
+            ),
         )
         .track_scroll(log.scroll.clone())
         .flex_1()
@@ -757,16 +779,17 @@ impl Workspace {
 
     /// Session log of a History entry, built on first view.
     pub(crate) fn ensure_history_log(&mut self, id: i64, outcome_frames: Vec<Frame>) {
-        self.history_logs
+        self.scope
+            .history_logs
             .entry(id)
             .or_insert_with(|| SessionLog::from_frames(&outcome_frames));
     }
 }
 
-impl Workspace {
+impl WorkspaceView {
     /// Status line above the live log: state, URL, and any error with its fix.
     pub(crate) fn ws_status_line(&self, t: &Theme, tab_id: u64) -> AnyElement {
-        let r = self.responses.get(&tab_id);
+        let r = self.scope.responses.get(&tab_id);
         let (text, color) = if self.ws_connected(tab_id) {
             ("● Connected".to_string(), t.created)
         } else if self.ws_connecting(tab_id) {

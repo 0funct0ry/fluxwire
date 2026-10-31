@@ -6,7 +6,7 @@ Status: accepted (M6)
 
 `fluxwire-search` wraps `nucleo-matcher` in a small in-memory `Index` of `Item { id, kind, label, detail, extra, tags }`. One haystack string per item (`label detail extra`) is scored with a smart-case fuzzy pattern; the top results get a second pass that computes label match indices for highlighting. Recency is a rank map (most recent first) added as a bounded score boost, and an empty query lists recent items first.
 
-The UI never rebuilds the index from scratch. `Project` caches a row per file (URL, front matter `tags`, headings) when it parses the file for diagnostics, and after a file-system change re-parses only the changed files and files not seen before (`rescan_incremental`). `Index::sync` then diffs the wanted items against the stored ones and touches only the delta. Measured with `cargo bench -p fluxwire-search`: 0.5–3 ms per query at 5,000 requests (budget 16 ms).
+The UI never rebuilds the index from scratch. `Workspace` caches a row per file (URL, front matter `tags`, headings) when it parses the file for diagnostics, and after a file-system change re-parses only the changed files and files not seen before (`rescan_incremental`). `Index::sync` then diffs the wanted items against the stored ones and touches only the delta. Measured with `cargo bench -p fluxwire-search`: 0.5–3 ms per query at 5,000 requests (budget 16 ms).
 
 Quick search prefixes: `>` actions, `@` environments, `#` tags, `/` folders, `!` history. Palette = quick search with a forced `>`.
 

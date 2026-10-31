@@ -11,11 +11,11 @@ use crate::{
     assets::BUFFER_FONT,
     editor::{Lang, code_view, editor_content},
     highlight::{Spans, highlight},
-    project::{OpenDoc, Target},
     tabs::{Tab, TabKind},
     theme::Theme,
     ui::{icon, kbd_label, row, url_runs, with_variables},
-    workspace::{BottomTab, Col, METHODS, TabUi, Table, Workspace},
+    workspace::{BottomTab, Col, METHODS, TabUi, Table, WorkspaceView},
+    workspace_model::{OpenDoc, Target},
 };
 
 /// Group key of the tab at `i` for kind-grouping dividers: pinned tabs form their own group.
@@ -69,10 +69,13 @@ pub(crate) fn button(
         .child(label)
 }
 
-impl Workspace {
+impl WorkspaceView {
     pub(crate) fn render_center(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let tab = self.tabs.active().cloned();
-        let ui = tab.as_ref().and_then(|t| self.tab_ui.get(&t.id)).cloned();
+        let tab = self.scope.tabs.active().cloned();
+        let ui = tab
+            .as_ref()
+            .and_then(|t| self.scope.tab_ui.get(&t.id))
+            .cloned();
         let content = match (&tab, &ui) {
             (Some(tab), Some(ui)) => match &tab.kind {
                 TabKind::Http { .. } => self.render_request(t, tab, ui, cx).into_any_element(),
@@ -93,11 +96,21 @@ impl Workspace {
             .flex_col()
             .child(self.render_tab_bar(t, cx))
             .child(div().flex_1().min_h_0().flex().flex_col().child(content))
-            .when(self.bottom_open, |d| d.child(self.render_bottom(t, cx)))
+            .when(self.scope.bottom_open, |d| {
+                d.child(self.render_bottom(t, cx))
+            })
     }
 
-    fn render_empty(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let has_project = self.project.is_some();
+    fn render_empty(&self, t: &Theme, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let has_workspace = self.scope.workspace.is_some();
+        if self
+            .scope
+            .workspace
+            .as_ref()
+            .is_some_and(|w| w.collections.is_empty())
+        {
+            return self.render_workspace_empty(t, cx).into_any_element();
+        }
         // (icon, label, palette action label, shown only with a workspace)
         let rows: [(&str, &str, &str, bool); 5] = [
             ("plus", "New request", "workspace: new request", true),
@@ -113,12 +126,7 @@ impl Workspace {
                 "command palette: open",
                 false,
             ),
-            (
-                "folder-open",
-                "Open folder",
-                "workspace: open folder",
-                false,
-            ),
+            ("folder-open", "Open workspace", "workspace: open…", false),
             (
                 "columns-2",
                 "Toggle sidebar",
@@ -165,8 +173,8 @@ impl Workspace {
             )
             .child(div().w(px(340.)).flex().flex_col().gap(px(2.)).children(
                 rows.into_iter().enumerate().filter_map(
-                    |(i, (glyph, label, action, needs_project))| {
-                        if needs_project && !has_project {
+                    |(i, (glyph, label, action, needs_workspace))| {
+                        if needs_workspace && !has_workspace {
                             return None;
                         }
                         let ix = ACTIONS.iter().position(|a| a.label == action)?;
@@ -204,11 +212,18 @@ impl Workspace {
                     },
                 ),
             ))
+            .into_any_element()
     }
 
     fn render_tab_bar(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let active = self.tabs.active_id();
-        let tabs: Vec<Tab> = self.tabs.display_order().into_iter().cloned().collect();
+        let active = self.scope.tabs.active_id();
+        let tabs: Vec<Tab> = self
+            .scope
+            .tabs
+            .display_order()
+            .into_iter()
+            .cloned()
+            .collect();
         let order: Vec<(bool, u8)> = tabs
             .iter()
             .map(|t| (t.pinned, t.kind.group_order()))
@@ -223,7 +238,7 @@ impl Workspace {
                 let id = tab.id;
                 let is_active = active == Some(id);
                 // With grouping on, a heavier divider marks where the kind changes.
-                let group_start = self.tabs.group_by_kind
+                let group_start = self.scope.tabs.group_by_kind
                     && n > 0
                     && group_of(&order, n) != group_of(&order, n - 1);
                 let color = t.method_color(tab.kind.color_key());
@@ -254,16 +269,16 @@ impl Workspace {
                             .hover(move |s| s.bg(hover))
                     })
                     .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, _, cx| {
-                        this.tabs.activate(id);
+                        this.scope.tabs.activate(id);
                         if ev.click_count() >= 2 {
-                            this.tabs.make_permanent(id);
+                            this.scope.tabs.make_permanent(id);
                         }
                         cx.notify();
                     }))
                     .on_mouse_down(
                         MouseButton::Right,
                         cx.listener(move |this, ev: &gpui::MouseDownEvent, _, cx| {
-                            this.tab_menu = Some((id, ev.position));
+                            this.scope.tab_menu = Some((id, ev.position));
                             cx.notify();
                         }),
                     )
@@ -293,7 +308,7 @@ impl Workspace {
                                 move |st| st.bg(s)
                             })
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                this.tabs.close(id);
+                                this.scope.tabs.close(id);
                                 cx.stop_propagation();
                                 cx.notify();
                             }))
@@ -402,7 +417,7 @@ impl Workspace {
                 .shadow_lg()
                 .occlude()
                 .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                    this.method_menu = false;
+                    this.scope.method_menu = false;
                     cx.notify();
                 }))
                 .children(METHODS.iter().enumerate().map(|(i, m)| {
@@ -421,12 +436,12 @@ impl Workspace {
                         .when(i == selected, |d| d.bg(t.element_selected))
                         .hover(move |s| s.bg(hover))
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            this.method_menu = false;
+                            this.scope.method_menu = false;
                             if let Some(ui) = this.active_ui() {
                                 ui.method = i;
                             }
-                            if let Some(id) = this.tabs.active_id() {
-                                this.tabs.set_dirty(id, true);
+                            if let Some(id) = this.scope.tabs.active_id() {
+                                this.scope.tabs.set_dirty(id, true);
                             }
                             cx.notify();
                         }))
@@ -467,20 +482,24 @@ impl Workspace {
                             .gap_1()
                             .rounded(px(4.))
                             .border_1()
-                            .border_color(if self.method_menu { t.accent } else { t.border })
+                            .border_color(if self.scope.method_menu {
+                                t.accent
+                            } else {
+                                t.border
+                            })
                             .bg(t.surface)
                             .cursor_pointer()
                             .font_family(BUFFER_FONT)
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(t.method_color(&method_label))
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.method_menu = !this.method_menu;
+                                this.scope.method_menu = !this.scope.method_menu;
                                 cx.notify();
                             }))
                             .child(method_label)
                             .child(icon("chevron-down", 12., t.text_muted)),
                     )
-                    .when(self.method_menu, |d| {
+                    .when(self.scope.method_menu, |d| {
                         d.child(self.method_menu_view(t, ui.method, cx))
                     }),
             )
@@ -500,11 +519,15 @@ impl Workspace {
                     }))
                     .on_mouse_up(
                         MouseButton::Left,
-                        cx.listener(|this, _: &gpui::MouseUpEvent, _, _| this.url_drag = false),
+                        cx.listener(|this, _: &gpui::MouseUpEvent, _, _| {
+                            this.scope.url_drag = false
+                        }),
                     )
                     .on_mouse_up_out(
                         MouseButton::Left,
-                        cx.listener(|this, _: &gpui::MouseUpEvent, _, _| this.url_drag = false),
+                        cx.listener(|this, _: &gpui::MouseUpEvent, _, _| {
+                            this.scope.url_drag = false
+                        }),
                     )
                     .cursor_text()
                     .flex_1()
@@ -524,17 +547,30 @@ impl Workspace {
                     .child({
                         let cell = self.url_bounds.clone();
                         let sel = self
+                            .scope
                             .url_sel
                             .map(|(a, b)| (a.min(url_len), b.min(url_len)))
                             .filter(|(a, b)| a != b);
                         div()
                             .relative()
+                            .min_h(px(18.))
                             .flex()
                             .flex_row()
                             .items_center()
                             .children(url_runs(url, sel, t, Some(&look)))
                             .when(sel.is_none(), |d| {
-                                d.child(div().w(px(1.)).h(px(15.)).bg(t.accent))
+                                let at =
+                                    self.scope.url_sel.map_or(url_len, |(a, _)| a.min(url_len));
+                                let cw = crate::ops::url_char_width(cx.text_system());
+                                d.child(
+                                    div()
+                                        .absolute()
+                                        .top_0()
+                                        .h_full()
+                                        .left(px(cw * at as f32))
+                                        .w(px(1.))
+                                        .bg(t.accent),
+                                )
                             })
                             .child(
                                 gpui::canvas(move |b, _, _| cell.set(b), |_, _, _, _| {})
@@ -593,7 +629,9 @@ impl Workspace {
                 .into_any_element(),
             );
         }
-        if self.trust_prompt.is_some() && self.trust_prompt == self.tabs.active_id() {
+        if self.scope.trust_prompt.is_some()
+            && self.scope.trust_prompt == self.scope.tabs.active_id()
+        {
             out.push(
                 self.banner(
                     t,
@@ -609,7 +647,7 @@ impl Workspace {
                 .child(
                     button(t, "trust-no", "Not now", false).on_click(cx.listener(
                         |this, _, _, cx| {
-                            this.trust_prompt = None;
+                            this.scope.trust_prompt = None;
                             cx.notify();
                         },
                     )),
@@ -679,7 +717,7 @@ impl Workspace {
         let content = editor_content(
             &text,
             &spans,
-            (self.target == target).then_some(cursor),
+            (self.scope.target == target).then_some(cursor),
             Some(self.editor_bounds.clone()),
             t,
         );
@@ -695,7 +733,7 @@ impl Workspace {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, ev: &MouseDownEvent, w, cx| {
-                    this.target = target;
+                    this.scope.target = target;
                     w.focus(&this.editor_focus);
                     this.click_editor(ev.position, cx);
                 }),
@@ -715,7 +753,7 @@ impl Workspace {
         ui: &TabUi,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let Some(doc) = self.project.as_ref().and_then(|p| p.doc(&tab.key)) else {
+        let Some(doc) = self.scope.workspace.as_ref().and_then(|p| p.doc(&tab.key)) else {
             return self.render_empty(t, cx).into_any_element();
         };
         let key = tab.key.clone();
@@ -800,7 +838,7 @@ impl Workspace {
                 );
         }
         let response = self.render_response(t, ui, cx);
-        let vertical = self.split_vertical;
+        let vertical = self.scope.split_vertical;
         div()
             .flex_1()
             .min_h_0()
@@ -835,6 +873,7 @@ impl Workspace {
         let look = self.var_look(key);
         let rows = self.table_rows(key, table);
         let editing = self
+            .scope
             .cell
             .as_ref()
             .filter(|c| c.table == table && c.key == key)
@@ -1251,7 +1290,7 @@ impl Workspace {
         ui: &TabUi,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let Some(doc) = self.project.as_ref().and_then(|p| p.doc(&tab.key)) else {
+        let Some(doc) = self.scope.workspace.as_ref().and_then(|p| p.doc(&tab.key)) else {
             return self.render_empty(t, cx).into_any_element();
         };
         let key = tab.key.clone();
@@ -1446,7 +1485,7 @@ impl Workspace {
             (BottomTab::Console, "Console"),
             (BottomTab::Problems, "Problems"),
         ];
-        let body: AnyElement = match self.bottom_tab {
+        let body: AnyElement = match self.scope.bottom_tab {
             BottomTab::Console => self.console_view(t),
             BottomTab::Problems => {
                 let problems = self.all_problems();
@@ -1507,7 +1546,7 @@ impl Workspace {
             }
         };
         div()
-            .h(px(self.bottom_height))
+            .h(px(self.scope.bottom_height))
             .flex_none()
             .flex()
             .flex_col()
@@ -1541,14 +1580,14 @@ impl Workspace {
                     .border_b_1()
                     .border_color(t.border_variant)
                     .children(tabs.map(|(b, label)| {
-                        let on = self.bottom_tab == b;
+                        let on = self.scope.bottom_tab == b;
                         div()
                             .id(label)
                             .cursor_pointer()
                             .text_size(px(12.))
                             .text_color(if on { t.text } else { t.text_muted })
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                this.bottom_tab = b;
+                                this.scope.bottom_tab = b;
                                 this.session_dirty = true;
                                 cx.notify();
                             }))

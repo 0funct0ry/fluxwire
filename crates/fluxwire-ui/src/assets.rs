@@ -34,6 +34,7 @@ const FILES: &[(&str, &[u8])] = embed![
     "icons/ellipsis-vertical.svg",
     "icons/folder-plus.svg",
     "icons/file-plus.svg",
+    "icons/logo.svg",
 ];
 
 pub const THEME_ONE_DARK: &str = include_str!("../assets/themes/one-dark.json");

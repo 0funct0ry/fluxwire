@@ -22,7 +22,7 @@ use gpui::{Context, Window};
 
 use crate::{
     ui::TextEdit,
-    workspace::{ModalKind, PromptPurpose, Workspace},
+    workspace::{ModalKind, PromptPurpose, WorkspaceView},
 };
 
 /// How long a revealed secret stays visible (SPEC §8.3).
@@ -160,11 +160,11 @@ fn hash(s: &str) -> u64 {
     })
 }
 
-impl Workspace {
+impl WorkspaceView {
     /// Root of the collection whose environments the picker shows: the active request's
     /// collection, else the first one.
     pub fn env_root(&self) -> Option<PathBuf> {
-        let p = self.project.as_ref()?;
+        let p = self.scope.workspace.as_ref()?;
         if let Some(key) = self.active_key() {
             let abs = p.abs_of(&key);
             if let Some(c) = p
@@ -183,7 +183,7 @@ impl Workspace {
         let Some(root) = self.env_root() else {
             return Vec::new();
         };
-        let mut cache = self.envs.names_cache.borrow_mut();
+        let mut cache = self.scope.envs.names_cache.borrow_mut();
         if let Some((r, n)) = &*cache
             && *r == root
         {
@@ -196,7 +196,8 @@ impl Workspace {
 
     /// Name shown in the title bar.
     pub fn env_label(&self) -> String {
-        self.envs
+        self.scope
+            .envs
             .active
             .clone()
             .unwrap_or_else(|| "No environment".into())
@@ -204,8 +205,8 @@ impl Workspace {
 
     /// Pick the active environment (`None` clears it). Remembered in the session.
     pub fn set_active_env(&mut self, name: Option<String>, cx: &mut Context<Self>) {
-        self.envs.active = name;
-        self.envs.invalidate();
+        self.scope.envs.active = name;
+        self.scope.envs.invalidate();
         self.session_dirty = true;
         cx.notify();
     }
@@ -213,16 +214,17 @@ impl Workspace {
     /// After opening a workspace: keep the remembered environment if it still exists, else
     /// fall back to the first one.
     pub fn init_active_env(&mut self, remembered: Option<String>) {
-        self.envs.invalidate();
-        self.envs.loaded.clear();
+        self.scope.envs.invalidate();
+        self.scope.envs.loaded.clear();
         let names = self.env_names();
-        self.envs.active = remembered
+        self.scope.envs.active = remembered
             .filter(|n| names.contains(n))
             .or_else(|| names.first().cloned());
     }
 
     fn secret_names(&self, root: &Path) -> Vec<String> {
-        self.project
+        self.scope
+            .workspace
             .as_ref()
             .and_then(|p| p.collections.iter().find(|c| c.root == root))
             .map(|c| c.collection.config.secrets.names.clone())
@@ -231,10 +233,11 @@ impl Workspace {
 
     /// Cookie jar and token cache for the active environment of `root`.
     pub fn env_state(&mut self, root: &Path) -> Option<EnvState> {
-        let name = self.envs.active.clone()?;
-        let persist = self.envs.persist_enabled();
+        let name = self.scope.envs.active.clone()?;
+        let persist = self.scope.envs.persist_enabled();
         let dir = self.state_dir.clone();
         let st = self
+            .scope
             .envs
             .states
             .entry((root.to_path_buf(), name.clone()))
@@ -254,13 +257,19 @@ impl Workspace {
 
     /// Write the jar of the active environment when `persist_cookies` is on.
     pub fn persist_cookies(&self, root: &Path) {
-        let (Some(name), Some(dir)) = (self.envs.active.clone(), self.state_dir.clone()) else {
+        let (Some(name), Some(dir)) = (self.scope.envs.active.clone(), self.state_dir.clone())
+        else {
             return;
         };
-        if !self.envs.persist_enabled() {
+        if !self.scope.envs.persist_enabled() {
             return;
         }
-        if let Some(st) = self.envs.states.get(&(root.to_path_buf(), name.clone())) {
+        if let Some(st) = self
+            .scope
+            .envs
+            .states
+            .get(&(root.to_path_buf(), name.clone()))
+        {
             let f = cookie_file(&dir, root, &name);
             if let Some(p) = f.parent() {
                 let _ = std::fs::create_dir_all(p);
@@ -271,7 +280,7 @@ impl Workspace {
 
     /// Root of the collection that contains `key`.
     pub fn collection_root_of(&self, key: &str) -> Option<PathBuf> {
-        let p = self.project.as_ref()?;
+        let p = self.scope.workspace.as_ref()?;
         let abs = p.abs_of(key);
         p.collections
             .iter()
@@ -281,11 +290,12 @@ impl Workspace {
     }
 
     fn make_scope(&self, key: &str) -> Option<VarScope> {
-        let p = self.project.as_ref()?;
+        let p = self.scope.workspace.as_ref()?;
         let doc = p.doc(key)?;
         let root = self.collection_root_of(key)?;
         let abs = p.abs_of(key);
         let globals: Vec<(String, String)> = self
+            .scope
             .envs
             .settings
             .globals
@@ -296,30 +306,72 @@ impl Workspace {
             collection_root: &root,
             file: &abs,
             doc: &doc.parsed,
-            env: self.envs.active.as_deref(),
-            runtime: &self.envs.runtime,
+            env: self.scope.envs.active.as_deref(),
+            runtime: &self.scope.envs.runtime,
             globals: &globals,
-            allow_process_env: self.envs.settings.allow_process_env,
+            allow_process_env: self.scope.envs.settings.allow_process_env,
         }))
+    }
+
+    /// URL a new request in `dir` starts with: `{{baseUrl}}/` (`wss://{{host}}/` for WebSocket)
+    /// only when that variable is defined for the active environment, otherwise empty.
+    pub fn default_url_for(&self, dir: &Path, websocket: bool) -> String {
+        let var = if websocket { "host" } else { "baseUrl" };
+        let Some(ws) = self.scope.workspace.as_ref() else {
+            return String::new();
+        };
+        let Some(root) = ws
+            .collections
+            .iter()
+            .filter(|c| dir.starts_with(&c.root))
+            .max_by_key(|c| c.root.components().count())
+            .map(|c| c.root.clone())
+        else {
+            return String::new();
+        };
+        let probe = dir.join("new.flux.md");
+        let doc = fluxwire_format::parse(&fluxwire_format::new_request("x", "", "GET", ""));
+        let globals: Vec<(String, String)> = self
+            .scope
+            .envs
+            .settings
+            .globals
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let scope = build_scope(&ScopeInputs {
+            collection_root: &root,
+            file: &probe,
+            doc: &doc,
+            env: self.scope.envs.active.as_deref(),
+            runtime: &self.scope.envs.runtime,
+            globals: &globals,
+            allow_process_env: self.scope.envs.settings.allow_process_env,
+        });
+        if scope.var(var).is_some() {
+            fluxwire_format::default_request_url(websocket).to_string()
+        } else {
+            String::new()
+        }
     }
 
     /// The variable scope for `key`, cached until something it depends on changes.
     pub fn scope_for(&self, key: &str) -> Option<Rc<VarScope>> {
-        let doc = self.project.as_ref()?.doc(key)?;
+        let doc = self.scope.workspace.as_ref()?.doc(key)?;
         let vars_sig = format!("{:?}", doc.parsed.front.get("vars").map(|e| &e.value));
         let ck: CacheKey = (
             key.to_string(),
-            self.envs.active.clone(),
-            self.envs.generation,
+            self.scope.envs.active.clone(),
+            self.scope.envs.generation,
             vars_sig,
         );
-        if let Some((k, s)) = &*self.envs.scope_cache.borrow()
+        if let Some((k, s)) = &*self.scope.envs.scope_cache.borrow()
             && *k == ck
         {
             return Some(s.clone());
         }
         let s = Rc::new(self.make_scope(key)?);
-        *self.envs.scope_cache.borrow_mut() = Some((ck, s.clone()));
+        *self.scope.envs.scope_cache.borrow_mut() = Some((ck, s.clone()));
         Some(s)
     }
 
@@ -359,7 +411,7 @@ impl Workspace {
             },
             _ => match scope.var(name) {
                 Some(v) => {
-                    let shown = if v.secret && !self.envs.is_revealed(name) {
+                    let shown = if v.secret && !self.scope.envs.is_revealed(name) {
                         "••••••••  (secret)".to_string()
                     } else {
                         v.value.clone()
@@ -373,7 +425,8 @@ impl Workspace {
                     resolved: false,
                     tip: format!(
                         "{{{{{name}}}}} is not defined{}",
-                        self.envs
+                        self.scope
+                            .envs
                             .active
                             .as_ref()
                             .map(|e| format!(" in {e} or its parents"))
@@ -427,7 +480,7 @@ impl Workspace {
             v.truncate(8);
             (!v.is_empty()).then_some(v)
         });
-        self.envs.completion = names.map(|names| Completion {
+        self.scope.envs.completion = names.map(|names| Completion {
             target,
             names,
             selected: 0,
@@ -441,16 +494,22 @@ impl Workspace {
         target: CompleteTarget,
         text: &str,
     ) -> CompleteKey {
-        let Some(c) = self.envs.completion.as_mut().filter(|c| c.target == target) else {
+        let Some(c) = self
+            .scope
+            .envs
+            .completion
+            .as_mut()
+            .filter(|c| c.target == target)
+        else {
             return CompleteKey::Pass;
         };
         match ev.keystroke.key.as_str() {
             "down" => c.selected = (c.selected + 1).min(c.names.len() - 1),
             "up" => c.selected = c.selected.saturating_sub(1),
-            "escape" => self.envs.completion = None,
+            "escape" => self.scope.envs.completion = None,
             "tab" | "enter" => {
                 let name = c.names[c.selected].clone();
-                self.envs.completion = None;
+                self.scope.envs.completion = None;
                 return CompleteKey::Accept(complete_text(text, &name));
             }
             _ => return CompleteKey::Pass,
@@ -465,12 +524,13 @@ impl Workspace {
         name: &str,
         cx: &mut Context<Self>,
     ) {
-        self.envs.completion = None;
+        self.scope.envs.completion = None;
         match target {
             CompleteTarget::Url => {
                 let Some(key) = self.active_key() else { return };
                 let cur = self
-                    .project
+                    .scope
+                    .workspace
                     .as_ref()
                     .and_then(|p| p.doc(&key))
                     .and_then(|d| d.parsed.request().map(|r| r.target.clone()))
@@ -478,7 +538,7 @@ impl Workspace {
                 self.set_url_text(&key, &complete_text(&cur, name), cx);
             }
             CompleteTarget::Cell => {
-                if let Some(c) = self.cell.as_mut() {
+                if let Some(c) = self.scope.cell.as_mut() {
                     c.text = complete_text(&c.text, name);
                     self.apply_cell_text(cx);
                 }
@@ -487,13 +547,13 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Project diagnostics plus a warning per unresolved variable in each open request.
-    pub fn all_problems(&self) -> Vec<crate::project::Problem> {
-        let Some(p) = self.project.as_ref() else {
+    /// Workspace diagnostics plus a warning per unresolved variable in each open request.
+    pub fn all_problems(&self) -> Vec<crate::workspace_model::Problem> {
+        let Some(p) = self.scope.workspace.as_ref() else {
             return Vec::new();
         };
         let mut out = p.problems();
-        for t in self.tabs.all() {
+        for t in self.scope.tabs.all() {
             if !matches!(t.kind, crate::tabs::TabKind::Http { .. }) {
                 continue;
             }
@@ -504,7 +564,7 @@ impl Workspace {
                 let before = &doc.text[..start];
                 let line = before.matches('\n').count() + 1;
                 let col = before.rsplit('\n').next().map_or(0, |l| l.chars().count()) + 1;
-                out.push(crate::project::Problem {
+                out.push(crate::workspace_model::Problem {
                     key: t.key.clone(),
                     file: t.key.clone(),
                     line,
@@ -517,8 +577,13 @@ impl Workspace {
             }
         }
         // Script failures of each open request's latest send (S001…), at their `.flux.md` line.
-        for t in self.tabs.all() {
-            let Some(res) = self.responses.get(&t.id).and_then(|r| r.result.as_ref()) else {
+        for t in self.scope.tabs.all() {
+            let Some(res) = self
+                .scope
+                .responses
+                .get(&t.id)
+                .and_then(|r| r.result.as_ref())
+            else {
                 continue;
             };
             let Some(doc) = p.doc(&t.key) else { continue };
@@ -543,7 +608,7 @@ impl Workspace {
                 } else {
                     (0, 0, e.line.max(1) as usize)
                 };
-                out.push(crate::project::Problem {
+                out.push(crate::workspace_model::Problem {
                     key: if own { t.key.clone() } else { e.file.clone() },
                     file: e.file.clone(),
                     line,
@@ -556,7 +621,7 @@ impl Workspace {
             }
         }
         for i in &self.keymap_issues {
-            out.push(crate::project::Problem {
+            out.push(crate::workspace_model::Problem {
                 key: "keymap.toml".into(),
                 file: "keymap.toml".into(),
                 line: i.line.max(1),
@@ -581,7 +646,7 @@ impl Workspace {
     /// Unresolved variables in the request as currently edited.
     pub fn unresolved_in(&self, key: &str) -> Vec<String> {
         let (Some(doc), Some(scope)) = (
-            self.project.as_ref().and_then(|p| p.doc(key)),
+            self.scope.workspace.as_ref().and_then(|p| p.doc(key)),
             self.scope_for(key),
         ) else {
             return Vec::new();
@@ -627,15 +692,16 @@ impl Workspace {
         let Some(root) = self.env_root() else { return };
         let secrets = self.secret_names(&root);
         let env = load_environment(&root, name, &secrets);
-        self.envs
+        self.scope
+            .envs
             .tracked
             .insert(name.to_string(), local_env_is_tracked(&root, name));
-        self.envs.loaded.insert(name.to_string(), env);
+        self.scope.envs.loaded.insert(name.to_string(), env);
     }
 
     /// Variables of `name` for the panel, from the loaded rows or straight from disk.
     pub fn env_var_views(&self, name: &str) -> Vec<EnvVarView> {
-        let rows = match self.envs.loaded.get(name) {
+        let rows = match self.scope.envs.loaded.get(name) {
             Some(e) => e.rows.clone(),
             None => self
                 .env_root()
@@ -652,7 +718,8 @@ impl Workspace {
     }
 
     pub fn env_rows(&self, name: &str) -> Vec<EnvRow> {
-        self.envs
+        self.scope
+            .envs
             .loaded
             .get(name)
             .map(|e| e.rows.clone())
@@ -660,13 +727,13 @@ impl Workspace {
     }
 
     fn save_env(&mut self, name: &str) {
-        let (Some(root), Some(env)) = (self.env_root(), self.envs.loaded.get(name)) else {
+        let (Some(root), Some(env)) = (self.env_root(), self.scope.envs.loaded.get(name)) else {
             return;
         };
         if let Err(e) = save_environment(&root, env) {
             self.notice = Some(format!("Could not save environment {name}: {e}"));
         }
-        self.envs.invalidate();
+        self.scope.envs.invalidate();
     }
 
     pub fn start_env_edit(
@@ -708,7 +775,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.envs.edit = Some(EnvEdit {
+        self.scope.envs.edit = Some(EnvEdit {
             target,
             text: TextEdit::new(text),
         });
@@ -717,7 +784,7 @@ impl Workspace {
     }
 
     fn load_if_missing(&mut self, env: &str) {
-        if !self.envs.loaded.contains_key(env) {
+        if !self.scope.envs.loaded.contains_key(env) {
             self.load_env(env);
         }
     }
@@ -729,12 +796,12 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(mut edit) = self.envs.edit.clone() else {
+        let Some(mut edit) = self.scope.envs.edit.clone() else {
             return;
         };
         match ev.keystroke.key.as_str() {
             "escape" | "enter" => {
-                self.envs.edit = None;
+                self.scope.envs.edit = None;
                 window.focus(&self.root_focus);
                 cx.notify();
                 return;
@@ -753,14 +820,20 @@ impl Workspace {
             }
             _ => {}
         }
+        let before = edit.text.text().to_string();
         if !edit.text.handle_key(ev) {
             return;
         }
         let value = edit.text.text().to_string();
+        if value == before {
+            // Only the caret or selection moved.
+            cx.notify();
+            return;
+        }
         match edit.target.clone() {
             EditTarget::Env { env, row, col } => {
                 self.load_if_missing(&env);
-                if let Some(e) = self.envs.loaded.get_mut(&env) {
+                if let Some(e) = self.scope.envs.loaded.get_mut(&env) {
                     while e.rows.len() <= row {
                         e.rows.push(EnvRow {
                             name: String::new(),
@@ -792,13 +865,14 @@ impl Workspace {
             }
         }
         edit.text = edit.text.clone();
-        self.envs.edit = Some(edit);
+        self.scope.envs.edit = Some(edit);
         cx.notify();
     }
 
     pub fn toggle_env_secret(&mut self, env: &str, row: usize, cx: &mut Context<Self>) {
         self.load_if_missing(env);
         if let Some(r) = self
+            .scope
             .envs
             .loaded
             .get_mut(env)
@@ -813,12 +887,12 @@ impl Workspace {
     }
 
     pub fn delete_env_row(&mut self, env: &str, row: usize, cx: &mut Context<Self>) {
-        if let Some(e) = self.envs.loaded.get_mut(env)
+        if let Some(e) = self.scope.envs.loaded.get_mut(env)
             && row < e.rows.len()
         {
             e.rows.remove(row);
         }
-        self.envs.edit = None;
+        self.scope.envs.edit = None;
         self.save_env(env);
         self.load_env(env);
         cx.notify();
@@ -826,7 +900,8 @@ impl Workspace {
 
     /// Click-to-reveal for 10 s (SPEC §8.3).
     pub fn reveal_secret(&mut self, var: &str, cx: &mut Context<Self>) {
-        self.envs
+        self.scope
+            .envs
             .reveal
             .insert(var.to_string(), Instant::now() + REVEAL_FOR);
         cx.notify();
@@ -836,7 +911,7 @@ impl Workspace {
                 .await;
             this.update(cx, |this, cx| {
                 let now = Instant::now();
-                this.envs.reveal.retain(|_, t| *t > now);
+                this.scope.envs.reveal.retain(|_, t| *t > now);
                 cx.notify();
             })
             .ok();
@@ -845,8 +920,8 @@ impl Workspace {
     }
 
     pub fn clear_runtime_vars(&mut self, cx: &mut Context<Self>) {
-        self.envs.runtime.clear();
-        self.envs.invalidate();
+        self.scope.envs.runtime.clear();
+        self.scope.envs.invalidate();
         cx.notify();
     }
 
@@ -880,13 +955,13 @@ impl Workspace {
         let Some(root) = self.env_root() else { return };
         match delete_environment(&root, name) {
             Ok(()) => {
-                if self.envs.active.as_deref() == Some(name) {
-                    self.envs.active = None;
+                if self.scope.envs.active.as_deref() == Some(name) {
+                    self.scope.envs.active = None;
                 }
-                self.tabs.close_key(&format!("env/{name}"));
+                self.scope.tabs.close_key(&format!("env/{name}"));
                 self.after_env_op(None);
-                if self.envs.active.is_none() {
-                    self.envs.active = self.env_names().first().cloned();
+                if self.scope.envs.active.is_none() {
+                    self.scope.envs.active = self.env_names().first().cloned();
                 }
             }
             Err(e) => self.notice = Some(format!("Could not delete {name}: {e}")),
@@ -917,10 +992,10 @@ impl Workspace {
         match r {
             Ok(old) => {
                 if let Some(old) = old {
-                    if self.envs.active.as_deref() == Some(old.as_str()) {
-                        self.envs.active = Some(name.to_string());
+                    if self.scope.envs.active.as_deref() == Some(old.as_str()) {
+                        self.scope.envs.active = Some(name.to_string());
                     }
-                    self.tabs.close_key(&format!("env/{old}"));
+                    self.scope.tabs.close_key(&format!("env/{old}"));
                 }
                 self.after_env_op(Some(name.to_string()));
             }
@@ -930,10 +1005,10 @@ impl Workspace {
     }
 
     fn after_env_op(&mut self, select: Option<String>) {
-        self.envs.invalidate();
-        self.envs.loaded.clear();
+        self.scope.envs.invalidate();
+        self.scope.envs.loaded.clear();
         if let Some(n) = select {
-            self.envs.active = Some(n);
+            self.scope.envs.active = Some(n);
         }
         self.session_dirty = true;
     }
@@ -947,19 +1022,20 @@ impl Workspace {
                 })
         });
         if touched {
-            self.envs.invalidate();
-            if self.envs.edit.is_none() {
-                self.envs.loaded.clear();
+            self.scope.envs.invalidate();
+            if self.scope.envs.edit.is_none() {
+                self.scope.envs.loaded.clear();
             }
             // The active environment may have been deleted or renamed outside the app.
             let names = self.env_names();
             if self
+                .scope
                 .envs
                 .active
                 .as_ref()
                 .is_some_and(|a| !names.contains(a))
             {
-                self.envs.active = names.first().cloned();
+                self.scope.envs.active = names.first().cloned();
             }
         }
     }

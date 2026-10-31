@@ -2,7 +2,8 @@
 
 use gpui::{
     AnyElement, AppContext, Div, Hsla, InteractiveElement, IntoElement, KeyDownEvent,
-    ParentElement, SharedString, StatefulInteractiveElement, Styled, div, px, svg,
+    ParentElement, SharedString, StatefulInteractiveElement, Styled, div, prelude::FluentBuilder,
+    px, svg,
 };
 
 use crate::{envs::VarInfo, theme::Theme};
@@ -16,51 +17,243 @@ pub fn icon(name: &str, size: f32, color: Hsla) -> impl IntoElement {
         .text_color(color)
 }
 
-/// Single-line editable text. The owner feeds it key events; it only stores the string.
+/// Single-line editable text with a caret and an optional selection (char indices). The owner
+/// feeds it key events; render it with `field_text` and place the caret from a click with
+/// `char_index_at` + `set_cursor`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TextEdit {
     text: String,
+    cursor: usize,
+    anchor: Option<usize>,
 }
 
 impl TextEdit {
+    /// Text with the caret at its end.
     pub fn new(text: impl Into<String>) -> Self {
-        Self { text: text.into() }
+        let text: String = text.into();
+        let cursor = text.chars().count();
+        Self {
+            text,
+            cursor,
+            anchor: None,
+        }
     }
 
     pub fn text(&self) -> &str {
         &self.text
     }
 
+    /// Caret position in chars.
+    pub fn cursor(&self) -> usize {
+        self.cursor
+    }
+
+    /// The selected range in chars (start < end), if any.
+    pub fn selection(&self) -> Option<(usize, usize)> {
+        let a = self.anchor?;
+        (a != self.cursor).then(|| (a.min(self.cursor), a.max(self.cursor)))
+    }
+
     pub fn clear(&mut self) {
         self.text.clear();
+        self.cursor = 0;
+        self.anchor = None;
     }
 
+    fn len(&self) -> usize {
+        self.text.chars().count()
+    }
+
+    fn byte(&self, idx: usize) -> usize {
+        self.text
+            .char_indices()
+            .nth(idx)
+            .map_or(self.text.len(), |(b, _)| b)
+    }
+
+    /// Move the caret; `extend` keeps (or starts) a selection anchored where it was.
+    pub fn set_cursor(&mut self, idx: usize, extend: bool) {
+        if extend {
+            self.anchor.get_or_insert(self.cursor);
+        } else {
+            self.anchor = None;
+        }
+        self.cursor = idx.min(self.len());
+    }
+
+    pub fn select_all(&mut self) {
+        self.anchor = Some(0);
+        self.cursor = self.len();
+    }
+
+    /// Select the chars `a..b` (the caret ends at `b`).
+    pub fn select(&mut self, a: usize, b: usize) {
+        self.anchor = Some(a.min(self.len()));
+        self.cursor = b.min(self.len());
+    }
+
+    fn delete_selection(&mut self) -> bool {
+        let Some((a, b)) = self.selection() else {
+            self.anchor = None;
+            return false;
+        };
+        let (ba, bb) = (self.byte(a), self.byte(b));
+        self.text.replace_range(ba..bb, "");
+        self.cursor = a;
+        self.anchor = None;
+        true
+    }
+
+    /// Insert at the caret, replacing the selection. Control characters are dropped.
     pub fn insert(&mut self, s: &str) {
-        self.text.extend(s.chars().filter(|c| !c.is_control()));
+        self.delete_selection();
+        let s: String = s.chars().filter(|c| !c.is_control()).collect();
+        let at = self.byte(self.cursor);
+        self.text.insert_str(at, &s);
+        self.cursor += s.chars().count();
     }
 
+    /// Delete the selection, or the char before the caret.
     pub fn backspace(&mut self) {
-        self.text.pop();
+        if self.delete_selection() || self.cursor == 0 {
+            return;
+        }
+        let (a, b) = (self.byte(self.cursor - 1), self.byte(self.cursor));
+        self.text.replace_range(a..b, "");
+        self.cursor -= 1;
     }
 
-    /// Applies typing and backspace. Returns true when the event edited the text.
+    /// Delete the selection, or the char after the caret.
+    pub fn delete_forward(&mut self) {
+        if self.delete_selection() || self.cursor >= self.len() {
+            return;
+        }
+        let (a, b) = (self.byte(self.cursor), self.byte(self.cursor + 1));
+        self.text.replace_range(a..b, "");
+    }
+
+    fn word_boundary(&self, from: usize, forward: bool) -> usize {
+        let chars: Vec<char> = self.text.chars().collect();
+        let word = |c: char| c.is_alphanumeric() || c == '_';
+        let mut i = from;
+        if forward {
+            while i < chars.len() && !word(chars[i]) {
+                i += 1;
+            }
+            while i < chars.len() && word(chars[i]) {
+                i += 1;
+            }
+        } else {
+            while i > 0 && !word(chars[i - 1]) {
+                i -= 1;
+            }
+            while i > 0 && word(chars[i - 1]) {
+                i -= 1;
+            }
+        }
+        i
+    }
+
+    /// Applies typing, Backspace/Delete, arrows, Home/End (Alt: by word, Cmd/Ctrl: to the ends),
+    /// Shift to select and Cmd/Ctrl+A. Returns true when the event was consumed.
     pub fn handle_key(&mut self, ev: &KeyDownEvent) -> bool {
         let ks = &ev.keystroke;
-        if ks.modifiers.control || ks.modifiers.platform || ks.modifiers.alt {
-            return false;
-        }
-        if ks.key == "backspace" {
-            self.backspace();
-            return true;
-        }
-        match ks.key_char.as_deref() {
-            Some(s) if !s.is_empty() => {
-                self.insert(s);
-                true
+        let (shift, alt, sec) = (
+            ks.modifiers.shift,
+            ks.modifiers.alt,
+            ks.modifiers.secondary(),
+        );
+        let sel = self.selection();
+        match ks.key.as_str() {
+            "a" if sec => self.select_all(),
+            "left" => {
+                let to = match sel {
+                    _ if sec => 0,
+                    _ if alt => self.word_boundary(self.cursor, false),
+                    Some((a, _)) if !shift => a,
+                    _ => self.cursor.saturating_sub(1),
+                };
+                self.set_cursor(to, shift);
             }
-            _ => false,
+            "right" => {
+                let to = match sel {
+                    _ if sec => self.len(),
+                    _ if alt => self.word_boundary(self.cursor, true),
+                    Some((_, b)) if !shift => b,
+                    _ => (self.cursor + 1).min(self.len()),
+                };
+                self.set_cursor(to, shift);
+            }
+            "home" => self.set_cursor(0, shift),
+            "end" => self.set_cursor(self.len(), shift),
+            "backspace" => self.backspace(),
+            "delete" => self.delete_forward(),
+            _ if ks.modifiers.control || ks.modifiers.platform || alt => return false,
+            _ => match ks.key_char.as_deref() {
+                Some(s) if !s.is_empty() => self.insert(s),
+                _ => return false,
+            },
+        }
+        true
+    }
+}
+
+/// The text of a single-line field with the caret at the cursor and the selection highlighted;
+/// the placeholder when empty. The caret shows only while `focused`.
+pub fn field_text(edit: &TextEdit, placeholder: &'static str, t: &Theme, focused: bool) -> Div {
+    let caret = || div().w(px(1.)).h(px(15.)).flex_none().bg(t.accent);
+    let base = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .whitespace_nowrap()
+        .min_h(px(16.));
+    if edit.text().is_empty() {
+        return base
+            .when(focused, |d| d.child(caret()))
+            .child(div().text_color(t.text_placeholder).child(placeholder));
+    }
+    let chars: Vec<char> = edit.text().chars().collect();
+    let part = |a: usize, b: usize| chars[a..b].iter().collect::<String>();
+    match edit.selection() {
+        Some((a, b)) => base
+            .child(part(0, a))
+            .child(div().bg(t.accent_bg()).child(part(a, b)))
+            .child(part(b, chars.len())),
+        None => {
+            let c = edit.cursor().min(chars.len());
+            base.child(part(0, c))
+                .when(focused, |d| d.child(caret()))
+                .child(part(c, chars.len()))
         }
     }
+}
+
+/// The char index under `x` (pixels from the start of the text) for text laid out in `font`
+/// at `size`.
+pub fn char_index_at(
+    window: &gpui::Window,
+    text: &str,
+    font: &'static str,
+    size: f32,
+    x: f32,
+) -> usize {
+    if text.is_empty() {
+        return 0;
+    }
+    let run = gpui::TextRun {
+        len: text.len(),
+        font: gpui::font(font),
+        color: Hsla::default(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let line = window
+        .text_system()
+        .shape_line(text.to_string().into(), px(size), &[run], None);
+    let byte = line.closest_index_for_x(px(x.max(0.))).min(text.len());
+    text[..byte].chars().count()
 }
 
 /// Human-readable key chip text for a binding such as `secondary-shift-p`.
@@ -87,8 +280,8 @@ pub fn kbd_label(binding: &str) -> String {
 }
 
 /// Hover text for a variable: a small floating card.
-struct VarTip {
-    text: String,
+pub(crate) struct VarTip {
+    pub(crate) text: String,
 }
 
 impl gpui::Render for VarTip {
@@ -266,6 +459,58 @@ mod tests {
         assert_eq!(e.text(), "abc");
         e.backspace();
         assert_eq!(e.text(), "ab");
+    }
+
+    fn key(k: &str, ch: Option<&str>, shift: bool, secondary: bool) -> KeyDownEvent {
+        let mut m = gpui::Modifiers {
+            shift,
+            ..Default::default()
+        };
+        if secondary {
+            if cfg!(target_os = "macos") {
+                m.platform = true;
+            } else {
+                m.control = true;
+            }
+        }
+        KeyDownEvent {
+            keystroke: gpui::Keystroke {
+                modifiers: m,
+                key: k.into(),
+                key_char: ch.map(Into::into),
+            },
+            is_held: false,
+        }
+    }
+
+    #[test]
+    fn text_edit_moves_the_caret_and_edits_there() {
+        let mut e = TextEdit::new("abcd");
+        assert_eq!(e.cursor(), 4);
+        e.handle_key(&key("left", None, false, false));
+        e.handle_key(&key("left", None, false, false));
+        e.handle_key(&key("x", Some("x"), false, false));
+        assert_eq!((e.text(), e.cursor()), ("abxcd", 3));
+        e.handle_key(&key("home", None, false, false));
+        e.handle_key(&key("delete", None, false, false));
+        assert_eq!(e.text(), "bxcd");
+        e.handle_key(&key("backspace", None, false, false));
+        assert_eq!(e.text(), "bxcd", "nothing before the caret");
+        e.handle_key(&key("end", None, false, false));
+        e.handle_key(&key("left", None, true, false));
+        e.handle_key(&key("left", None, true, false));
+        assert_eq!(e.selection(), Some((2, 4)));
+        e.handle_key(&key("y", Some("y"), false, false));
+        assert_eq!(e.text(), "bxy");
+        e.handle_key(&key("a", Some("a"), false, true));
+        assert_eq!(e.selection(), Some((0, 3)));
+        e.handle_key(&key("right", None, false, false));
+        assert_eq!((e.selection(), e.cursor()), (None, 3));
+        e.set_cursor(1, false);
+        e.insert("é");
+        assert_eq!((e.text(), e.cursor()), ("béxy", 2), "multi-byte chars");
+        e.backspace();
+        assert_eq!(e.text(), "bxy");
     }
 
     #[test]

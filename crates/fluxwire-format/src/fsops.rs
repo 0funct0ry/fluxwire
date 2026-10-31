@@ -1,4 +1,4 @@
-//! File operations behind the project tree: create, rename, duplicate, move, delete (to trash).
+//! File operations behind the workspace tree: create, rename, duplicate, move, delete (to trash).
 
 use crate::collection::{file_kind_for, is_request_file};
 use crate::edit::{apply, set_front_matter};
@@ -54,21 +54,96 @@ fn write_new(path: &Path, text: &str) -> io::Result<()> {
     std::fs::write(path, text)
 }
 
+/// Default URL of a new request: `{{baseUrl}}/` (`wss://{{host}}/` for WebSocket).
+pub fn default_request_url(websocket: bool) -> &'static str {
+    if websocket {
+        "wss://{{host}}/"
+    } else {
+        "{{baseUrl}}/"
+    }
+}
+
 pub fn create_request(
     dir: &Path,
     name: &str,
     description: &str,
     websocket: bool,
 ) -> io::Result<PathBuf> {
+    create_request_with_url(
+        dir,
+        name,
+        description,
+        websocket,
+        default_request_url(websocket),
+    )
+}
+
+/// Like `create_request`, with the URL written on the request line (may be empty).
+pub fn create_request_with_url(
+    dir: &Path,
+    name: &str,
+    description: &str,
+    websocket: bool,
+    url: &str,
+) -> io::Result<PathBuf> {
     std::fs::create_dir_all(dir)?;
     let p = unique(dir, &slug(name), ".flux.md");
     let text = if websocket {
-        new_websocket(name, description, "wss://{{host}}/")
+        new_websocket(name, description, url)
     } else {
-        new_request(name, description, "GET", "{{baseUrl}}/")
+        new_request(name, description, "GET", url)
     };
     std::fs::write(&p, text)?;
     Ok(p)
+}
+
+/// Rename a collection: its `name` in `fluxwire.toml` and the front matter `name` of
+/// `collection.flux.md`. The folder keeps its name, so keys and tabs stay valid. Only the
+/// `name` line is replaced; the rest of the file is untouched.
+pub fn rename_collection(dir: &Path, new_name: &str) -> io::Result<()> {
+    let toml_path = dir.join("fluxwire.toml");
+    let text = std::fs::read_to_string(&toml_path)?;
+    let line = format!("name = {}", crate::template::toml_string(new_name));
+    let mut out = String::with_capacity(text.len() + line.len());
+    let (mut in_collection, mut done) = (false, false);
+    for l in text.split_inclusive('\n') {
+        let t = l.trim();
+        if t.starts_with('[') {
+            if in_collection && !done {
+                out.push_str(&line);
+                out.push('\n');
+                done = true;
+            }
+            in_collection = t == "[collection]";
+        }
+        let is_name = in_collection
+            && !done
+            && t.strip_prefix("name")
+                .is_some_and(|r| r.trim_start().starts_with('='));
+        if is_name {
+            out.push_str(&line);
+            out.push_str(if l.ends_with('\n') { "\n" } else { "" });
+            done = true;
+        } else {
+            out.push_str(l);
+        }
+    }
+    if !done {
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push('\n');
+        }
+        if !in_collection {
+            out.push_str("[collection]\n");
+        }
+        out.push_str(&line);
+        out.push('\n');
+    }
+    std::fs::write(&toml_path, out)?;
+    let meta = dir.join("collection.flux.md");
+    if meta.exists() {
+        set_name(&meta, new_name)?;
+    }
+    Ok(())
 }
 
 pub fn create_folder(parent: &Path, name: &str) -> io::Result<PathBuf> {
@@ -196,4 +271,48 @@ pub fn move_to(path: &Path, dest_dir: &Path) -> io::Result<PathBuf> {
 /// Move to the OS trash (never a hard delete).
 pub fn delete(path: &Path) -> io::Result<()> {
     trash::delete(path).map_err(|e| io::Error::other(e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_request_with_an_empty_url_parses_with_an_empty_target() {
+        let dir = std::env::temp_dir().join(format!("fluxwire-emptyurl-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for ws in [false, true] {
+            let p = create_request_with_url(&dir, "Thing", "", ws, "").unwrap();
+            let text = std::fs::read_to_string(&p).unwrap();
+            let doc = crate::parse(&text);
+            let req = doc.request().expect("request block");
+            assert_eq!(req.target, "", "{text:?}");
+            assert_eq!(
+                crate::format(&text, fluxwire_model::FileKind::Request),
+                text,
+                "stays canonical"
+            );
+        }
+    }
+
+    #[test]
+    fn rename_collection_replaces_only_the_name() {
+        let dir = std::env::temp_dir().join(format!("fluxwire-rencoll-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        create_collection(&dir, "Old").unwrap();
+        let toml = dir.join("fluxwire.toml");
+        let mut t = std::fs::read_to_string(&toml).unwrap();
+        t.push_str("\n# keep me\n[defaults]\ntimeout = 5\n");
+        std::fs::write(&toml, &t).unwrap();
+        rename_collection(&dir, "New \"Name\"").unwrap();
+        let after = std::fs::read_to_string(&toml).unwrap();
+        assert_eq!(
+            after,
+            t.replace("name = \"Old\"", "name = \"New \\\"Name\\\"\"")
+        );
+        let meta = std::fs::read_to_string(dir.join("collection.flux.md")).unwrap();
+        assert!(meta.contains("name: "), "{meta}");
+        assert!(!meta.contains("name: Old"), "{meta}");
+    }
 }

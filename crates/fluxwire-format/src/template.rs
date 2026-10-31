@@ -44,7 +44,7 @@ pub fn new_collection_toml(name: &str) -> String {
     format!("[collection]\nname = {}\nformat = 1\n", toml_string(name))
 }
 
-fn toml_string(s: &str) -> String {
+pub(crate) fn toml_string(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 

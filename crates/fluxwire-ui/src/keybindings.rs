@@ -10,7 +10,7 @@ use crate::{
     assets::BUFFER_FONT,
     theme::Theme,
     ui::{kbd_label, row},
-    workspace::{Workspace, fuzzy},
+    workspace::{WorkspaceView, fuzzy},
 };
 
 /// One line of the table.
@@ -21,7 +21,7 @@ pub struct KeyRow {
     pub source: &'static str,
 }
 
-impl Workspace {
+impl WorkspaceView {
     /// Rows matching the search box: bound actions first-class, unbound actions with no keys.
     pub fn keybinding_rows(&self, state: &KeymapState) -> Vec<KeyRow> {
         let q = self.keybind_query.text().to_string();
@@ -56,7 +56,6 @@ impl Workspace {
     pub(crate) fn render_keybindings(&self, t: &Theme, cx: &mut Context<Self>) -> gpui::AnyElement {
         let state = cx.try_global::<KeymapState>().cloned().unwrap_or_default();
         let rows = self.keybinding_rows(&state);
-        let q = self.keybind_query.text().to_string();
         let t = t.clone();
         div()
             .flex_1()
@@ -84,13 +83,12 @@ impl Workspace {
                                 cx.listener(|this, _, w, _| w.focus(&this.keybind_focus)),
                             )
                             .flex_1()
-                            .child(if q.is_empty() {
-                                div()
-                                    .text_color(t.text_placeholder)
-                                    .child("Search keybindings…")
-                            } else {
-                                div().text_color(t.text).child(q)
-                            }),
+                            .child(crate::ui::field_text(
+                                &self.keybind_query,
+                                "Search keybindings…",
+                                &t,
+                                self.is_focused(&self.keybind_focus),
+                            )),
                     )
                     .child(
                         div()

@@ -15,7 +15,7 @@ use crate::{
     tabs::{Tab, TabKind},
     theme::Theme,
     ui::{icon, row},
-    workspace::Workspace,
+    workspace::WorkspaceView,
 };
 
 const MASK: &str = "••••••••";
@@ -84,9 +84,10 @@ fn fmt_expiry(expires_at: Option<i64>) -> String {
     }
 }
 
-impl Workspace {
+impl WorkspaceView {
     fn edit_text_for(&self, target: &EditTarget) -> Option<String> {
-        self.envs
+        self.scope
+            .envs
             .edit
             .as_ref()
             .filter(|e| &e.target == target)
@@ -120,11 +121,12 @@ impl Workspace {
             .font_family(BUFFER_FONT)
             .text_size(px(12.));
         match editing {
-            Some(text) => base
+            Some(_) => base
                 .track_focus(&self.env_focus)
                 .on_key_down(cx.listener(|this, ev, w, cx| this.on_env_key(ev, w, cx)))
-                .child(text)
-                .child(div().w(px(1.)).h(px(14.)).bg(t.accent))
+                .children(self.scope.envs.edit.as_ref().map(|e| {
+                    crate::ui::field_text(&e.text, "", t, self.is_focused(&self.env_focus))
+                }))
                 .into_any_element(),
             None => {
                 let start = shown.clone();
@@ -144,7 +146,7 @@ impl Workspace {
 
     /// `{{` suggestions under the URL bar while one is being typed.
     pub(crate) fn completion_strip(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let c = self.envs.completion.as_ref()?;
+        let c = self.scope.envs.completion.as_ref()?;
         Some(
             row()
                 .id("var-completion")
@@ -190,7 +192,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let name = tab.key.strip_prefix("env/").unwrap_or(&tab.key).to_string();
-        let rows = if self.envs.loaded.contains_key(&name) {
+        let rows = if self.scope.envs.loaded.contains_key(&name) {
             self.env_rows(&name)
         } else {
             // Not loaded yet (first frame): read straight from disk.
@@ -198,12 +200,12 @@ impl Workspace {
                 .map(|r| fluxwire_format::load_environment(&r, &name, &[]).rows)
                 .unwrap_or_default()
         };
-        let tracked = self.envs.tracked.get(&name).copied().unwrap_or(false);
-        let active = self.envs.active.as_deref() == Some(name.as_str());
+        let tracked = self.scope.envs.tracked.get(&name).copied().unwrap_or(false);
+        let active = self.scope.envs.active.as_deref() == Some(name.as_str());
         let n = rows.len();
         // A row that is being added is drawn (empty) until it has a name and reaches the file.
         let mut rows = rows;
-        if self.envs.edit.as_ref().is_some_and(
+        if self.scope.envs.edit.as_ref().is_some_and(
             |e| matches!(&e.target, EditTarget::Env { env, row, .. } if *env == name && *row >= n),
         ) {
             rows.push(fluxwire_format::EnvRow {
@@ -278,7 +280,7 @@ impl Workspace {
             )
             .children(rows.into_iter().enumerate().map(|(i, r)| {
                 let env = nm.clone();
-                let masked = r.secret && !self.envs.is_revealed(&r.name);
+                let masked = r.secret && !self.scope.envs.is_revealed(&r.name);
                 let editing_value = self.edit_text_for(&EditTarget::Env {
                     env: env.clone(),
                     row: i,
@@ -404,7 +406,7 @@ impl Workspace {
     fn render_cookies_section(&self, t: &Theme, env: &str, cx: &mut Context<Self>) -> AnyElement {
         let jar: Vec<Cookie> = self
             .env_root()
-            .and_then(|r| self.envs.states.get(&(r, env.to_string())))
+            .and_then(|r| self.scope.envs.states.get(&(r, env.to_string())))
             .map(|s| s.cookies.list())
             .unwrap_or_default();
         let en = env.to_string();
@@ -468,7 +470,7 @@ impl Workspace {
 
     pub fn clear_cookies(&mut self, env: &str, cx: &mut Context<Self>) {
         if let Some(root) = self.env_root()
-            && let Some(s) = self.envs.states.get(&(root.clone(), env.to_string()))
+            && let Some(s) = self.scope.envs.states.get(&(root.clone(), env.to_string()))
         {
             s.cookies.clear();
             self.persist_cookies(&root);
@@ -478,8 +480,8 @@ impl Workspace {
 
     pub fn remove_cookie(&mut self, domain: &str, path: &str, name: &str, cx: &mut Context<Self>) {
         if let Some(root) = self.env_root()
-            && let Some(env) = self.envs.active.clone()
-            && let Some(s) = self.envs.states.get(&(root.clone(), env))
+            && let Some(env) = self.scope.envs.active.clone()
+            && let Some(s) = self.scope.envs.states.get(&(root.clone(), env))
         {
             s.cookies.remove(domain, path, name);
             self.persist_cookies(&root);
@@ -491,7 +493,7 @@ impl Workspace {
 
     pub(crate) fn render_envs(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let names = self.env_names();
-        let active = self.envs.active.clone();
+        let active = self.scope.envs.active.clone();
         let rows: Vec<crate::envs::EnvVarView> = active
             .as_deref()
             .map(|n| self.env_var_views(n))
@@ -598,7 +600,7 @@ impl Workspace {
             })
             .children(rows.into_iter().enumerate().map(|(i, v)| {
                 let var = v.name.clone();
-                let masked = v.secret && !self.envs.is_revealed(&v.name);
+                let masked = v.secret && !self.scope.envs.is_revealed(&v.name);
                 row()
                     .id(("env-var", i))
                     .px_2()
@@ -637,15 +639,18 @@ impl Workspace {
                             .flex_1()
                             .text_size(px(11.))
                             .text_color(t.text_placeholder)
-                            .child(format!("Runtime variables · {}", self.envs.runtime.len())),
+                            .child(format!(
+                                "Runtime variables · {}",
+                                self.scope.envs.runtime.len()
+                            )),
                     )
                     .child(
                         action("runtime-clear", "Clear")
                             .on_click(cx.listener(|this, _, _, cx| this.clear_runtime_vars(cx))),
                     ),
             )
-            .children(self.envs.runtime.iter().map(|(k, (v, secret))| {
-                let masked = *secret && !self.envs.is_revealed(k);
+            .children(self.scope.envs.runtime.iter().map(|(k, (v, secret))| {
+                let masked = *secret && !self.scope.envs.is_revealed(k);
                 row()
                     .px_2()
                     .py(px(2.))
@@ -667,7 +672,7 @@ impl Workspace {
                         v.clone()
                     }))
             }))
-            .when(self.envs.runtime.is_empty(), |d| {
+            .when(self.scope.envs.runtime.is_empty(), |d| {
                 d.child(
                     div()
                         .px_2()
@@ -686,7 +691,7 @@ impl Workspace {
     // ---- Auth tab ------------------------------------------------------------------------------
 
     fn auth_map(&self, key: &str) -> (Option<String>, Vec<(String, String)>) {
-        let Some(doc) = self.project.as_ref().and_then(|p| p.doc(key)) else {
+        let Some(doc) = self.scope.workspace.as_ref().and_then(|p| p.doc(key)) else {
             return (None, vec![]);
         };
         match doc.parsed.front.get("auth").map(|e| &e.value) {
@@ -697,7 +702,7 @@ impl Workspace {
     }
 
     pub fn set_auth_type(&mut self, key: &str, ty: &str, cx: &mut Context<Self>) {
-        let Some(doc) = self.project.as_mut().and_then(|p| p.doc_mut(key)) else {
+        let Some(doc) = self.scope.workspace.as_mut().and_then(|p| p.doc_mut(key)) else {
             return;
         };
         let edits = match ty {
@@ -716,7 +721,7 @@ impl Workspace {
             }
         };
         if doc.apply(&edits) {
-            self.envs.invalidate();
+            self.scope.envs.invalidate();
             self.after_edit_pub(key, cx);
         }
     }
@@ -727,26 +732,27 @@ impl Workspace {
             Some((_, v)) => *v = value.to_string(),
             None => map.push((field.to_string(), value.to_string())),
         }
-        let Some(doc) = self.project.as_mut().and_then(|p| p.doc_mut(key)) else {
+        let Some(doc) = self.scope.workspace.as_mut().and_then(|p| p.doc_mut(key)) else {
             return;
         };
         let edits = fluxwire_format::set_front_matter(&doc.parsed, "auth", &FmValue::Map(map));
         if doc.apply(&edits) {
-            self.envs.invalidate();
+            self.scope.envs.invalidate();
             self.after_edit_pub(key, cx);
         }
     }
 
     /// Fetch (or replace) the OAuth2 token for the active request (Auth tab button).
     pub fn fetch_token(&mut self, cx: &mut Context<Self>) {
-        let (Some(tab_id), Some(key)) = (self.tabs.active_id(), self.active_key()) else {
+        let (Some(tab_id), Some(key)) = (self.scope.tabs.active_id(), self.active_key()) else {
             return;
         };
-        if self.envs.fetching.contains(&tab_id) {
+        if self.scope.envs.fetching.contains(&tab_id) {
             return;
         }
         let Some(parsed) = self
-            .project
+            .scope
+            .workspace
             .as_ref()
             .and_then(|p| p.doc(&key))
             .map(|d| d.parsed.clone())
@@ -763,7 +769,8 @@ impl Workspace {
             return;
         };
         let defaults = self
-            .project
+            .scope
+            .workspace
             .as_ref()
             .and_then(|p| p.collections.iter().find(|c| c.root == root))
             .map(|c| settings_from_defaults(&c.collection.config.defaults))
@@ -780,12 +787,12 @@ impl Workspace {
             cx.notify();
             return;
         };
-        self.envs.fetching.insert(tab_id);
+        self.scope.envs.fetching.insert(tab_id);
         self.notice = Some("Waiting for the token… finish any login in your browser.".into());
         cx.spawn(async move |this, cx| {
             let r = rx.await;
             this.update(cx, |this, cx| {
-                this.envs.fetching.remove(&tab_id);
+                this.scope.envs.fetching.remove(&tab_id);
                 this.notice = Some(match r {
                     Ok(Ok(_)) => "Fetched a new token.".into(),
                     Ok(Err(e)) => format!(
@@ -992,17 +999,22 @@ impl Workspace {
 
     fn render_token_status(&self, t: &Theme, key: &str, cx: &mut Context<Self>) -> AnyElement {
         let busy = self
+            .scope
             .tabs
             .active_id()
-            .is_some_and(|id| self.envs.fetching.contains(&id));
+            .is_some_and(|id| self.scope.envs.fetching.contains(&id));
         let info = (|| {
-            let doc = self.project.as_ref()?.doc(key)?;
+            let doc = self.scope.workspace.as_ref()?.doc(key)?;
             let root = self.collection_root_of(key)?;
-            let env = self.envs.states.get(&(root, self.envs.active.clone()?))?;
+            let env = self
+                .scope
+                .envs
+                .states
+                .get(&(root, self.scope.envs.active.clone()?))?;
             let scope = self.scope_for(key)?;
             runner().token_info(&doc.parsed, &scope, env)
         })();
-        let status = match (&info, self.envs.active.as_ref()) {
+        let status = match (&info, self.scope.envs.active.as_ref()) {
             (_, None) => "No environment selected; tokens are cached per environment.".to_string(),
             (None, Some(e)) => format!("No token yet for {e}. Send a request or fetch one now."),
             (Some(i), Some(e)) => format!(

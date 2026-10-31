@@ -27,7 +27,7 @@ use crate::{
     viewer::{
         BodyKind, BodyView, ImageFormat, LineText, filter_json, lex_json_line, visible_lines,
     },
-    workspace::{TabUi, Workspace},
+    workspace::{TabUi, WorkspaceView},
 };
 
 pub const ROW_HEIGHT: f32 = 20.0;
@@ -197,7 +197,7 @@ fn extension_for(kind: BodyKind) -> &'static str {
     }
 }
 
-impl Workspace {
+impl WorkspaceView {
     /// Cookies of the active environment's jar that apply to `url`'s host, as table rows.
     fn jar_rows(&self, url: &str) -> Vec<(String, String)> {
         let host = url
@@ -215,8 +215,8 @@ impl Workspace {
         let jar = (|| {
             let key = self.active_key()?;
             let root = self.collection_root_of(&key)?;
-            let env = self.envs.active.clone()?;
-            Some(self.envs.states.get(&(root, env))?.cookies.list())
+            let env = self.scope.envs.active.clone()?;
+            Some(self.scope.envs.states.get(&(root, env))?.cookies.list())
         })()
         .unwrap_or_default();
         jar.into_iter()
@@ -234,28 +234,29 @@ impl Workspace {
     // ---- sending ----------------------------------------------------------------------------
 
     pub fn is_sending(&self) -> bool {
-        self.tabs
+        self.scope
+            .tabs
             .active_id()
-            .and_then(|id| self.responses.get(&id))
+            .and_then(|id| self.scope.responses.get(&id))
             .is_some_and(|r| r.sending.is_some())
     }
 
     /// Send the active request from its in-memory document (saving is never required).
     pub fn send_request(&mut self, cx: &mut Context<Self>) {
-        let Some(tab_id) = self.tabs.active_id() else {
+        let Some(tab_id) = self.scope.tabs.active_id() else {
             return;
         };
         let Some(key) = self.active_key() else { return };
         if self.is_sending() {
             return;
         }
-        let Some(project) = self.project.as_ref() else {
+        let Some(ws) = self.scope.workspace.as_ref() else {
             return;
         };
-        let Some(doc) = project.doc(&key) else { return };
+        let Some(doc) = ws.doc(&key) else { return };
         let parsed = doc.parsed.clone();
-        let abs = project.abs_of(&key);
-        let coll = project
+        let abs = ws.abs_of(&key);
+        let coll = ws
             .collections
             .iter()
             .filter(|c| abs.starts_with(&c.root))
@@ -272,7 +273,7 @@ impl Workspace {
         };
         // Unresolved variables warn once per tab; sending again goes ahead (SPEC §8.4).
         let unresolved = self.unresolved_in(&key);
-        if !unresolved.is_empty() && self.envs.warned.insert(tab_id) {
+        if !unresolved.is_empty() && self.scope.envs.warned.insert(tab_id) {
             self.notice = Some(format!(
                 "Unresolved variable{}: {}. Send again to send anyway.",
                 if unresolved.len() == 1 { "" } else { "s" },
@@ -330,11 +331,11 @@ impl Workspace {
             .as_deref()
             .is_some_and(|r| self.collection_trusted(r, cx));
         if has_scripts && !trusted {
-            self.trust_prompt = Some(tab_id);
+            self.scope.trust_prompt = Some(tab_id);
             cx.notify();
             return;
         }
-        self.trust_prompt = None;
+        self.scope.trust_prompt = None;
         let handle = runner().send(
             &parsed,
             SendOptions {
@@ -348,20 +349,21 @@ impl Workspace {
                     collection_root: root.clone(),
                     file: Some(abs.clone()),
                     globals: self
+                        .scope
                         .envs
                         .settings
                         .globals
                         .iter()
                         .map(|(k, v)| (k.clone(), v.clone()))
                         .collect(),
-                    allow_process_env: self.envs.settings.allow_process_env,
+                    allow_process_env: self.scope.envs.settings.allow_process_env,
                 },
             },
         );
-        let seq = self.responses.get(&tab_id).map_or(0, |r| r.seq) + 1;
+        let seq = self.scope.responses.get(&tab_id).map_or(0, |r| r.seq) + 1;
         let mut resp = TabResponse::new(seq);
         // keep viewer preferences across sends
-        if let Some(old) = self.responses.get(&tab_id) {
+        if let Some(old) = self.scope.responses.get(&tab_id) {
             resp.wrap = old.wrap;
         }
         resp.sending = Some(Sending {
@@ -371,8 +373,8 @@ impl Workspace {
             cancel: handle.canceller(),
             session: handle.session(),
         });
-        self.responses.insert(tab_id, resp);
-        if let Some(ui) = self.tab_ui.get_mut(&tab_id) {
+        self.scope.responses.insert(tab_id, resp);
+        if let Some(ui) = self.scope.tab_ui.get_mut(&tab_id) {
             ui.resp = 0;
         }
 
@@ -398,6 +400,7 @@ impl Workspace {
                 let alive = this
                     .update(cx, |this, cx| {
                         let live = this
+                            .scope
                             .responses
                             .get(&tab_id)
                             .is_some_and(|r| r.seq == seq && r.sending.is_some());
@@ -418,7 +421,7 @@ impl Workspace {
 
     /// Whether scripts may run in the collection at `root` (SPEC §21).
     pub fn collection_trusted(&self, root: &std::path::Path, cx: &Context<Self>) -> bool {
-        if self.session_trust.contains(root) {
+        if self.scope.session_trust.contains(root) {
             return true;
         }
         cx.try_global::<crate::envs::ConfigDir>()
@@ -428,11 +431,11 @@ impl Workspace {
     /// Write `.fluxwire/types/fw.d.ts` for every open collection (SPEC §11.3). `announce`
     /// reports the result in the status bar (the palette action); opening stays quiet.
     pub fn regenerate_fw_types(&mut self, announce: bool, cx: &mut Context<Self>) {
-        let Some(project) = self.project.as_ref() else {
+        let Some(ws) = self.scope.workspace.as_ref() else {
             return;
         };
         let mut written = 0;
-        for c in &project.collections {
+        for c in &ws.collections {
             let dir = c.root.join(".fluxwire").join("types");
             let path = dir.join("fw.d.ts");
             let want = fluxwire_runner::fw_dts();
@@ -477,14 +480,14 @@ impl Workspace {
             Some(Ok(())) => {}
             None => {
                 if trusted {
-                    self.session_trust.insert(root.clone());
+                    self.scope.session_trust.insert(root.clone());
                 }
             }
         }
         if !trusted {
-            self.session_trust.remove(&root);
+            self.scope.session_trust.remove(&root);
         }
-        let resume = trusted && self.trust_prompt.take().is_some();
+        let resume = trusted && self.scope.trust_prompt.take().is_some();
         self.notice = Some(if trusted {
             "Scripts in this collection are trusted.".into()
         } else {
@@ -500,6 +503,7 @@ impl Workspace {
     /// persisted environment values, the Console and Problems.
     fn absorb_script_results(&mut self, tab_id: u64, res: &RunResult, cx: &mut Context<Self>) {
         let root = self
+            .scope
             .tabs
             .all()
             .iter()
@@ -509,25 +513,26 @@ impl Workspace {
             for c in &res.var_changes {
                 match &c.value {
                     Some(v) => {
-                        self.envs
+                        self.scope
+                            .envs
                             .runtime
                             .insert(c.name.clone(), (v.clone(), c.secret));
                     }
                     None => {
-                        self.envs.runtime.remove(&c.name);
+                        self.scope.envs.runtime.remove(&c.name);
                     }
                 }
             }
-            self.envs.invalidate();
+            self.scope.envs.invalidate();
         }
-        if let (Some(root), Some(env)) = (&root, self.envs.active.clone()) {
+        if let (Some(root), Some(env)) = (&root, self.scope.envs.active.clone()) {
             for (name, value) in &res.env_persist {
                 if let Err(e) = persist_env_value(root, &env, name, value) {
                     self.notice = Some(format!("Could not write {name} to {env}.local.env: {e}"));
                 }
             }
             if !res.env_persist.is_empty() {
-                self.envs.invalidate();
+                self.scope.envs.invalidate();
             }
         }
         for l in &res.console {
@@ -550,9 +555,10 @@ impl Workspace {
     /// Cancel the active request if one is in flight. Returns whether there was one.
     pub fn cancel_request(&mut self, cx: &mut Context<Self>) -> bool {
         let Some(r) = self
+            .scope
             .tabs
             .active_id()
-            .and_then(|id| self.responses.get(&id))
+            .and_then(|id| self.scope.responses.get(&id))
             .and_then(|r| r.sending.as_ref())
         else {
             return false;
@@ -569,15 +575,23 @@ impl Workspace {
     }
 
     fn log(&mut self, line: String) {
-        self.console
+        self.scope
+            .console
             .push(format!("{}  {line}", clock(SystemTime::now())));
-        if self.console.len() > CONSOLE_CAP {
-            self.console.drain(..self.console.len() - CONSOLE_CAP);
+        if self.scope.console.len() > CONSOLE_CAP {
+            self.scope
+                .console
+                .drain(..self.scope.console.len() - CONSOLE_CAP);
         }
     }
 
     fn on_run_event(&mut self, tab_id: u64, seq: u64, ev: RunEvent, cx: &mut Context<Self>) {
-        let Some(r) = self.responses.get_mut(&tab_id).filter(|r| r.seq == seq) else {
+        let Some(r) = self
+            .scope
+            .responses
+            .get_mut(&tab_id)
+            .filter(|r| r.seq == seq)
+        else {
             return;
         };
         match ev {
@@ -630,6 +644,7 @@ impl Workspace {
         self.absorb_script_results(tab_id, &res, cx);
         self.history_record(tab_id, &res, cx);
         if let Some(root) = self
+            .scope
             .tabs
             .all()
             .iter()
@@ -638,7 +653,7 @@ impl Workspace {
         {
             self.persist_cookies(&root);
         }
-        let Some(r) = self.responses.get_mut(&tab_id) else {
+        let Some(r) = self.scope.responses.get_mut(&tab_id) else {
             return;
         };
         r.sending = None;
@@ -650,7 +665,7 @@ impl Workspace {
 
     /// Build the body view for the tab's current result in the background.
     fn build_body_view(&mut self, tab_id: u64, seq: u64, cx: &mut Context<Self>) {
-        let Some(r) = self.responses.get_mut(&tab_id) else {
+        let Some(r) = self.scope.responses.get_mut(&tab_id) else {
             return;
         };
         let build = r
@@ -671,7 +686,12 @@ impl Workspace {
         cx.spawn(async move |this, cx| {
             let view = task.await;
             this.update(cx, |this, cx| {
-                if let Some(r) = this.responses.get_mut(&tab_id).filter(|r| r.seq == seq) {
+                if let Some(r) = this
+                    .scope
+                    .responses
+                    .get_mut(&tab_id)
+                    .filter(|r| r.seq == seq)
+                {
                     r.mode = match view.kind {
                         BodyKind::Image(_) => BodyMode::Preview,
                         BodyKind::Binary | BodyKind::Pdf => BodyMode::Hex,
@@ -720,6 +740,7 @@ impl Workspace {
             skipped: None,
         };
         let resp = self
+            .scope
             .responses
             .entry(tab_id)
             .or_insert_with(|| TabResponse::new(0));
@@ -735,10 +756,10 @@ impl Workspace {
     }
 
     pub fn history_back_to_latest(&mut self, cx: &mut Context<Self>) {
-        let Some(tab_id) = self.tabs.active_id() else {
+        let Some(tab_id) = self.scope.tabs.active_id() else {
             return;
         };
-        let Some(r) = self.responses.get_mut(&tab_id) else {
+        let Some(r) = self.scope.responses.get_mut(&tab_id) else {
             return;
         };
         if r.viewing.take().is_none() {
@@ -755,7 +776,7 @@ impl Workspace {
 
     /// Recompute the text the list shows after the mode, wrap, filter or view changed.
     pub fn refresh_shown(&mut self, tab_id: u64) {
-        let Some(r) = self.responses.get_mut(&tab_id) else {
+        let Some(r) = self.scope.responses.get_mut(&tab_id) else {
             return;
         };
         let Some(view) = r.view.clone() else {
@@ -785,7 +806,7 @@ impl Workspace {
     }
 
     fn refresh_find(&mut self, tab_id: u64) {
-        let Some(r) = self.responses.get_mut(&tab_id) else {
+        let Some(r) = self.scope.responses.get_mut(&tab_id) else {
             return;
         };
         r.matches.clear();
@@ -805,10 +826,10 @@ impl Workspace {
     }
 
     pub fn set_body_mode(&mut self, mode: BodyMode, cx: &mut Context<Self>) {
-        let Some(id) = self.tabs.active_id() else {
+        let Some(id) = self.scope.tabs.active_id() else {
             return;
         };
-        if let Some(r) = self.responses.get_mut(&id) {
+        if let Some(r) = self.scope.responses.get_mut(&id) {
             r.mode = mode;
         }
         self.refresh_shown(id);
@@ -816,10 +837,10 @@ impl Workspace {
     }
 
     pub fn toggle_wrap(&mut self, cx: &mut Context<Self>) {
-        let Some(id) = self.tabs.active_id() else {
+        let Some(id) = self.scope.tabs.active_id() else {
             return;
         };
-        if let Some(r) = self.responses.get_mut(&id) {
+        if let Some(r) = self.scope.responses.get_mut(&id) {
             r.wrap = !r.wrap;
         }
         self.refresh_shown(id);
@@ -827,7 +848,7 @@ impl Workspace {
     }
 
     fn toggle_fold(&mut self, tab_id: u64, line: usize, cx: &mut Context<Self>) {
-        if let Some(r) = self.responses.get_mut(&tab_id)
+        if let Some(r) = self.scope.responses.get_mut(&tab_id)
             && !r.collapsed.remove(&line)
         {
             r.collapsed.insert(line);
@@ -838,9 +859,10 @@ impl Workspace {
 
     fn jump_to_match(&mut self, cx: &mut Context<Self>) {
         let Some(r) = self
+            .scope
             .tabs
             .active_id()
-            .and_then(|id| self.responses.get_mut(&id))
+            .and_then(|id| self.scope.responses.get_mut(&id))
         else {
             return;
         };
@@ -865,7 +887,7 @@ impl Workspace {
         ev: &gpui::KeyDownEvent,
         cx: &mut Context<Self>,
     ) {
-        let Some(id) = self.tabs.active_id() else {
+        let Some(id) = self.scope.tabs.active_id() else {
             return;
         };
         let ks = &ev.keystroke;
@@ -874,7 +896,7 @@ impl Workspace {
         } else {
             None
         };
-        let Some(r) = self.responses.get_mut(&id) else {
+        let Some(r) = self.scope.responses.get_mut(&id) else {
             return;
         };
         let edit = match which {
@@ -907,6 +929,7 @@ impl Workspace {
                     if which == ViewerInput::Find {
                         self.refresh_find(id);
                     } else if self
+                        .scope
                         .responses
                         .get(&id)
                         .is_some_and(|r| r.filter.text().is_empty())
@@ -920,7 +943,7 @@ impl Workspace {
     }
 
     fn apply_filter(&mut self, tab_id: u64, cx: &mut Context<Self>) {
-        let Some(r) = self.responses.get_mut(&tab_id) else {
+        let Some(r) = self.scope.responses.get_mut(&tab_id) else {
             return;
         };
         let path = r.filter.text().trim().to_string();
@@ -940,7 +963,12 @@ impl Workspace {
         cx.spawn(async move |this, cx| {
             let out = task.await;
             this.update(cx, |this, cx| {
-                if let Some(r) = this.responses.get_mut(&tab_id).filter(|r| r.seq == seq) {
+                if let Some(r) = this
+                    .scope
+                    .responses
+                    .get_mut(&tab_id)
+                    .filter(|r| r.seq == seq)
+                {
                     match out {
                         Ok(text) => {
                             r.filtered = Some(Arc::new(LineText::new(text)));
@@ -965,10 +993,10 @@ impl Workspace {
     /// `Copy as cURL`; secrets are masked unless `with_secrets` (SPEC §9.5).
     pub fn copy_curl(&mut self, with_secrets: bool, cx: &mut Context<Self>) {
         let Some(key) = self.active_key() else { return };
-        let Some(project) = self.project.as_ref() else {
+        let Some(ws) = self.scope.workspace.as_ref() else {
             return;
         };
-        let Some(doc) = project.doc(&key) else { return };
+        let Some(doc) = ws.doc(&key) else { return };
         let parsed = doc.parsed.clone();
         let Some(scope) = self.scope_for(&key) else {
             return;
@@ -988,7 +1016,12 @@ impl Workspace {
     }
 
     pub fn copy_response_body(&mut self, cx: &mut Context<Self>) {
-        let Some(r) = self.tabs.active_id().and_then(|id| self.responses.get(&id)) else {
+        let Some(r) = self
+            .scope
+            .tabs
+            .active_id()
+            .and_then(|id| self.scope.responses.get(&id))
+        else {
             return;
         };
         let text = match (&r.shown, r.result.as_ref().and_then(|x| x.outcome.as_ref())) {
@@ -1011,7 +1044,12 @@ impl Workspace {
     }
 
     pub fn save_response_body(&mut self, cx: &mut Context<Self>) {
-        let Some(r) = self.tabs.active_id().and_then(|id| self.responses.get(&id)) else {
+        let Some(r) = self
+            .scope
+            .tabs
+            .active_id()
+            .and_then(|id| self.scope.responses.get(&id))
+        else {
             return;
         };
         let Some(x) = r
@@ -1029,7 +1067,8 @@ impl Workspace {
             extension_for(r.view.as_ref().map_or(BodyKind::Binary, |v| v.kind))
         );
         let dir = self
-            .project
+            .scope
+            .workspace
             .as_ref()
             .map(|p| p.root.clone())
             .unwrap_or_else(std::env::temp_dir);
@@ -1057,10 +1096,10 @@ impl Workspace {
         ui: &TabUi,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let Some(tab_id) = self.tabs.active_id() else {
+        let Some(tab_id) = self.scope.tabs.active_id() else {
             return div().into_any_element();
         };
-        let r = self.responses.get(&tab_id);
+        let r = self.scope.responses.get(&tab_id);
         let strip = |content: AnyElement| {
             row()
                 .h(px(30.))
@@ -1411,11 +1450,12 @@ impl Workspace {
                 .font_family(BUFFER_FONT)
                 .text_size(px(12.))
                 .overflow_hidden()
-                .child(if edit.text().is_empty() {
-                    div().text_color(t.text_placeholder).child(placeholder)
-                } else {
-                    div().child(edit.text().to_string())
-                })
+                .child(crate::ui::field_text(
+                    edit,
+                    placeholder,
+                    t,
+                    self.is_focused(focus),
+                ))
         };
         let toolbar = row()
             .flex_none()
@@ -1526,27 +1566,29 @@ impl Workspace {
             let list = uniform_list(
                 "resp-body",
                 n,
-                cx.processor(move |_this: &mut Workspace, range: Range<usize>, _w, cx| {
-                    let t = crate::theme::theme(cx).clone();
-                    range
-                        .map(|row_ix| {
-                            let line = visible.as_ref().map_or(row_ix, |v| v[row_ix] as usize);
-                            let fold = (foldable
-                                && folds.get(line).is_some_and(|e| *e != u32::MAX))
-                            .then(|| collapsed.contains(&line));
-                            body_row(
-                                &t,
-                                line,
-                                shown.line(line),
-                                json,
-                                fold,
-                                matches.contains(&(line as u32)),
-                                tab_id,
-                                cx,
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                }),
+                cx.processor(
+                    move |_this: &mut WorkspaceView, range: Range<usize>, _w, cx| {
+                        let t = crate::theme::theme(cx).clone();
+                        range
+                            .map(|row_ix| {
+                                let line = visible.as_ref().map_or(row_ix, |v| v[row_ix] as usize);
+                                let fold = (foldable
+                                    && folds.get(line).is_some_and(|e| *e != u32::MAX))
+                                .then(|| collapsed.contains(&line));
+                                body_row(
+                                    &t,
+                                    line,
+                                    shown.line(line),
+                                    json,
+                                    fold,
+                                    matches.contains(&(line as u32)),
+                                    tab_id,
+                                    cx,
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                    },
+                ),
             )
             .track_scroll(r.scroll.clone())
             .flex_1()
@@ -1695,14 +1737,14 @@ impl Workspace {
             .font_family(BUFFER_FONT)
             .text_size(px(12.))
             .text_color(t.text_muted)
-            .when(self.console.is_empty(), |d| {
+            .when(self.scope.console.is_empty(), |d| {
                 d.child(
                     div()
                         .text_color(t.text_placeholder)
                         .child("Nothing sent yet."),
                 )
             })
-            .children(self.console.iter().map(|l| div().child(l.clone())))
+            .children(self.scope.console.iter().map(|l| div().child(l.clone())))
             .into_any_element()
     }
 }
@@ -1904,7 +1946,7 @@ fn body_row(
     fold: Option<bool>,
     matched: bool,
     tab_id: u64,
-    cx: &mut Context<Workspace>,
+    cx: &mut Context<WorkspaceView>,
 ) -> AnyElement {
     let (shown, cut) = match text.char_indices().nth(MAX_LINE_CHARS) {
         Some((i, _)) => (&text[..i], text.chars().count() - MAX_LINE_CHARS),

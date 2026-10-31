@@ -25,7 +25,10 @@ actions!(
         ReloadFromDisk,
         KeepMine,
         NewCollection,
-        OpenFolder,
+        AddCollection,
+        OpenWorkspace,
+        NewWorkspace,
+        SwitchWorkspace,
         Import,
         Save,
         RunFolder,
@@ -41,7 +44,7 @@ actions!(
         GroupTabsByKind,
         ToggleSplitOrientation,
         ToggleTheme,
-        ShowProjectPanel,
+        ShowWorkspacePanel,
         ShowHistoryPanel,
         ClearHistoryAll,
         ClearHistoryCollection,
@@ -174,14 +177,17 @@ pub static ACTIONS: &[ActionInfo] = &[
     ),
     a!("file: reload from disk", ReloadFromDisk, None, None),
     a!("file: keep my changes", KeepMine, None, None),
-    a!("workspace: new collection", NewCollection, None, None),
+    a!("collection: new…", NewCollection, None, None),
+    a!("collection: add existing…", AddCollection, None, None),
+    a!("workspace: open…", OpenWorkspace, Some("secondary-o"), None),
+    a!("workspace: switch…", SwitchWorkspace, None, None),
     a!(
-        "workspace: open folder",
-        OpenFolder,
-        Some("secondary-o"),
+        "workspace: new…",
+        NewWorkspace,
+        Some("secondary-shift-n"),
         None
     ),
-    a!("workspace: import", Import, None, None),
+    a!("collection: import…", Import, None, None),
     a!("file: save", Save, Some("secondary-s"), None),
     a!(
         "run: run folder",
@@ -231,7 +237,7 @@ pub static ACTIONS: &[ActionInfo] = &[
         None
     ),
     a!("theme: toggle", ToggleTheme, None, None),
-    a!("panel: project", ShowProjectPanel, None, None),
+    a!("panel: workspace", ShowWorkspacePanel, None, None),
     a!("panel: history", ShowHistoryPanel, None, None),
     a!("history: clear all", ClearHistoryAll, None, None),
     a!(
@@ -247,9 +253,9 @@ pub static ACTIONS: &[ActionInfo] = &[
     a!("panel: problems", ShowProblems, None, None),
     a!("request: open as text", OpenAsText, None, None),
     a!(
-        "workspace: close (show welcome)",
+        "workspace: close",
         CloseWorkspace,
-        None,
+        Some("secondary-shift-w"),
         None
     ),
     a!("docs: open for request", OpenDocs, None, None),
@@ -313,9 +319,91 @@ pub static ACTIONS: &[ActionInfo] = &[
     ),
 ];
 
+/// Old action names (Rust names and palette labels) that a user `keymap.toml` may still use;
+/// they map to the current action without a diagnostic. Kept for v1.0.
+const ALIASES: &[(&str, &str)] = &[
+    ("panel: project", "ShowWorkspacePanel"), // legacy-project alias
+    ("ShowProjectPanel", "ShowWorkspacePanel"), // legacy-project alias
+    ("OpenFolder", "OpenWorkspace"),
+    ("workspace: open folder", "OpenWorkspace"),
+    ("workspace: new collection", "NewCollection"),
+    ("workspace: import", "Import"),
+    ("workspace: close (show welcome)", "CloseWorkspace"),
+];
+
+/// The level an action belongs to (SPEC §17.9). An action is available only when its level is
+/// open: App always, Workspace with an open Workspace, Collection with at least one Collection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Scope {
+    App,
+    Workspace,
+    Collection,
+}
+
+const APP_ACTIONS: &[&str] = &[
+    "OpenWorkspace",
+    "NewWorkspace",
+    "SwitchWorkspace",
+    "NewWindow",
+    "CommandPalette",
+    "ToggleTheme",
+    "OpenSettingsFile",
+    "OpenKeymapFile",
+    "ReloadKeymap",
+    "Dismiss",
+    "Quit",
+];
+
+const WORKSPACE_ACTIONS: &[&str] = &[
+    "CloseWorkspace",
+    "NewCollection",
+    "NewRequest",
+    "NewFolder",
+    "NewWebSocketRequest",
+    "AddCollection",
+    "Import",
+    "QuickSearch",
+    "OpenKeybindings",
+    "RevealInFileManager",
+    "ToggleLeftDock",
+    "ToggleBottomDock",
+    "ToggleSplitOrientation",
+    "ShowWorkspacePanel",
+    "ShowHistoryPanel",
+    "ShowSyncPanel",
+    "ShowConsole",
+    "ShowProblems",
+    "CloseTab",
+    "PinTab",
+    "NextTab",
+    "PrevTab",
+    "ReopenClosedTab",
+    "GroupTabsByKind",
+    "CloseOtherTabs",
+    "CloseTabsToRight",
+    "CloseCleanTabs",
+    "CloseAllTabs",
+    "CopyTabPath",
+];
+
+pub fn scope_of(name: &str) -> Scope {
+    let short = name.rsplit("::").next().unwrap_or(name);
+    if APP_ACTIONS.contains(&short) {
+        Scope::App
+    } else if WORKSPACE_ACTIONS.contains(&short) {
+        Scope::Workspace
+    } else {
+        Scope::Collection
+    }
+}
+
 /// Finds an action by `fluxwire::Send`, bare `Send`, or a namespaced alias such as
 /// `request::Send` (SPEC §17.6): only the last path segment has to match.
 pub fn find_action(name: &str) -> Option<&'static ActionInfo> {
+    let name = ALIASES
+        .iter()
+        .find(|(old, _)| *old == name.trim() || name.trim().rsplit("::").next() == Some(*old))
+        .map_or(name, |(_, new)| new);
     let short = name.trim().rsplit("::").next().unwrap_or_default();
     if short.is_empty() {
         return None;
@@ -574,9 +662,41 @@ mod tests {
             ("view: toggle left dock", "secondary-b"),
             ("view: toggle bottom dock", "secondary-j"),
             ("request: focus URL bar", "secondary-l"),
+            ("workspace: close", "secondary-shift-w"),
+            ("workspace: new…", "secondary-shift-n"),
+            ("workspace: open…", "secondary-o"),
         ] {
             let a = ACTIONS.iter().find(|a| a.label == label).unwrap();
             assert_eq!(a.binding, Some(keys), "{label}");
         }
+    }
+
+    #[test]
+    fn default_bindings_do_not_conflict() {
+        let mut seen = std::collections::HashMap::new();
+        for a in ACTIONS {
+            if let Some(k) = a.binding
+                && let Some(prev) = seen.insert((k, a.context), a.label)
+            {
+                panic!("{k} is bound to both {prev:?} and {:?}", a.label);
+            }
+        }
+    }
+
+    #[test]
+    fn old_action_names_are_aliases_and_scopes_are_assigned() {
+        for (old, label) in [
+            ("OpenFolder", "workspace: open…"),
+            ("workspace: open folder", "workspace: open…"),
+            ("workspace: new collection", "collection: new…"),
+            ("workspace: import", "collection: import…"),
+            ("workspace: close (show welcome)", "workspace: close"),
+            ("fluxwire::OpenFolder", "workspace: open…"),
+        ] {
+            assert_eq!(find_action(old).unwrap().label, label, "{old}");
+        }
+        assert_eq!(scope_of("fluxwire::OpenWorkspace"), Scope::App);
+        assert_eq!(scope_of("fluxwire::CloseWorkspace"), Scope::Workspace);
+        assert_eq!(scope_of("fluxwire::Send"), Scope::Collection);
     }
 }

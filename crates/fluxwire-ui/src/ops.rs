@@ -10,12 +10,12 @@ use gpui::{Context, KeyDownEvent, PathPromptOptions, Window};
 use crate::{
     editor::EditorState,
     envs::{CompleteKey, CompleteTarget},
-    project::{
-        OpenDoc, Problem, Project, Session, Target, remember_workspace, save_recent, save_session,
-    },
     tabs::TabKind,
     workspace::{
-        CellEdit, Col, METHODS, MenuKind, ModalKind, PromptPurpose, TabUi, Table, Workspace,
+        CellEdit, Col, METHODS, MenuKind, ModalKind, PromptPurpose, TabUi, Table, WorkspaceView,
+    },
+    workspace_model::{
+        OpenDoc, Problem, Session, Target, Workspace, remember_workspace, save_recent, save_session,
     },
 };
 
@@ -29,22 +29,33 @@ fn tab_kind(doc: &OpenDoc) -> TabKind {
     }
 }
 
-impl Workspace {
+/// Width of one cell of the monospace URL bar.
+pub(crate) fn url_char_width(ts: &gpui::TextSystem) -> f32 {
+    let id = ts.resolve_font(&gpui::font(crate::assets::BUFFER_FONT));
+    ts.advance(id, gpui::px(14.), 'm')
+        .map(|s| f32::from(s.width))
+        .unwrap_or(8.4)
+        .max(1.0)
+}
+
+impl WorkspaceView {
     // ---- labels ---------------------------------------------------------------------------
 
     pub fn workspace_label(&self) -> String {
-        self.project
+        self.scope
+            .workspace
             .as_ref()
             .map_or_else(|| "Fluxwire".to_string(), |p| p.name.clone())
     }
 
     pub fn branch_label(&self) -> Option<String> {
-        self.project.as_ref().and_then(|p| p.branch.clone())
+        self.scope.workspace.as_ref().and_then(|p| p.branch.clone())
     }
 
     pub fn prompt_title(&self) -> Option<String> {
         match self.prompt.as_ref()? {
             PromptPurpose::Rename { .. } => Some("Rename to".to_string()),
+            PromptPurpose::RenameCollection { .. } => Some("Rename collection to".to_string()),
             PromptPurpose::NewEnvironment => Some("New environment name".to_string()),
             PromptPurpose::RenameEnvironment { .. } => Some("Rename environment to".to_string()),
         }
@@ -52,10 +63,11 @@ impl Workspace {
 
     /// Name of the folder that Run/Docs act on (selected folder, else collection name).
     pub fn selected_folder_name(&self) -> String {
-        let key = self.selected.clone().unwrap_or_default();
+        let key = self.scope.selected.clone().unwrap_or_default();
         let last = key.rsplit('/').next().unwrap_or("");
         if last.is_empty() || last.ends_with(".md") {
-            self.project
+            self.scope
+                .workspace
                 .as_ref()
                 .map_or("workspace".into(), |p| p.name.clone())
         } else {
@@ -66,27 +78,18 @@ impl Workspace {
     // ---- opening --------------------------------------------------------------------------
 
     /// Open a folder as the workspace, replacing the current one.
-    pub fn open_project(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn open_workspace(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
         self.save_session_now();
-        match Project::open(path) {
+        match Workspace::open(path) {
             Ok(p) => {
                 self.open_error = None;
-                self.tabs = Default::default();
-                self.tab_ui.clear();
-                self.collapsed.clear();
-                self.selected = None;
-                self.cell = None;
-                self.watcher = None;
-                self.project = Some(p);
-                self.history_project_changed(cx);
+                self.replace_scope();
+                self.scope.workspace = Some(p);
+                self.history_workspace_changed(cx);
                 let remembered = self
                     .state_dir
                     .as_ref()
-                    .and_then(|d| crate::project::load_session(d, path).active_env);
-                self.envs.runtime.clear();
-                self.envs.states.clear();
-                self.envs.warned.clear();
-                self.envs.edit = None;
+                    .and_then(|d| crate::workspace_model::load_session(d, path).active_env);
                 self.init_active_env(remembered);
                 if let Some(dir) = &self.state_dir {
                     remember_workspace(&mut self.recent, path);
@@ -100,47 +103,35 @@ impl Workspace {
             }
             Err(e) => {
                 self.open_error = Some(e.to_string());
-                self.project = None;
+                self.replace_scope();
             }
         }
         cx.notify();
     }
 
-    /// Turn the opened folder into a collection (writes `fluxwire.toml` and friends).
-    pub fn create_collection_here(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(root) = self.project.as_ref().map(|p| p.root.clone()) else {
-            return;
-        };
-        let name = root
-            .file_name()
-            .map_or("Collection".into(), |n| n.to_string_lossy().into_owned());
-        match fmt::create_collection(&root, &name) {
-            Ok(()) => self.open_project(&root, window, cx),
-            Err(e) => {
-                self.notice = Some(format!("Could not create collection: {e}"));
-                cx.notify();
-            }
-        }
+    /// Drop the current `OpenWorkspace` (cancelling its runs and sessions) and start from a
+    /// fresh one; only the user's environment settings carry over.
+    fn replace_scope(&mut self) {
+        let settings = std::mem::take(&mut self.scope.envs.settings);
+        self.scope = Default::default();
+        self.scope.envs.settings = settings;
     }
 
-    pub fn close_project(&mut self) {
+    /// Close the open Workspace: save its session, shut it down and drop it. Closing means the
+    /// next launch shows the welcome view.
+    pub fn close_workspace(&mut self) {
         self.save_session_now();
-        self.project = None;
-        self.watcher = None;
+        self.replace_scope();
         self.history.ws_key = None;
         self.history.entries.clear();
         self.history.rebuild_rows_pub();
-        self.tabs = Default::default();
-        self.tab_ui.clear();
-        self.selected = None;
+        self.recent.last = None;
+        if let Some(dir) = &self.state_dir {
+            save_recent(dir, &self.recent);
+        }
     }
 
-    pub fn open_folder_dialog(
-        &mut self,
-        create: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn open_folder_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let rx = cx.prompt_for_paths(PathPromptOptions {
             files: false,
             directories: true,
@@ -155,17 +146,7 @@ impl Workspace {
                 return;
             };
             this.update_in(cx, |this, window, cx| {
-                if create {
-                    let name = path
-                        .file_name()
-                        .map_or("Collection".into(), |n| n.to_string_lossy().into_owned());
-                    if let Err(e) = fmt::create_collection(&path, &name) {
-                        this.notice = Some(format!("Could not create collection: {e}"));
-                        cx.notify();
-                        return;
-                    }
-                }
-                this.open_project(&path, window, cx);
+                this.request_close(crate::dialogs::AfterClose::Open(path), window, cx)
             })
             .ok();
         })
@@ -177,7 +158,7 @@ impl Workspace {
         let Ok(handle) = fmt::watch(root, tx) else {
             return;
         };
-        self.watcher = Some(handle);
+        self.scope.watcher = Some(handle);
         let (atx, arx) = smol::channel::unbounded::<Vec<PathBuf>>();
         std::thread::spawn(move || {
             while let Ok(batch) = rx.recv() {
@@ -201,7 +182,7 @@ impl Workspace {
 
     /// External file changes (from the watcher, or called directly in tests).
     pub fn on_fs_changes(&mut self, batch: &[PathBuf], cx: &mut Context<Self>) {
-        let Some(p) = self.project.as_mut() else {
+        let Some(p) = self.scope.workspace.as_mut() else {
             return;
         };
         let changed = p.handle_fs(batch);
@@ -215,19 +196,20 @@ impl Workspace {
 
     /// Keep tab title, kind and dirty dot in line with the document.
     pub fn sync_tab(&mut self, key: &str) {
-        let Some(doc) = self.project.as_ref().and_then(|p| p.doc(key)) else {
+        let Some(doc) = self.scope.workspace.as_ref().and_then(|p| p.doc(key)) else {
             return;
         };
         let (title, kind, dirty) = (doc.title(), tab_kind(doc), doc.dirty());
-        self.tabs.update(key, &title, kind);
-        if let Some(id) = self.tabs.id_for_key(key) {
-            self.tabs.set_dirty(id, dirty);
+        self.scope.tabs.update(key, &title, kind);
+        if let Some(id) = self.scope.tabs.id_for_key(key) {
+            self.scope.tabs.set_dirty(id, dirty);
         }
     }
 
     /// After structural changes: load missing documents for open tabs, close tabs whose file is gone.
     pub fn reconcile_tabs(&mut self) {
         let keys: Vec<String> = self
+            .scope
             .tabs
             .all()
             .iter()
@@ -235,11 +217,11 @@ impl Workspace {
             .map(|t| t.key.clone())
             .collect();
         for key in keys {
-            let Some(p) = self.project.as_mut() else {
+            let Some(p) = self.scope.workspace.as_mut() else {
                 return;
             };
             if p.doc(&key).is_none() && p.open_doc(&key).is_err() {
-                self.tabs.close_key(&key);
+                self.scope.tabs.close_key(&key);
             }
             self.sync_tab(&key);
         }
@@ -252,7 +234,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(p) = self.project.as_mut() else {
+        let Some(p) = self.scope.workspace.as_mut() else {
             return;
         };
         let doc = match p.open_doc(key) {
@@ -266,27 +248,28 @@ impl Workspace {
         let (title, kind) = (doc.title(), tab_kind(doc));
         let dirty = doc.dirty();
         let id = if permanent {
-            self.tabs.open_permanent(key, &title, kind)
+            self.scope.tabs.open_permanent(key, &title, kind)
         } else {
-            self.tabs.open_preview(key, &title, kind)
+            self.scope.tabs.open_preview(key, &title, kind)
         };
-        self.tabs.set_dirty(id, dirty);
+        self.scope.tabs.set_dirty(id, dirty);
         if !dirty && !permanent {
             // set_dirty(false) never changes preview-ness.
         }
         let method = self
-            .project
+            .scope
+            .workspace
             .as_ref()
             .and_then(|p| p.doc(key))
             .and_then(|d| METHODS.iter().position(|m| *m == d.method()))
             .unwrap_or(0);
-        self.tab_ui.entry(id).or_insert_with(|| TabUi {
+        self.scope.tab_ui.entry(id).or_insert_with(|| TabUi {
             method,
             ..TabUi::new()
         });
-        self.selected = Some(key.to_string());
-        self.cell = None;
-        self.target = Target::Body;
+        self.scope.selected = Some(key.to_string());
+        self.scope.cell = None;
+        self.scope.target = Target::Body;
         window.focus(&self.root_focus);
         self.session_dirty = true;
         cx.notify();
@@ -300,14 +283,15 @@ impl Workspace {
 
     fn after_edit(&mut self, key: &str, cx: &mut Context<Self>) {
         self.sync_tab(key);
-        if let Some(id) = self.tabs.id_for_key(key)
+        if let Some(id) = self.scope.tabs.id_for_key(key)
             && self
-                .project
+                .scope
+                .workspace
                 .as_ref()
                 .and_then(|p| p.doc(key))
                 .is_some_and(|d| d.dirty())
         {
-            self.tabs.set_dirty(id, true);
+            self.scope.tabs.set_dirty(id, true);
         }
         self.session_dirty = true;
         cx.notify();
@@ -315,18 +299,13 @@ impl Workspace {
 
     /// Character index under a pointer position in the URL bar (monospace cells).
     fn url_index(&self, window: &Window, pos: gpui::Point<gpui::Pixels>) -> usize {
-        let ts = window.text_system();
-        let id = ts.resolve_font(&gpui::font(crate::assets::BUFFER_FONT));
-        let cw = ts
-            .advance(id, gpui::px(14.), 'm')
-            .map(|s| f32::from(s.width))
-            .unwrap_or(8.4)
-            .max(1.0);
+        let cw = url_char_width(window.text_system());
         let x = f32::from(pos.x - self.url_bounds.get().origin.x);
         let len = self
             .active_key()
             .and_then(|k| {
-                self.project
+                self.scope
+                    .workspace
                     .as_ref()?
                     .doc(&k)?
                     .parsed
@@ -348,7 +327,8 @@ impl Workspace {
         let text = self
             .active_key()
             .and_then(|k| {
-                self.project
+                self.scope
+                    .workspace
                     .as_ref()?
                     .doc(&k)?
                     .parsed
@@ -357,12 +337,12 @@ impl Workspace {
             })
             .unwrap_or_default();
         let len = text.chars().count();
-        self.url_sel = match ev.click_count {
+        self.scope.url_sel = match ev.click_count {
             2 => Some(crate::ui::word_range(&text, idx)),
             n if n >= 3 => Some((0, len)),
             _ => Some((idx, idx)),
         };
-        self.url_drag = ev.click_count == 1;
+        self.scope.url_drag = ev.click_count == 1;
         cx.notify();
     }
 
@@ -372,12 +352,12 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.url_drag || ev.pressed_button != Some(gpui::MouseButton::Left) {
+        if !self.scope.url_drag || ev.pressed_button != Some(gpui::MouseButton::Left) {
             return;
         }
         let idx = self.url_index(window, ev.position);
-        if let Some((a, _)) = self.url_sel {
-            self.url_sel = Some((a, idx));
+        if let Some((a, _)) = self.scope.url_sel {
+            self.scope.url_sel = Some((a, idx));
             cx.notify();
         }
     }
@@ -386,9 +366,10 @@ impl Workspace {
     /// replaced by typing or pasting and removed by Backspace; Cmd/Ctrl+A/C/X work on it.
     pub(crate) fn on_url_key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) {
         let Some(key) = self.active_key() else { return };
-        if self.envs.completion.is_some() {
+        if self.scope.envs.completion.is_some() {
             let cur = self
-                .project
+                .scope
+                .workspace
                 .as_ref()
                 .and_then(|p| p.doc(&key))
                 .and_then(|d| d.parsed.request().map(|r| r.target.clone()))
@@ -405,7 +386,7 @@ impl Workspace {
                 CompleteKey::Pass => {}
             }
         }
-        let Some(doc) = self.project.as_mut().and_then(|p| p.doc_mut(&key)) else {
+        let Some(doc) = self.scope.workspace.as_mut().and_then(|p| p.doc_mut(&key)) else {
             return;
         };
         let Some(req) = doc.parsed.request() else {
@@ -413,27 +394,52 @@ impl Workspace {
         };
         let (method, target) = (req.method.clone(), req.target.clone());
         let mut chars: Vec<char> = target.chars().collect();
-        let sel = self
+        let len = chars.len();
+        // `None` means the caret is at the end; `(a, a)` is a caret at `a`; otherwise a range
+        // whose head (second) is the end that moves.
+        let (anchor, head) = self
+            .scope
             .url_sel
-            .map(|(a, b)| (a.min(b).min(chars.len()), a.max(b).min(chars.len())))
-            .filter(|(a, b)| a != b);
+            .map_or((len, len), |(a, b)| (a.min(len), b.min(len)));
+        let (lo, hi) = (anchor.min(head), anchor.max(head));
+        let sel = (lo != hi).then_some((lo, hi));
         let ks = &ev.keystroke;
-        // Replace the selection (or append at the end) with `ins`.
-        let insert = |chars: &mut Vec<char>, ins: &str| {
-            let ins = ins
-                .chars()
-                .filter(|c| !c.is_whitespace() && !c.is_control());
-            match sel {
-                Some((a, b)) => {
-                    chars.splice(a..b, ins);
-                }
-                None => chars.extend(ins),
-            }
+        // Cursor movement: arrows, Home/End, Cmd/Ctrl+Left/Right; Shift extends the selection.
+        let moved = match ks.key.as_str() {
+            "left" if ks.modifiers.secondary() => Some(0),
+            "right" if ks.modifiers.secondary() => Some(len),
+            "left" if sel.is_some() && !ks.modifiers.shift => Some(lo),
+            "right" if sel.is_some() && !ks.modifiers.shift => Some(hi),
+            "left" => Some(head.saturating_sub(1)),
+            "right" => Some((head + 1).min(len)),
+            "home" => Some(0),
+            "end" => Some(len),
+            _ => None,
         };
+        if let Some(to) = moved {
+            self.scope.url_sel = Some(if ks.modifiers.shift {
+                (anchor, to)
+            } else {
+                (to, to)
+            });
+            cx.notify();
+            return;
+        }
+        // Replace the selection (or insert at the caret) with `ins`; returns the new caret.
+        fn splice(chars: &mut Vec<char>, lo: usize, hi: usize, ins: &str) -> usize {
+            let ins: Vec<char> = ins
+                .chars()
+                .filter(|c| !c.is_whitespace() && !c.is_control())
+                .collect();
+            let n = ins.len();
+            chars.splice(lo..hi, ins);
+            lo + n
+        }
+        let caret;
         if ks.modifiers.secondary() && matches!(ks.key.as_str(), "a" | "c" | "x") {
             match ks.key.as_str() {
                 "a" => {
-                    self.url_sel = Some((0, chars.len()));
+                    self.scope.url_sel = Some((0, len));
                     cx.notify();
                     return;
                 }
@@ -446,11 +452,12 @@ impl Workspace {
                         return;
                     }
                     chars.drain(a..b);
+                    caret = a;
                 }
             }
         } else if ks.modifiers.secondary() && ks.key == "v" {
             // Paste: a `curl ...` command fills the whole request (SPEC §9.5); anything else
-            // replaces the selection or is appended to the URL.
+            // replaces the selection or is inserted at the caret.
             let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) else {
                 return;
             };
@@ -458,30 +465,45 @@ impl Workspace {
                 && let Some(edits) = fluxwire_runner::runner().edits_from_paste(&doc.parsed, &text)
             {
                 if doc.apply(&edits) {
-                    self.url_sel = None;
+                    self.scope.url_sel = None;
                     self.after_edit(&key, cx);
                     self.notice = Some("Filled the request from a cURL command.".into());
                 }
                 return;
             }
-            insert(&mut chars, &text);
+            caret = splice(&mut chars, lo, hi, &text);
         } else if ks.modifiers.control || ks.modifiers.platform {
             return;
-        } else if ks.key == "backspace" || ks.key == "delete" {
-            match sel {
+        } else if ks.key == "backspace" {
+            caret = match sel {
                 Some((a, b)) => {
                     chars.drain(a..b);
+                    a
                 }
-                None => {
-                    chars.pop();
+                None if head > 0 => {
+                    chars.remove(head - 1);
+                    head - 1
                 }
-            }
+                None => return,
+            };
+        } else if ks.key == "delete" {
+            caret = match sel {
+                Some((a, b)) => {
+                    chars.drain(a..b);
+                    a
+                }
+                None if head < len => {
+                    chars.remove(head);
+                    head
+                }
+                None => return,
+            };
         } else if let Some(s) = ks.key_char.as_deref().filter(|s| !s.is_empty()) {
-            insert(&mut chars, s);
+            caret = splice(&mut chars, lo, hi, s);
         } else {
             return;
         }
-        self.url_sel = None;
+        self.scope.url_sel = Some((caret, caret));
         let target: String = chars.into_iter().collect();
         let edits = fmt::set_request_line(&doc.parsed, &method, &target);
         if doc.apply(&edits) {
@@ -492,7 +514,7 @@ impl Workspace {
 
     /// Replace the whole request target (used to accept a `{{` completion).
     pub(crate) fn set_url_text(&mut self, key: &str, target: &str, cx: &mut Context<Self>) {
-        let Some(doc) = self.project.as_mut().and_then(|p| p.doc_mut(key)) else {
+        let Some(doc) = self.scope.workspace.as_mut().and_then(|p| p.doc_mut(key)) else {
             return;
         };
         let Some(method) = doc.parsed.request().map(|r| r.method.clone()) else {
@@ -500,14 +522,14 @@ impl Workspace {
         };
         let edits = fmt::set_request_line(&doc.parsed, &method, target);
         if doc.apply(&edits) {
-            self.url_sel = None;
+            self.scope.url_sel = None;
             self.after_edit(key, cx);
         }
     }
 
     pub fn set_method(&mut self, idx: usize, cx: &mut Context<Self>) {
         let Some(key) = self.active_key() else { return };
-        let Some(doc) = self.project.as_mut().and_then(|p| p.doc_mut(&key)) else {
+        let Some(doc) = self.scope.workspace.as_mut().and_then(|p| p.doc_mut(&key)) else {
             return;
         };
         let Some(req) = doc.parsed.request() else {
@@ -525,9 +547,9 @@ impl Workspace {
 
     pub fn toggle_text_mode(&mut self, cx: &mut Context<Self>) {
         let Some(key) = self.active_key() else { return };
-        if let Some(doc) = self.project.as_mut().and_then(|p| p.doc_mut(&key)) {
+        if let Some(doc) = self.scope.workspace.as_mut().and_then(|p| p.doc_mut(&key)) {
             doc.text_mode = !doc.text_mode;
-            self.target = if doc.text_mode {
+            self.scope.target = if doc.text_mode {
                 Target::Text
             } else {
                 Target::Body
@@ -539,9 +561,9 @@ impl Workspace {
     /// Route a key press to the focused editor surface of the active document.
     pub fn on_editor_key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) {
         let Some(key) = self.active_key() else { return };
-        let target = self.target;
+        let target = self.scope.target;
         let clip = cx.read_from_clipboard().and_then(|c| c.text());
-        let Some(doc) = self.project.as_mut().and_then(|p| p.doc_mut(&key)) else {
+        let Some(doc) = self.scope.workspace.as_mut().and_then(|p| p.doc_mut(&key)) else {
             return;
         };
         let mut text = doc.target_text(target);
@@ -582,9 +604,9 @@ impl Workspace {
 
     pub fn click_editor(&mut self, pos: gpui::Point<gpui::Pixels>, cx: &mut Context<Self>) {
         let Some(key) = self.active_key() else { return };
-        let target = self.target;
+        let target = self.scope.target;
         let bounds = self.editor_bounds.get();
-        let Some(doc) = self.project.as_mut().and_then(|p| p.doc_mut(&key)) else {
+        let Some(doc) = self.scope.workspace.as_mut().and_then(|p| p.doc_mut(&key)) else {
             return;
         };
         let text = doc.target_text(target);
@@ -605,13 +627,13 @@ impl Workspace {
             Some(rest) if default_js => format!("js {rest}"),
             _ => info.to_string(),
         };
-        let Some(doc) = self.project.as_mut().and_then(|p| p.doc_mut(&key)) else {
+        let Some(doc) = self.scope.workspace.as_mut().and_then(|p| p.doc_mut(&key)) else {
             return;
         };
         let edits = fmt::insert_block(&doc.parsed, kind.clone(), &info, "");
         if doc.apply(&edits) {
             if let Some(i) = doc.find_block(kind, None) {
-                self.target = Target::Block(i);
+                self.scope.target = Target::Block(i);
             }
             self.after_edit(&key, cx);
         }
@@ -620,7 +642,7 @@ impl Workspace {
     /// Switch the first `kind` block between `ts` and `js` by rewriting only its info string.
     pub fn toggle_block_language(&mut self, kind: BlockKind, cx: &mut Context<Self>) {
         let Some(key) = self.active_key() else { return };
-        let Some(doc) = self.project.as_mut().and_then(|p| p.doc_mut(&key)) else {
+        let Some(doc) = self.scope.workspace.as_mut().and_then(|p| p.doc_mut(&key)) else {
             return;
         };
         let Some(i) = doc.find_block(kind, None) else {
@@ -645,9 +667,10 @@ impl Workspace {
         let mut content = "HTTP 2xx".to_string();
         if from_response
             && let Some(x) = self
+                .scope
                 .tabs
                 .active_id()
-                .and_then(|id| self.responses.get(&id))
+                .and_then(|id| self.scope.responses.get(&id))
                 .and_then(|r| r.result.as_ref())
                 .and_then(|r| r.outcome.as_ref())
                 .and_then(|o| o.exchange.as_ref())
@@ -657,7 +680,7 @@ impl Workspace {
                 content.push_str(&format!("\nContent-Type: {ct}"));
             }
         }
-        let Some(doc) = self.project.as_mut().and_then(|p| p.doc_mut(&key)) else {
+        let Some(doc) = self.scope.workspace.as_mut().and_then(|p| p.doc_mut(&key)) else {
             return;
         };
         if doc.find_block(BlockKind::Expect, None).is_some() {
@@ -666,7 +689,7 @@ impl Workspace {
         let edits = fmt::insert_block(&doc.parsed, BlockKind::Expect, "http expect", &content);
         if doc.apply(&edits) {
             if let Some(i) = doc.find_block(BlockKind::Expect, None) {
-                self.target = Target::Block(i);
+                self.scope.target = Target::Block(i);
             }
             self.after_edit(&key, cx);
         }
@@ -675,7 +698,7 @@ impl Workspace {
     /// Replace the status line of the `http expect` block (`201`, `2xx`, `*`).
     pub fn set_expect_status(&mut self, status: &str, cx: &mut Context<Self>) {
         let Some(key) = self.active_key() else { return };
-        let Some(doc) = self.project.as_mut().and_then(|p| p.doc_mut(&key)) else {
+        let Some(doc) = self.scope.workspace.as_mut().and_then(|p| p.doc_mut(&key)) else {
             return;
         };
         let Some(i) = doc.find_block(BlockKind::Expect, None) else {
@@ -702,7 +725,8 @@ impl Workspace {
 
     pub fn table_rows(&self, key: &str, table: Table) -> Vec<(bool, String, String)> {
         let Some(req) = self
-            .project
+            .scope
+            .workspace
             .as_ref()
             .and_then(|p| p.doc(key))
             .and_then(|d| d.parsed.request())
@@ -749,7 +773,7 @@ impl Workspace {
                 }
             })
             .unwrap_or_default();
-        self.cell = Some(CellEdit {
+        self.scope.cell = Some(CellEdit {
             key,
             table,
             row,
@@ -770,7 +794,7 @@ impl Workspace {
         value: &str,
     ) -> bool {
         let len = self.table_rows_len(key, table);
-        let Some(doc) = self.project.as_mut().and_then(|p| p.doc_mut(key)) else {
+        let Some(doc) = self.scope.workspace.as_mut().and_then(|p| p.doc_mut(key)) else {
             return false;
         };
         let edits = match (table, row < len) {
@@ -795,12 +819,12 @@ impl Workspace {
     }
 
     pub fn on_cell_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(mut cell) = self.cell.clone() else {
+        let Some(mut cell) = self.scope.cell.clone() else {
             return;
         };
         let ks = &ev.keystroke;
         let mut accepted = false;
-        if self.envs.completion.is_some() {
+        if self.scope.envs.completion.is_some() {
             match self.completion_key(ev, CompleteTarget::Cell, &cell.text) {
                 CompleteKey::Consumed => {
                     cx.notify();
@@ -816,18 +840,18 @@ impl Workspace {
         match ks.key.as_str() {
             _ if accepted => {}
             "enter" | "escape" => {
-                self.cell = None;
-                self.envs.completion = None;
+                self.scope.cell = None;
+                self.scope.envs.completion = None;
                 window.focus(&self.root_focus);
                 cx.notify();
                 return;
             }
             "tab" => {
-                self.envs.completion = None;
+                self.scope.envs.completion = None;
                 if cell.col == Col::Key {
                     self.start_cell(cell.table, cell.row, Col::Value, window, cx);
                 } else {
-                    self.cell = None;
+                    self.scope.cell = None;
                     window.focus(&self.root_focus);
                 }
                 cx.notify();
@@ -853,7 +877,7 @@ impl Workspace {
 
     /// Apply the edited cell text to the document (after typing or accepting a completion).
     pub(crate) fn apply_cell_text(&mut self, cx: &mut Context<Self>) {
-        if let Some(cell) = self.cell.clone() {
+        if let Some(cell) = self.scope.cell.clone() {
             self.commit_cell(cell, cx);
         }
     }
@@ -879,14 +903,14 @@ impl Workspace {
                 }
                 let key = cell.key.clone();
                 let text = cell.text.clone();
-                self.cell = Some(cell);
+                self.scope.cell = Some(cell);
                 self.after_edit(&key, cx);
                 self.refresh_completion(CompleteTarget::Cell, &text);
                 return;
             }
         }
         let text = cell.text.clone();
-        self.cell = Some(cell);
+        self.scope.cell = Some(cell);
         self.refresh_completion(CompleteTarget::Cell, &text);
         cx.notify();
     }
@@ -903,7 +927,7 @@ impl Workspace {
 
     pub fn delete_row(&mut self, table: Table, row: usize, cx: &mut Context<Self>) {
         let Some(key) = self.active_key() else { return };
-        let Some(doc) = self.project.as_mut().and_then(|p| p.doc_mut(&key)) else {
+        let Some(doc) = self.scope.workspace.as_mut().and_then(|p| p.doc_mut(&key)) else {
             return;
         };
         let edits = match table {
@@ -911,7 +935,7 @@ impl Workspace {
             Table::Params => fmt::remove_query(&doc.parsed, row),
         };
         if doc.apply(&edits) {
-            self.cell = None;
+            self.scope.cell = None;
             self.after_edit(&key, cx);
         }
     }
@@ -920,15 +944,15 @@ impl Workspace {
 
     pub fn save_active(&mut self, cx: &mut Context<Self>) {
         let Some(key) = self.active_key() else { return };
-        let Some(doc) = self.project.as_mut().and_then(|p| p.doc_mut(&key)) else {
+        let Some(doc) = self.scope.workspace.as_mut().and_then(|p| p.doc_mut(&key)) else {
             return;
         };
         match doc.save() {
             Ok(()) => {
                 self.notice = None;
                 self.sync_tab(&key);
-                if let Some(id) = self.tabs.id_for_key(&key) {
-                    self.tabs.set_dirty(id, false);
+                if let Some(id) = self.scope.tabs.id_for_key(&key) {
+                    self.scope.tabs.set_dirty(id, false);
                 }
             }
             Err(e) => self.notice = Some(format!("Could not save: {e}")),
@@ -940,7 +964,7 @@ impl Workspace {
     /// Conflict bar: take the disk version (`reload`) or keep the in-memory edits.
     pub fn resolve_conflict(&mut self, reload: bool, cx: &mut Context<Self>) {
         let Some(key) = self.active_key() else { return };
-        let Some(doc) = self.project.as_mut().and_then(|p| p.doc_mut(&key)) else {
+        let Some(doc) = self.scope.workspace.as_mut().and_then(|p| p.doc_mut(&key)) else {
             return;
         };
         if let Some(disk) = doc.conflict.take() {
@@ -963,13 +987,18 @@ impl Workspace {
             return;
         }
         self.open_request(&p.key.clone(), true, window, cx);
-        let Some(doc) = self.project.as_mut().and_then(|pr| pr.doc_mut(&p.key)) else {
+        let Some(doc) = self
+            .scope
+            .workspace
+            .as_mut()
+            .and_then(|pr| pr.doc_mut(&p.key))
+        else {
             return;
         };
         doc.text_mode = true;
         let off = p.span.start.min(doc.text.len());
         doc.editors.entry(Target::Text).or_default().cursor = off;
-        self.target = Target::Text;
+        self.scope.target = Target::Text;
         let line = crate::editor::line_col(&doc.text, off).0;
         window.focus(&self.root_focus);
         self.editor_scroll.set_offset(gpui::point(
@@ -984,8 +1013,8 @@ impl Workspace {
     /// Directory new items go into: the selected folder, the folder of the selected request, or
     /// the first collection root.
     fn target_dir(&self) -> Option<PathBuf> {
-        let p = self.project.as_ref()?;
-        if let Some(sel) = &self.selected {
+        let p = self.scope.workspace.as_ref()?;
+        if let Some(sel) = &self.scope.selected {
             let abs = p.abs_of(sel);
             if abs.is_dir() {
                 return Some(abs);
@@ -1013,10 +1042,10 @@ impl Workspace {
             return;
         };
         let parent = self.key_for(&dir).unwrap_or_default();
-        self.collapsed.remove(&parent);
-        self.left_open = true;
-        self.panel = crate::workspace::Panel::Project;
-        self.inline = Some(crate::workspace::InlineNew {
+        self.scope.collapsed.remove(&parent);
+        self.scope.left_open = true;
+        self.scope.panel = crate::workspace::Panel::Workspace;
+        self.scope.inline = Some(crate::workspace::InlineNew {
             parent,
             dir,
             websocket,
@@ -1028,7 +1057,7 @@ impl Workspace {
     }
 
     pub fn cancel_inline(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.inline.take().is_some() {
+        if self.scope.inline.take().is_some() {
             window.focus(&self.root_focus);
             cx.notify();
         }
@@ -1040,7 +1069,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(inline) = self.inline.as_mut() else {
+        let Some(inline) = self.scope.inline.as_mut() else {
             return;
         };
         match ev.keystroke.key.as_str() {
@@ -1054,7 +1083,7 @@ impl Workspace {
     }
 
     pub fn confirm_inline(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(inline) = self.inline.take() else {
+        let Some(inline) = self.scope.inline.take() else {
             return;
         };
         window.focus(&self.root_focus);
@@ -1066,18 +1095,20 @@ impl Workspace {
         let result = if inline.folder {
             fmt::create_folder(&inline.dir, &name).map(|p| (p, false))
         } else {
-            fmt::create_request(&inline.dir, &name, "", inline.websocket).map(|p| (p, true))
+            let url = self.default_url_for(&inline.dir, inline.websocket);
+            fmt::create_request_with_url(&inline.dir, &name, "", inline.websocket, &url)
+                .map(|p| (p, true))
         };
         match result {
             Ok((path, is_request)) => {
-                if let Some(p) = self.project.as_mut() {
+                if let Some(p) = self.scope.workspace.as_mut() {
                     p.rescan();
                 }
                 let key = self.key_for(&path).unwrap_or_default();
                 if is_request {
                     self.open_request(&key, true, window, cx);
                 } else {
-                    self.selected = Some(key);
+                    self.scope.selected = Some(key);
                 }
                 self.notice = None;
             }
@@ -1094,7 +1125,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.selected = Some(key.to_string());
+        self.scope.selected = Some(key.to_string());
         self.start_new(websocket, folder, window, cx);
     }
 
@@ -1105,7 +1136,7 @@ impl Workspace {
     }
 
     pub fn start_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(key) = self.selected.clone().or_else(|| self.active_key()) else {
+        let Some(key) = self.scope.selected.clone().or_else(|| self.active_key()) else {
             return;
         };
         self.prompt = Some(PromptPurpose::Rename { key: key.clone() });
@@ -1115,6 +1146,154 @@ impl Workspace {
         if let Some(m) = self.modal.as_mut() {
             m.query.insert(&current);
         }
+    }
+
+    fn collection_name(&self, key: &str) -> Option<String> {
+        let ws = self.scope.workspace.as_ref()?;
+        let c = ws.collections.iter().find(|c| c.key == key)?;
+        let n = &c.collection.config.collection.name;
+        Some(if n.is_empty() {
+            ws.name.clone()
+        } else {
+            n.clone()
+        })
+    }
+
+    pub fn start_rename_collection(
+        &mut self,
+        key: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(current) = self.collection_name(key) else {
+            return;
+        };
+        self.prompt = Some(PromptPurpose::RenameCollection {
+            key: key.to_string(),
+        });
+        self.open_modal_keep_prompt(window, cx);
+        if let Some(m) = self.modal.as_mut() {
+            m.query.insert(&current);
+        }
+    }
+
+    fn do_rename_collection(&mut self, key: &str, name: &str) -> std::io::Result<Option<String>> {
+        let root = self
+            .scope
+            .workspace
+            .as_ref()
+            .and_then(|w| w.collections.iter().find(|c| c.key == key))
+            .map(|c| c.root.clone())
+            .ok_or_else(|| std::io::Error::other("no such collection"))?;
+        if !self.dirty_under(key).is_empty() {
+            return Err(std::io::Error::other(
+                "save or revert unsaved changes before renaming",
+            ));
+        }
+        fmt::rename_collection(&root, name)?;
+        // The collection file's title changed on disk: drop its stale in-memory copy.
+        let meta = if key.is_empty() {
+            "collection.flux.md".to_string()
+        } else {
+            format!("{key}/collection.flux.md")
+        };
+        if let Some(w) = self.scope.workspace.as_mut() {
+            w.close_doc(&meta);
+        }
+        Ok(None)
+    }
+
+    /// Forget a collection's tabs, documents and selection after it left the Workspace.
+    fn drop_collection_state(&mut self, key: &str) {
+        let prefix = key.to_string();
+        let in_collection =
+            |k: &str| key.is_empty() || k == prefix || k.starts_with(&format!("{prefix}/"));
+        let ids: Vec<u64> = self
+            .scope
+            .tabs
+            .all()
+            .iter()
+            .filter(|t| in_collection(&t.key))
+            .map(|t| t.id)
+            .collect();
+        for id in ids {
+            self.scope.tabs.close(id);
+        }
+        if let Some(w) = self.scope.workspace.as_mut() {
+            let stale: Vec<String> = w
+                .docs
+                .keys()
+                .filter(|k| in_collection(k))
+                .cloned()
+                .collect();
+            for k in stale {
+                w.close_doc(&k);
+            }
+        }
+        if self.scope.selected.as_deref().is_some_and(in_collection) {
+            self.scope.selected = None;
+        }
+        self.session_dirty = true;
+    }
+
+    /// Take a collection out of the Workspace without touching any file.
+    pub fn remove_collection(&mut self, key: &str, cx: &mut Context<Self>) {
+        let Some(name) = self.collection_name(key) else {
+            return;
+        };
+        if !self.dirty_under(key).is_empty() {
+            self.notice =
+                Some("Save or revert unsaved changes before removing the collection.".into());
+            cx.notify();
+            return;
+        }
+        self.drop_collection_state(key);
+        if let Some(w) = self.scope.workspace.as_mut() {
+            w.hidden.insert(key.to_string());
+            w.rescan();
+        }
+        self.notice = Some(format!(
+            "Removed {name} from this workspace. Use Add existing collection… to bring it back."
+        ));
+        cx.notify();
+    }
+
+    /// Move a collection's folder to the trash (after the confirm dialog).
+    pub fn delete_collection(&mut self, key: &str, cx: &mut Context<Self>) {
+        let Some(root) = self
+            .scope
+            .workspace
+            .as_ref()
+            .and_then(|w| w.collections.iter().find(|c| c.key == key))
+            .map(|c| c.root.clone())
+        else {
+            return;
+        };
+        if key.is_empty() {
+            self.notice = Some(
+                "This collection is the workspace folder itself; close the workspace and delete the folder from your file manager.".into(),
+            );
+            cx.notify();
+            return;
+        }
+        if !self.dirty_under(key).is_empty() {
+            self.notice =
+                Some("Save or revert unsaved changes before deleting the collection.".into());
+            cx.notify();
+            return;
+        }
+        match fmt::delete(&root) {
+            Ok(()) => {
+                self.drop_collection_state(key);
+                if let Some(w) = self.scope.workspace.as_mut() {
+                    w.hidden.remove(key);
+                    w.rescan();
+                }
+                self.notice = Some("Moved to trash.".into());
+            }
+            Err(e) => self.notice = Some(format!("Delete failed: {e}")),
+        }
+        cx.notify();
     }
 
     fn display_name(&self, key: &str) -> String {
@@ -1131,7 +1310,8 @@ impl Workspace {
             }
             None
         }
-        self.project
+        self.scope
+            .workspace
             .as_ref()
             .and_then(|p| p.collections.iter().find_map(|c| find(&c.tree, key)))
             .unwrap_or_else(|| key.rsplit('/').next().unwrap_or(key).to_string())
@@ -1151,6 +1331,7 @@ impl Workspace {
         }
         let result: std::io::Result<Option<String>> = match purpose {
             PromptPurpose::Rename { key } => self.do_rename(&key, &name),
+            PromptPurpose::RenameCollection { key } => self.do_rename_collection(&key, &name),
             p @ (PromptPurpose::NewEnvironment | PromptPurpose::RenameEnvironment { .. }) => {
                 self.finish_env_prompt(p, &name);
                 cx.notify();
@@ -1159,7 +1340,7 @@ impl Workspace {
         };
         match result {
             Ok(open) => {
-                if let Some(p) = self.project.as_mut() {
+                if let Some(p) = self.scope.workspace.as_mut() {
                     p.rescan();
                 }
                 self.reconcile_tabs();
@@ -1174,17 +1355,17 @@ impl Workspace {
     }
 
     fn key_for(&self, abs: &Path) -> Option<String> {
-        self.project.as_ref().map(|p| p.key_of(abs))
+        self.scope.workspace.as_ref().map(|p| p.key_of(abs))
     }
 
     /// Unsaved documents at or under `key`; file operations refuse to run over them.
     fn dirty_under(&self, key: &str) -> Vec<String> {
-        let Some(p) = &self.project else {
+        let Some(p) = &self.scope.workspace else {
             return vec![];
         };
         p.dirty_keys()
             .into_iter()
-            .filter(|k| k == key || k.starts_with(&format!("{key}/")))
+            .filter(|k| key.is_empty() || k == key || k.starts_with(&format!("{key}/")))
             .collect()
     }
 
@@ -1195,7 +1376,8 @@ impl Workspace {
             ));
         }
         let abs = self
-            .project
+            .scope
+            .workspace
             .as_ref()
             .map(|p| p.abs_of(key))
             .ok_or_else(|| std::io::Error::other("no workspace"))?;
@@ -1207,8 +1389,8 @@ impl Workspace {
 
     /// A file or folder moved on disk: re-point tabs and drop stale in-memory documents.
     fn after_move(&mut self, old: &str, new: &str) {
-        self.tabs.rekey(old, new);
-        if let Some(p) = self.project.as_mut() {
+        self.scope.tabs.rekey(old, new);
+        if let Some(p) = self.scope.workspace.as_mut() {
             let stale: Vec<String> = p
                 .docs
                 .keys()
@@ -1219,29 +1401,29 @@ impl Workspace {
                 p.close_doc(&k);
             }
         }
-        if self.selected.as_deref() == Some(old) {
-            self.selected = Some(new.to_string());
+        if self.scope.selected.as_deref() == Some(old) {
+            self.scope.selected = Some(new.to_string());
         }
         self.session_dirty = true;
     }
 
     pub fn duplicate_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(key) = self.selected.clone().or_else(|| self.active_key()) else {
+        let Some(key) = self.scope.selected.clone().or_else(|| self.active_key()) else {
             return;
         };
-        let Some(abs) = self.project.as_ref().map(|p| p.abs_of(&key)) else {
+        let Some(abs) = self.scope.workspace.as_ref().map(|p| p.abs_of(&key)) else {
             return;
         };
         match fmt::duplicate(&abs) {
             Ok(new_abs) => {
-                if let Some(p) = self.project.as_mut() {
+                if let Some(p) = self.scope.workspace.as_mut() {
                     p.rescan();
                 }
                 let nk = self.key_for(&new_abs).unwrap_or_default();
                 if new_abs.is_file() {
                     self.open_request(&nk, true, window, cx);
                 } else {
-                    self.selected = Some(nk);
+                    self.scope.selected = Some(nk);
                 }
             }
             Err(e) => self.notice = Some(format!("Duplicate failed: {e}")),
@@ -1250,16 +1432,16 @@ impl Workspace {
     }
 
     pub fn delete_selected(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        let Some(key) = self.selected.clone().or_else(|| self.active_key()) else {
+        let Some(key) = self.scope.selected.clone().or_else(|| self.active_key()) else {
             return;
         };
-        let Some(abs) = self.project.as_ref().map(|p| p.abs_of(&key)) else {
+        let Some(abs) = self.scope.workspace.as_ref().map(|p| p.abs_of(&key)) else {
             return;
         };
         match fmt::delete(&abs) {
             Ok(()) => {
-                self.tabs.close_key(&key);
-                if let Some(p) = self.project.as_mut() {
+                self.scope.tabs.close_key(&key);
+                if let Some(p) = self.scope.workspace.as_mut() {
                     let stale: Vec<String> = p
                         .docs
                         .keys()
@@ -1271,7 +1453,7 @@ impl Workspace {
                     }
                     p.rescan();
                 }
-                self.selected = None;
+                self.scope.selected = None;
                 self.notice = Some("Moved to trash.".into());
                 self.session_dirty = true;
             }
@@ -1281,16 +1463,16 @@ impl Workspace {
     }
 
     pub fn reveal_selected(&mut self, cx: &mut Context<Self>) {
-        let Some(key) = self.selected.clone().or_else(|| self.active_key()) else {
+        let Some(key) = self.scope.selected.clone().or_else(|| self.active_key()) else {
             return;
         };
-        if let Some(abs) = self.project.as_ref().map(|p| p.abs_of(&key)) {
+        if let Some(abs) = self.scope.workspace.as_ref().map(|p| p.abs_of(&key)) {
             cx.reveal_path(&abs);
         }
     }
 
     pub fn move_item(&mut self, key: &str, dest_folder_key: &str, cx: &mut Context<Self>) {
-        let Some(p) = self.project.as_ref() else {
+        let Some(p) = self.scope.workspace.as_ref() else {
             return;
         };
         let (abs, dest) = (p.abs_of(key), p.abs_of(dest_folder_key));
@@ -1303,7 +1485,7 @@ impl Workspace {
             Ok(new_abs) => {
                 let new_key = self.key_for(&new_abs).unwrap_or_default();
                 self.after_move(key, &new_key);
-                if let Some(p) = self.project.as_mut() {
+                if let Some(p) = self.scope.workspace.as_mut() {
                     p.rescan();
                 }
                 self.reconcile_tabs();
@@ -1320,8 +1502,10 @@ impl Workspace {
         pos: gpui::Point<gpui::Pixels>,
         cx: &mut Context<Self>,
     ) {
-        self.selected = Some(key.to_string());
-        self.tree_menu = Some(crate::workspace::TreeMenu {
+        if kind != MenuKind::Workspace {
+            self.scope.selected = Some(key.to_string());
+        }
+        self.scope.tree_menu = Some(crate::workspace::TreeMenu {
             key: key.to_string(),
             kind,
             pos,
@@ -1333,19 +1517,30 @@ impl Workspace {
 
     pub fn session(&self) -> Session {
         let mut s = Session::default();
-        for t in self.tabs.all() {
+        for t in self.scope.tabs.all() {
             s.tabs.push(self.session_tab(t));
         }
         s.closed = self
+            .scope
             .tabs
             .closed_tabs()
             .iter()
             .map(|t| self.session_tab(t))
             .collect();
-        s.active = self.tabs.active().map(|t| t.key.clone());
+        s.active = self.scope.tabs.active().map(|t| t.key.clone());
         s.layout = self.layout();
-        s.active_env = self.envs.active.clone();
-        if let Some(p) = &self.project {
+        s.active_env = self.scope.envs.active.clone();
+        s.hidden_collections = self
+            .scope
+            .workspace
+            .as_ref()
+            .map(|w| {
+                let mut h: Vec<String> = w.hidden.iter().cloned().collect();
+                h.sort();
+                h
+            })
+            .unwrap_or_default();
+        if let Some(p) = &self.scope.workspace {
             for k in p.dirty_keys() {
                 if let Some(d) = p.doc(&k) {
                     s.unsaved.insert(k, d.text.clone());
@@ -1357,7 +1552,7 @@ impl Workspace {
 
     pub fn save_session_now(&mut self) {
         self.session_dirty = false;
-        let (Some(dir), Some(p)) = (self.state_dir.clone(), self.project.as_ref()) else {
+        let (Some(dir), Some(p)) = (self.state_dir.clone(), self.scope.workspace.as_ref()) else {
             return;
         };
         save_session(&dir, &p.root, &self.session());
@@ -1388,21 +1583,27 @@ impl Workspace {
     fn restore_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (Some(dir), Some(root)) = (
             self.state_dir.clone(),
-            self.project.as_ref().map(|p| p.root.clone()),
+            self.scope.workspace.as_ref().map(|p| p.root.clone()),
         ) else {
             return;
         };
-        let s = crate::project::load_session(&dir, &root);
+        let s = crate::workspace_model::load_session(&dir, &root);
+        if !s.hidden_collections.is_empty()
+            && let Some(ws) = self.scope.workspace.as_mut()
+        {
+            ws.hidden = s.hidden_collections.iter().cloned().collect();
+            ws.rescan();
+        }
         self.apply_layout(&s.layout);
         for t in &s.tabs {
             if !t.kind.is_empty() {
                 if self.restore_other_tab(t, cx)
-                    && let Some(id) = self.tabs.id_for_key(&t.key)
+                    && let Some(id) = self.scope.tabs.id_for_key(&t.key)
                 {
                     if t.pinned {
-                        self.tabs.toggle_pin(id);
+                        self.scope.tabs.toggle_pin(id);
                     }
-                    if let Some(ui) = self.tab_ui.get_mut(&id) {
+                    if let Some(ui) = self.scope.tab_ui.get_mut(&id) {
                         ui.scroll = t.scroll;
                     }
                 }
@@ -1410,24 +1611,28 @@ impl Workspace {
             }
             self.open_request(&t.key, !t.preview, window, cx);
             if let Some(text) = s.unsaved.get(&t.key)
-                && let Some(d) = self.project.as_mut().and_then(|p| p.doc_mut(&t.key))
+                && let Some(d) = self
+                    .scope
+                    .workspace
+                    .as_mut()
+                    .and_then(|p| p.doc_mut(&t.key))
                 && d.text != *text
             {
                 d.set_text(text.clone());
             }
             if t.pinned
-                && let Some(id) = self.tabs.id_for_key(&t.key)
+                && let Some(id) = self.scope.tabs.id_for_key(&t.key)
             {
-                self.tabs.toggle_pin(id);
+                self.scope.tabs.toggle_pin(id);
             }
-            if let Some(id) = self.tabs.id_for_key(&t.key)
-                && let Some(ui) = self.tab_ui.get_mut(&id)
+            if let Some(id) = self.scope.tabs.id_for_key(&t.key)
+                && let Some(ui) = self.scope.tab_ui.get_mut(&id)
             {
                 ui.scroll = t.scroll;
             }
             self.sync_tab(&t.key);
         }
-        self.tabs.set_closed(
+        self.scope.tabs.set_closed(
             s.closed
                 .iter()
                 .map(|c| {
@@ -1440,9 +1645,9 @@ impl Workspace {
                 .collect(),
         );
         if let Some(a) = &s.active
-            && let Some(id) = self.tabs.id_for_key(a)
+            && let Some(id) = self.scope.tabs.id_for_key(a)
         {
-            self.tabs.activate(id);
+            self.scope.tabs.activate(id);
         }
     }
 }

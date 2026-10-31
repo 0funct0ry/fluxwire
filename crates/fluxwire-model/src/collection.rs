@@ -70,7 +70,7 @@ pub enum RequestKind {
     Other,
 }
 
-/// One node in the project tree.
+/// One node in the workspace tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TreeNode {
     Folder {
