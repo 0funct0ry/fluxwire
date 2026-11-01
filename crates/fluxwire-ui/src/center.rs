@@ -123,16 +123,11 @@ impl WorkspaceView {
             (
                 "terminal",
                 "Command palette",
-                "command palette: open",
+                "command palette: toggle",
                 false,
             ),
             ("folder-open", "Open workspace", "workspace: open…", false),
-            (
-                "columns-2",
-                "Toggle sidebar",
-                "view: toggle left dock",
-                false,
-            ),
+            ("columns-2", "Toggle sidebar", "view: toggle sidebar", false),
         ];
         div()
             .flex_1()

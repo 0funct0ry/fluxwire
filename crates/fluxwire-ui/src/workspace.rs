@@ -226,6 +226,9 @@ pub struct WorkspaceView {
     /// Pointer position and editor share when a drag of the request/response divider began.
     pub resizing_split: Option<(f32, f32)>,
     pub keybind_query: String,
+    /// The Keybindings tab is in edit mode (`keymap: edit`).
+    pub keybind_editing: bool,
+    pub keybind_edit: Option<crate::keybinding_editor::Pending>,
     pub keybind_input: crate::text_input::LazyInput,
     pub keybind_focus: FocusHandle,
     /// Most recently run palette/quick-search item ids, newest first.
@@ -296,6 +299,8 @@ impl WorkspaceView {
             resizing_bottom: false,
             resizing_split: None,
             keybind_query: String::new(),
+            keybind_editing: false,
+            keybind_edit: None,
             keybind_input: Default::default(),
             keybind_focus: cx.focus_handle(),
             recent_ids: Vec::new(),
@@ -476,7 +481,7 @@ impl WorkspaceView {
         want.extend(
             ACTIONS
                 .iter()
-                .filter(|a| self.action_available(a.name))
+                .filter(|a| a.palette && self.action_available(a.name))
                 .map(|a| {
                     let keys = match bindings {
                         Some(b) => b.label_for(a.name).unwrap_or_default(),
@@ -494,6 +499,9 @@ impl WorkspaceView {
 
     /// Whether the level an action belongs to is open (SPEC §17.9).
     pub fn action_available(&self, name: &str) -> bool {
+        if name.rsplit("::").next() == Some("DeleteEnvironment") && self.env_target().is_none() {
+            return false;
+        }
         match scope_of(name) {
             Scope::App => true,
             Scope::Workspace => self.scope.workspace.is_some(),
@@ -1383,7 +1391,16 @@ impl Render for WorkspaceView {
             );
         let root = handlers!(root, cx, {
             QuickSearch => |this, w, c| this.open_modal(ModalKind::QuickSearch, w, c),
-            CommandPalette => |this, w, c| this.open_modal(ModalKind::Palette, w, c),
+            CommandPalette => |this, w, c| {
+                if this.modal.as_ref().is_some_and(|m| m.kind == ModalKind::Palette) {
+                    this.close_modal(w, c);
+                } else {
+                    this.open_modal(ModalKind::Palette, w, c);
+                }
+            },
+            NewWorkspaceCollection => |this, w, c| this.start_new_collection(None, w, c),
+            CopyWorkspacePath => |this, _w, c| this.copy_workspace_path(c),
+            EditKeymap => |this, _w, c| this.edit_keymap(c),
             SwitchEnvironment => |this, w, c| this.open_modal(ModalKind::Environment, w, c),
             SwitchWorkspace => |this, w, c| this.open_modal(ModalKind::Workspaces, w, c),
             Dismiss => |this, w, c| {

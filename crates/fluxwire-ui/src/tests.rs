@@ -116,7 +116,7 @@ fn palette_lists_every_registered_action(cx: &mut TestAppContext) {
         (w.modal.as_ref().map(|m| m.kind), w.modal_items().len())
     });
     assert_eq!(kind, Some(ModalKind::Palette));
-    assert_eq!(count, ACTIONS.len());
+    assert_eq!(count, ACTIONS.iter().filter(|a| a.palette).count());
     cx.update(|_, cx| {
         let registered = cx.all_action_names();
         for a in ACTIONS {
@@ -132,7 +132,7 @@ fn palette_filters_and_runs_an_action(cx: &mut TestAppContext) {
     let (view, cx) = setup(cx);
     assert!(view.read_with(cx, |w, _| !w.scope.bottom_open));
     cx.simulate_keystrokes("secondary-shift-p");
-    cx.simulate_input("toggle bottom");
+    cx.simulate_input("toggle console");
     assert_eq!(view.read_with(cx, |w, _| w.modal_items().len()), 1);
     cx.simulate_keystrokes("enter");
     assert!(view.read_with(cx, |w, _| w.scope.bottom_open && w.modal.is_none()));
@@ -2189,8 +2189,11 @@ fn every_action_is_reachable_from_the_palette(cx: &mut TestAppContext) {
     let (view, cx) = setup(cx);
     cx.simulate_keystrokes("secondary-shift-p");
     let all = labels(&view, cx);
-    for a in ACTIONS {
+    for a in ACTIONS.iter().filter(|a| a.palette) {
         assert!(all.iter().any(|l| l == a.label), "{} not listed", a.label);
+    }
+    for a in ACTIONS.iter().filter(|a| !a.palette) {
+        assert!(!all.iter().any(|l| l == a.label), "{} listed", a.label);
     }
 }
 
@@ -3219,4 +3222,148 @@ fn every_icon_used_in_views_is_embedded() {
         missing.is_empty(),
         "icons used but not embedded: {missing:?}"
     );
+}
+
+#[gpui::test]
+fn palette_toggle_closes_the_palette(cx: &mut TestAppContext) {
+    let (view, cx) = setup(cx);
+    cx.simulate_keystrokes("secondary-shift-p");
+    assert!(view.read_with(cx, |w, _| w.modal.is_some()));
+    cx.simulate_keystrokes("secondary-shift-p");
+    assert!(view.read_with(cx, |w, _| w.modal.is_none()));
+}
+
+#[gpui::test]
+fn hidden_actions_still_dispatch_from_keybindings(cx: &mut TestAppContext) {
+    let (view, cx) = setup(cx);
+    cx.simulate_keystrokes("secondary-w");
+    assert_eq!(keys(&view, cx).len(), 0);
+    cx.simulate_keystrokes("secondary-shift-t");
+    assert_eq!(
+        keys(&view, cx).len(),
+        1,
+        "reopen closed is hidden but bound"
+    );
+    for old in [
+        "Send",
+        "request::Send",
+        "fluxwire::NextTab",
+        "Dismiss",
+        "InputCopy",
+        "view: toggle left dock",
+        "keymap: open keybindings",
+    ] {
+        assert!(crate::actions::find_action(old).is_some(), "{old}");
+    }
+    assert!(!crate::actions::find_action("NextTab").unwrap().palette);
+}
+
+#[gpui::test]
+fn environment_delete_is_listed_only_with_an_environment(cx: &mut TestAppContext) {
+    let (view, cx) = setup(cx);
+    let has = |view: &Entity<WorkspaceView>, cx: &mut VisualTestContext| {
+        view.read_with(cx, |w, _| w.action_available("fluxwire::DeleteEnvironment"))
+    };
+    view.update(cx, |w, _| w.scope.envs.active = Some("staging".into()));
+    assert!(has(&view, cx));
+    view.update(cx, |w, _| w.scope.envs.active = None);
+    assert!(!has(&view, cx));
+}
+
+#[gpui::test]
+fn both_new_collection_entries_open_the_dialog(cx: &mut TestAppContext) {
+    for action in [
+        "fluxwire::NewCollection",
+        "fluxwire::NewWorkspaceCollection",
+    ] {
+        let (view, cx, _) = setup_with(cx, "payments-api", "newcoll");
+        view.update_in(cx, |w, window, cx| {
+            let _ = w;
+            window.dispatch_action((crate::actions::find_action(action).unwrap().build)(), cx);
+        });
+        cx.run_until_parked();
+        assert!(
+            view.read_with(cx, |w, _| w.dialog.is_some() || w.notice.is_some()),
+            "{action}"
+        );
+    }
+}
+
+#[gpui::test]
+fn keymap_editor_rebinds_clears_and_resets(cx: &mut TestAppContext) {
+    let (view, cx) = setup(cx);
+    let dir = keymap_dir("# mine\n");
+    cx.update(|_, cx| cx.set_global(crate::envs::ConfigDir(dir.clone())));
+    view.update(cx, |w, cx| w.clear_keybinding("fluxwire::ToggleTheme", cx));
+    view.update(cx, |w, cx| {
+        w.clear_keybinding("fluxwire::ToggleLeftDock", cx)
+    });
+    let text = std::fs::read_to_string(dir.join("keymap.toml")).unwrap();
+    assert!(text.contains("# mine") && text.contains("none"), "{text}");
+    cx.simulate_keystrokes("secondary-b");
+    assert!(
+        view.read_with(cx, |w, _| w.scope.left_open),
+        "binding cleared live"
+    );
+    view.update(cx, |w, cx| {
+        w.reset_keybinding("fluxwire::ToggleLeftDock", cx)
+    });
+    cx.simulate_keystrokes("secondary-b");
+    assert!(
+        view.read_with(cx, |w, _| !w.scope.left_open),
+        "binding restored live"
+    );
+    // Rebind with a chord captured from the keyboard.
+    view.update(cx, |w, cx| {
+        w.begin_capture("fluxwire::ToggleBottomDock", cx)
+    });
+    cx.simulate_keystrokes("ctrl-alt-j");
+    let text = std::fs::read_to_string(dir.join("keymap.toml")).unwrap();
+    assert!(
+        text.contains("ctrl-alt-j") && text.contains("ToggleBottomDock"),
+        "{text}"
+    );
+    assert!(text.contains("# mine"));
+}
+
+#[gpui::test]
+fn keymap_editor_flags_conflicts_and_escape_cancels(cx: &mut TestAppContext) {
+    let (view, cx) = setup(cx);
+    let dir = keymap_dir("");
+    cx.update(|_, cx| cx.set_global(crate::envs::ConfigDir(dir.clone())));
+    view.update(cx, |w, cx| {
+        w.begin_capture("fluxwire::ToggleBottomDock", cx)
+    });
+    cx.simulate_keystrokes("escape");
+    assert!(view.read_with(cx, |w, _| w.keybind_edit.is_none()));
+    view.update(cx, |w, cx| {
+        w.begin_capture("fluxwire::ToggleBottomDock", cx)
+    });
+    cx.simulate_keystrokes("secondary-b");
+    let conflict = view.read_with(cx, |w, _| {
+        w.keybind_edit.as_ref().and_then(|p| p.conflict.clone())
+    });
+    assert_eq!(conflict.unwrap().label, "view: toggle sidebar");
+    assert!(
+        !dir.join("keymap.toml").exists()
+            || std::fs::read_to_string(dir.join("keymap.toml"))
+                .unwrap()
+                .is_empty()
+    );
+    view.update(cx, |w, cx| w.confirm_replace(cx));
+    cx.simulate_keystrokes("secondary-b");
+    assert!(view.read_with(cx, |w, _| w.scope.bottom_open && w.scope.left_open));
+}
+
+#[gpui::test]
+fn keymap_edit_opens_the_tab_in_edit_mode(cx: &mut TestAppContext) {
+    let (view, cx) = setup(cx);
+    cx.dispatch_action(crate::actions::EditKeymap);
+    assert!(view.read_with(cx, |w, _| {
+        w.keybind_editing
+            && w.scope
+                .tabs
+                .active()
+                .is_some_and(|t| t.key == "keybindings")
+    }));
 }

@@ -100,6 +100,9 @@ actions!(
         RevokeCollectionTrust,
         RegenerateFwTypes,
         OpenResultBeside,
+        NewWorkspaceCollection,
+        CopyWorkspacePath,
+        EditKeymap,
     ]
 );
 
@@ -112,38 +115,51 @@ pub struct ActionInfo {
     pub binding: Option<&'static str>,
     /// Key context the binding applies to; `None` = global.
     pub context: Option<&'static str>,
+    /// Listed in the command palette; hidden actions stay bindable and in the Keybindings tab.
+    pub palette: bool,
     pub build: fn() -> Box<dyn Action>,
     bind: fn(&str, Option<&str>) -> KeyBinding,
 }
 
-macro_rules! a {
-    ($label:literal, $ty:ident, $binding:expr, $ctx:expr) => {
+macro_rules! action_row {
+    ($palette:literal, $label:literal, $ty:ident, $binding:expr, $ctx:expr) => {
         ActionInfo {
             label: $label,
             name: concat!("fluxwire::", stringify!($ty)),
             binding: $binding,
             context: $ctx,
+            palette: $palette,
             build: || Box::new($ty),
             bind: |keys, ctx| KeyBinding::new(keys, $ty, ctx),
         }
     };
 }
 
+/// A palette-visible action.
+macro_rules! a {
+    ($($t:tt)*) => { action_row!(true, $($t)*) };
+}
+
+/// An action kept out of the palette (key-bound or sub-view actions, ADR-014).
+macro_rules! h {
+    ($($t:tt)*) => { action_row!(false, $($t)*) };
+}
+
 pub static ACTIONS: &[ActionInfo] = &[
-    a!("request: send", Send, Some("secondary-enter"), None),
-    a!(
+    h!("request: send", Send, Some("secondary-enter"), None),
+    h!(
         "request: cancel",
         CancelRequest,
         Some("escape"),
         Some("RequestEditor")
     ),
-    a!(
+    h!(
         "request: copy as cURL",
         CopyAsCurl,
         Some("secondary-shift-c"),
         Some("RequestEditor")
     ),
-    a!(
+    h!(
         "request: copy as cURL (with secrets)",
         CopyAsCurlWithSecrets,
         None,
@@ -154,19 +170,19 @@ pub static ACTIONS: &[ActionInfo] = &[
     a!("response: save body to file", SaveResponseBody, None, None),
     a!("quick search: open", QuickSearch, Some("secondary-k"), None),
     a!(
-        "command palette: open",
+        "command palette: toggle",
         CommandPalette,
         Some("secondary-shift-p"),
         None
     ),
-    a!(
+    h!(
         "workspace: new request",
         NewRequest,
         Some("secondary-n"),
         None
     ),
-    a!("workspace: new folder", NewFolder, None, None),
-    a!(
+    h!("workspace: new folder", NewFolder, None, None),
+    h!(
         "workspace: new WebSocket request",
         NewWebSocketRequest,
         None,
@@ -181,8 +197,8 @@ pub static ACTIONS: &[ActionInfo] = &[
         None,
         None
     ),
-    a!("file: reload from disk", ReloadFromDisk, None, None),
-    a!("file: keep my changes", KeepMine, None, None),
+    h!("file: reload from disk", ReloadFromDisk, None, None),
+    h!("file: keep my changes", KeepMine, None, None),
     a!("collection: new…", NewCollection, None, None),
     a!("collection: add existing…", AddCollection, None, None),
     a!("workspace: open…", OpenWorkspace, Some("secondary-o"), None),
@@ -194,7 +210,7 @@ pub static ACTIONS: &[ActionInfo] = &[
         None
     ),
     a!("collection: import…", Import, None, None),
-    a!("file: save", Save, Some("secondary-s"), None),
+    h!("file: save", Save, Some("secondary-s"), None),
     a!(
         "run: run folder",
         RunFolder,
@@ -208,18 +224,18 @@ pub static ACTIONS: &[ActionInfo] = &[
         None
     ),
     a!(
-        "view: toggle left dock",
+        "view: toggle sidebar",
         ToggleLeftDock,
         Some("secondary-b"),
         None
     ),
     a!(
-        "view: toggle bottom dock",
+        "view: toggle console",
         ToggleBottomDock,
         Some("secondary-j"),
         None
     ),
-    a!(
+    h!(
         "request: focus URL bar",
         FocusUrlBar,
         Some("secondary-l"),
@@ -227,15 +243,15 @@ pub static ACTIONS: &[ActionInfo] = &[
     ),
     a!("tab: close", CloseTab, Some("secondary-w"), None),
     a!("tab: pin or unpin", PinTab, None, None),
-    a!("tab: next", NextTab, Some("ctrl-tab"), None),
-    a!("tab: previous", PrevTab, Some("ctrl-shift-tab"), None),
-    a!(
+    h!("tab: next", NextTab, Some("ctrl-tab"), None),
+    h!("tab: previous", PrevTab, Some("ctrl-shift-tab"), None),
+    h!(
         "tab: reopen closed",
         ReopenClosedTab,
         Some("secondary-shift-t"),
         None
     ),
-    a!("tab: group by kind", GroupTabsByKind, None, None),
+    h!("tab: group by kind", GroupTabsByKind, None, None),
     a!(
         "view: toggle split orientation",
         ToggleSplitOrientation,
@@ -251,7 +267,7 @@ pub static ACTIONS: &[ActionInfo] = &[
         Some("secondary-shift-h"),
         None
     ),
-    a!("history: focus search", HistoryFocusSearch, None, None),
+    h!("history: focus search", HistoryFocusSearch, None, None),
     a!("history: pin", HistoryPin, None, None),
     a!("history: export", HistoryExport, None, None),
     a!("history: clear all", ClearHistoryAll, None, None),
@@ -274,7 +290,7 @@ pub static ACTIONS: &[ActionInfo] = &[
         None
     ),
     a!("docs: open for request", OpenDocs, None, None),
-    a!(
+    h!(
         "environment: edit active",
         EditActiveEnvironment,
         None,
@@ -282,12 +298,12 @@ pub static ACTIONS: &[ActionInfo] = &[
     ),
     a!("environment: manage", ManageEnvironments, None, None),
     a!("sync: open", OpenSync, None, None),
-    a!("websocket: connect or disconnect", Connect, None, None),
-    a!("modal: dismiss", Dismiss, Some("escape"), None),
+    h!("websocket: connect or disconnect", Connect, None, None),
+    h!("modal: dismiss", Dismiss, Some("escape"), None),
     a!("app: quit", Quit, Some("secondary-q"), None),
     a!("tab: close others", CloseOtherTabs, None, None),
     a!("tab: close to the right", CloseTabsToRight, None, None),
-    a!("tab: close clean tabs", CloseCleanTabs, None, None),
+    h!("tab: close clean tabs", CloseCleanTabs, None, None),
     a!("tab: close all", CloseAllTabs, None, None),
     a!("tab: copy path", CopyTabPath, None, None),
     a!("request: show params", ShowParams, None, None),
@@ -298,34 +314,32 @@ pub static ACTIONS: &[ActionInfo] = &[
     a!("request: show tests", ShowTests, None, None),
     a!("request: show docs", ShowDocsTab, None, None),
     a!("request: show settings", ShowSettings, None, None),
-    a!("response: show body", ShowResponseBody, None, None),
-    a!("response: show headers", ShowResponseHeaders, None, None),
-    a!("response: show cookies", ShowResponseCookies, None, None),
-    a!("response: show timeline", ShowResponseTimeline, None, None),
-    a!("response: show tests", ShowResponseTests, None, None),
-    a!("response: show console", ShowResponseConsole, None, None),
-    a!("request: choose method", ToggleMethodMenu, None, None),
+    h!("response: show body", ShowResponseBody, None, None),
+    h!("response: show headers", ShowResponseHeaders, None, None),
+    h!("response: show cookies", ShowResponseCookies, None, None),
+    h!("response: show timeline", ShowResponseTimeline, None, None),
+    h!("response: show tests", ShowResponseTests, None, None),
+    h!("response: show console", ShowResponseConsole, None, None),
+    h!("request: choose method", ToggleMethodMenu, None, None),
     a!("environment: new…", NewEnvironment, None, None),
     a!("environment: rename…", RenameEnvironment, None, None),
     a!("environment: duplicate", DuplicateEnvironment, None, None),
     a!("environment: delete…", DeleteEnvironment, None, None),
     a!("workspace: new window", NewWindow, None, None),
-    a!("keymap: open keybindings", OpenKeybindings, None, None),
-    a!("keymap: reload", ReloadKeymap, None, None),
-    a!("keymap: open keymap.toml", OpenKeymapFile, None, None),
-    a!("settings: open settings.toml", OpenSettingsFile, None, None),
+    a!("keymap: show", OpenKeybindings, None, None),
+    a!("keymap: edit", EditKeymap, None, None),
     a!(
-        "scripts: trust this collection",
-        TrustCollection,
+        "workspace: new collection",
+        NewWorkspaceCollection,
         None,
         None
     ),
-    a!(
-        "scripts: revoke trust for this collection",
-        RevokeCollectionTrust,
-        None,
-        None
-    ),
+    a!("workspace: copy path", CopyWorkspacePath, None, None),
+    h!("keymap: reload", ReloadKeymap, None, None),
+    h!("keymap: open keymap.toml", OpenKeymapFile, None, None),
+    a!("settings: show", OpenSettingsFile, None, None),
+    a!("scripts: trust collection", TrustCollection, None, None),
+    a!("scripts: revoke trust", RevokeCollectionTrust, None, None),
     a!("scripts: regenerate fw.d.ts", RegenerateFwTypes, None, None),
     a!(
         "quick search: open result beside",
@@ -333,193 +347,193 @@ pub static ACTIONS: &[ActionInfo] = &[
         Some("secondary-enter"),
         Some("Modal")
     ),
-    a!(
+    h!(
         "input: move left",
         InputLeft,
         None,
         Some(crate::input_keys::CONTEXT)
     ),
-    a!(
+    h!(
         "input: move right",
         InputRight,
         None,
         Some(crate::input_keys::CONTEXT)
     ),
-    a!(
+    h!(
         "input: move word left",
         InputWordLeft,
         None,
         Some(crate::input_keys::CONTEXT)
     ),
-    a!(
+    h!(
         "input: move word right",
         InputWordRight,
         None,
         Some(crate::input_keys::CONTEXT)
     ),
-    a!(
+    h!(
         "input: move to line start",
         InputLineStart,
         None,
         Some(crate::input_keys::CONTEXT)
     ),
-    a!(
+    h!(
         "input: move to line end",
         InputLineEnd,
         None,
         Some(crate::input_keys::CONTEXT)
     ),
-    a!(
+    h!(
         "input: move up",
         InputUp,
         None,
         Some(crate::input_keys::CONTEXT)
     ),
-    a!(
+    h!(
         "input: move down",
         InputDown,
         None,
         Some(crate::input_keys::CONTEXT)
     ),
-    a!(
+    h!(
         "input: move to start",
         InputDocStart,
         None,
         Some(crate::input_keys::CONTEXT)
     ),
-    a!(
+    h!(
         "input: move to end",
         InputDocEnd,
         None,
         Some(crate::input_keys::CONTEXT)
     ),
-    a!(
+    h!(
         "input: select left",
         InputSelectLeft,
         None,
         Some(crate::input_keys::CONTEXT)
     ),
-    a!(
+    h!(
         "input: select right",
         InputSelectRight,
         None,
         Some(crate::input_keys::CONTEXT)
     ),
-    a!(
+    h!(
         "input: select word left",
         InputSelectWordLeft,
         None,
         Some(crate::input_keys::CONTEXT)
     ),
-    a!(
+    h!(
         "input: select word right",
         InputSelectWordRight,
         None,
         Some(crate::input_keys::CONTEXT)
     ),
-    a!(
+    h!(
         "input: select to line start",
         InputSelectLineStart,
         None,
         Some(crate::input_keys::CONTEXT)
     ),
-    a!(
+    h!(
         "input: select to line end",
         InputSelectLineEnd,
         None,
         Some(crate::input_keys::CONTEXT)
     ),
-    a!(
+    h!(
         "input: select up",
         InputSelectUp,
         None,
         Some(crate::input_keys::CONTEXT)
     ),
-    a!(
+    h!(
         "input: select down",
         InputSelectDown,
         None,
         Some(crate::input_keys::CONTEXT)
     ),
-    a!(
+    h!(
         "input: select to start",
         InputSelectDocStart,
         None,
         Some(crate::input_keys::CONTEXT)
     ),
-    a!(
+    h!(
         "input: select to end",
         InputSelectDocEnd,
         None,
         Some(crate::input_keys::CONTEXT)
     ),
-    a!(
+    h!(
         "input: select all",
         InputSelectAll,
         None,
         Some(crate::input_keys::CONTEXT)
     ),
-    a!(
+    h!(
         "input: copy",
         InputCopy,
         None,
         Some(crate::input_keys::CONTEXT)
     ),
-    a!(
+    h!(
         "input: cut",
         InputCut,
         None,
         Some(crate::input_keys::CONTEXT)
     ),
-    a!(
+    h!(
         "input: paste",
         InputPaste,
         None,
         Some(crate::input_keys::CONTEXT)
     ),
-    a!(
+    h!(
         "input: undo",
         InputUndo,
         None,
         Some(crate::input_keys::CONTEXT)
     ),
-    a!(
+    h!(
         "input: redo",
         InputRedo,
         None,
         Some(crate::input_keys::CONTEXT)
     ),
-    a!(
+    h!(
         "input: delete backward",
         InputBackspace,
         None,
         Some(crate::input_keys::CONTEXT)
     ),
-    a!(
+    h!(
         "input: delete forward",
         InputDelete,
         None,
         Some(crate::input_keys::CONTEXT)
     ),
-    a!(
+    h!(
         "input: delete word backward",
         InputDeleteWordBack,
         None,
         Some(crate::input_keys::CONTEXT)
     ),
-    a!(
+    h!(
         "input: delete word forward",
         InputDeleteWordForward,
         None,
         Some(crate::input_keys::CONTEXT)
     ),
-    a!(
+    h!(
         "input: delete to line start",
         InputDeleteToLineStart,
         None,
         Some(crate::input_keys::CONTEXT)
     ),
-    a!(
+    h!(
         "input: context menu",
         InputContextMenu,
         None,
@@ -536,7 +550,17 @@ const ALIASES: &[(&str, &str)] = &[
     ("ShowProjectPanel", "ShowWorkspacePanel"), // legacy-project alias
     ("OpenFolder", "OpenWorkspace"),
     ("workspace: open folder", "OpenWorkspace"),
-    ("workspace: new collection", "NewCollection"),
+    ("workspace: new collection", "NewWorkspaceCollection"),
+    ("command palette: open", "CommandPalette"),
+    ("view: toggle left dock", "ToggleLeftDock"),
+    ("view: toggle bottom dock", "ToggleBottomDock"),
+    ("keymap: open keybindings", "OpenKeybindings"),
+    ("settings: open settings.toml", "OpenSettingsFile"),
+    ("scripts: trust this collection", "TrustCollection"),
+    (
+        "scripts: revoke trust for this collection",
+        "RevokeCollectionTrust",
+    ),
     ("workspace: import", "Import"),
     ("workspace: close (show welcome)", "CloseWorkspace"),
 ];
@@ -581,6 +605,9 @@ const WORKSPACE_ACTIONS: &[&str] = &[
     "Import",
     "QuickSearch",
     "OpenKeybindings",
+    "EditKeymap",
+    "NewWorkspaceCollection",
+    "CopyWorkspacePath",
     "RevealInFileManager",
     "ToggleLeftDock",
     "ToggleBottomDock",
@@ -680,7 +707,7 @@ impl KeymapState {
     }
 }
 
-fn norm_keys(keys: &str) -> String {
+pub(crate) fn norm_keys(keys: &str) -> String {
     keys.split_whitespace()
         .map(|k| {
             let mut parts: Vec<String> = k.to_lowercase().split('-').map(str::to_string).collect();
@@ -768,7 +795,13 @@ pub fn resolve_keymap(
         let unbound = valid.iter().any(|(e, i)| {
             i.is_none() && norm_keys(&e.keystroke) == nk && e.context.as_deref() == a.context
         });
-        if !unbound {
+        // A user binding for another action on the same key and context shadows the default.
+        let shadowed = valid.iter().any(|(e, i)| {
+            i.is_some_and(|i| i.name != a.name)
+                && norm_keys(&e.keystroke) == nk
+                && e.context.as_deref() == a.context
+        });
+        if !unbound && !shadowed {
             out.push((
                 KeyBindingSpec {
                     keys: keys.to_string(),
@@ -853,7 +886,7 @@ pub fn key_bindings() -> Vec<KeyBinding> {
 
 /// Every default (action, keystroke) pair: the table's single bindings plus the platform text
 /// input keymap, which binds several keystrokes per action.
-fn default_bindings() -> impl Iterator<Item = (&'static ActionInfo, &'static str)> {
+pub(crate) fn default_bindings() -> impl Iterator<Item = (&'static ActionInfo, &'static str)> {
     default_bindings_for(cfg!(target_os = "macos"))
 }
 
@@ -876,6 +909,102 @@ pub fn install(cx: &mut App) {
 mod tests {
     use super::*;
 
+    /// The curated palette (M9.04): every visible label, from the KEEP rows of the entries sheet
+    /// plus the new entries. Hidden actions must not appear here.
+    const PALETTE: &[&str] = &[
+        "request: open as text",
+        "request: show params",
+        "request: show headers",
+        "request: show body",
+        "request: show auth",
+        "request: show scripts",
+        "request: show tests",
+        "request: show docs",
+        "request: show settings",
+        "response: find",
+        "response: copy body",
+        "response: save body to file",
+        "quick search: open",
+        "quick search: open result beside",
+        "command palette: toggle",
+        "workspace: rename",
+        "workspace: duplicate",
+        "workspace: delete (move to trash)",
+        "workspace: reveal in file manager",
+        "workspace: open…",
+        "workspace: switch…",
+        "workspace: new…",
+        "workspace: close",
+        "workspace: new window",
+        "collection: new…",
+        "collection: add existing…",
+        "collection: import…",
+        "run: run folder",
+        "environment: switch",
+        "environment: manage",
+        "environment: new…",
+        "environment: rename…",
+        "environment: duplicate",
+        "environment: delete…",
+        "view: toggle sidebar",
+        "view: toggle console",
+        "view: toggle split orientation",
+        "tab: close",
+        "tab: pin or unpin",
+        "tab: close others",
+        "tab: close to the right",
+        "tab: close all",
+        "tab: copy path",
+        "theme: toggle",
+        "panel: workspace",
+        "panel: history",
+        "panel: environments",
+        "panel: sync",
+        "panel: console",
+        "panel: problems",
+        "history: open",
+        "history: pin",
+        "history: export",
+        "history: clear all",
+        "history: clear collection",
+        "history: clear request",
+        "docs: open for request",
+        "sync: open",
+        "app: quit",
+        "keymap: show",
+        "settings: show",
+        "scripts: trust collection",
+        "scripts: revoke trust",
+        "scripts: regenerate fw.d.ts",
+        "workspace: new collection",
+        "workspace: copy path",
+        "keymap: edit",
+    ];
+
+    #[test]
+    fn palette_entries_are_exactly_the_curated_list() {
+        let mut shown: Vec<_> = ACTIONS
+            .iter()
+            .filter(|a| a.palette)
+            .map(|a| a.label)
+            .collect();
+        let mut want = PALETTE.to_vec();
+        shown.sort();
+        want.sort();
+        assert_eq!(shown, want);
+    }
+
+    #[test]
+    fn input_actions_and_modal_dismiss_are_hidden_but_registered() {
+        for a in ACTIONS
+            .iter()
+            .filter(|a| a.label.starts_with("input: ") || a.label == "modal: dismiss")
+        {
+            assert!(!a.palette, "{}", a.label);
+            assert_eq!(find_action(a.name).unwrap().name, a.name);
+        }
+    }
+
     #[test]
     fn names_are_unique() {
         let mut names: Vec<_> = ACTIONS.iter().map(|a| a.name).collect();
@@ -889,13 +1018,13 @@ mod tests {
         for (label, keys) in [
             ("request: send", "secondary-enter"),
             ("quick search: open", "secondary-k"),
-            ("command palette: open", "secondary-shift-p"),
+            ("command palette: toggle", "secondary-shift-p"),
             ("workspace: new request", "secondary-n"),
             ("file: save", "secondary-s"),
             ("run: run folder", "secondary-shift-r"),
             ("environment: switch", "secondary-e"),
-            ("view: toggle left dock", "secondary-b"),
-            ("view: toggle bottom dock", "secondary-j"),
+            ("view: toggle sidebar", "secondary-b"),
+            ("view: toggle console", "secondary-j"),
             ("request: focus URL bar", "secondary-l"),
             ("workspace: close", "secondary-shift-w"),
             ("workspace: new…", "secondary-shift-n"),
@@ -923,7 +1052,9 @@ mod tests {
         for (old, label) in [
             ("OpenFolder", "workspace: open…"),
             ("workspace: open folder", "workspace: open…"),
-            ("workspace: new collection", "collection: new…"),
+            ("workspace: new collection", "workspace: new collection"),
+            ("command palette: open", "command palette: toggle"),
+            ("view: toggle left dock", "view: toggle sidebar"),
             ("workspace: import", "collection: import…"),
             ("workspace: close (show welcome)", "workspace: close"),
             ("fluxwire::OpenFolder", "workspace: open…"),

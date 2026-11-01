@@ -22,6 +22,7 @@ pub mod history_tab;
 pub mod history_table;
 pub mod input;
 pub mod input_keys;
+pub mod keybinding_editor;
 pub mod keybindings;
 pub mod mock;
 pub mod navigation;

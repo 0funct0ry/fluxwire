@@ -12,6 +12,8 @@ use crate::{
 
 /// One line of the table.
 pub struct KeyRow {
+    pub action: &'static str,
+    pub user: bool,
     pub label: &'static str,
     pub keys: String,
     pub context: String,
@@ -27,6 +29,8 @@ impl WorkspaceView {
             let bound: Vec<_> = state.rows.iter().filter(|r| r.action == a.name).collect();
             if bound.is_empty() {
                 rows.push(KeyRow {
+                    action: a.name,
+                    user: false,
                     label: a.label,
                     keys: String::new(),
                     context: String::new(),
@@ -35,6 +39,8 @@ impl WorkspaceView {
             }
             for r in bound {
                 rows.push(KeyRow {
+                    action: a.name,
+                    user: r.source == BindingSource::User,
                     label: a.label,
                     keys: kbd_label(&r.keys),
                     context: r.context.clone().unwrap_or_default(),
@@ -53,6 +59,11 @@ impl WorkspaceView {
     pub(crate) fn render_keybindings(&self, t: &Theme, cx: &mut Context<Self>) -> gpui::AnyElement {
         let state = cx.try_global::<KeymapState>().cloned().unwrap_or_default();
         let rows = self.keybinding_rows(&state);
+        let editing = self.keybind_editing;
+        let pending = self
+            .keybind_edit
+            .as_ref()
+            .map(|p| (p.action, p.keys.clone(), p.conflict.clone()));
         let t = t.clone();
         let search = crate::text_input::lazy_input(
             &self.keybind_input,
@@ -76,6 +87,19 @@ impl WorkspaceView {
                     .border_b_1()
                     .border_color(t.border_variant)
                     .child(row().id("keybind-search").flex_1().child(search))
+                    .child(
+                        div()
+                            .id("keybind-edit-toggle")
+                            .cursor_pointer()
+                            .text_size(px(12.))
+                            .text_color(t.accent)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.keybind_editing = !this.keybind_editing;
+                                this.keybind_edit = None;
+                                cx.notify();
+                            }))
+                            .child(if editing { "Done" } else { "Edit" }),
+                    )
                     .child(
                         div()
                             .id("open-keymap")
@@ -124,7 +148,12 @@ impl WorkspaceView {
                                     .w(px(120.))
                                     .font_family(BUFFER_FONT)
                                     .text_color(t.text)
-                                    .child(r.keys),
+                                    .child(match &pending {
+                                        Some((a, None, _)) if *a == r.action => {
+                                            "Press keys…".to_string()
+                                        }
+                                        _ => r.keys,
+                                    }),
                             )
                             .child(div().w(px(110.)).text_color(t.text_muted).child(r.context))
                             .child(
@@ -133,6 +162,60 @@ impl WorkspaceView {
                                     .text_color(t.text_placeholder)
                                     .child(r.source),
                             )
+                            .children(editing.then(|| {
+                                let action = r.action;
+                                let link = |id: &'static str, text: &'static str| {
+                                    div()
+                                        .id((id, i))
+                                        .cursor_pointer()
+                                        .text_color(t.accent)
+                                        .child(text)
+                                };
+                                row()
+                                    .gap_2()
+                                    .child(link("kb-edit", "Edit").on_click(cx.listener(
+                                        move |this, _, _, cx| this.begin_capture(action, cx),
+                                    )))
+                                    .child(link("kb-clear", "Clear").on_click(cx.listener(
+                                        move |this, _, _, cx| this.clear_keybinding(action, cx),
+                                    )))
+                                    .child(link("kb-reset", "Reset").on_click(cx.listener(
+                                        move |this, _, _, cx| this.reset_keybinding(action, cx),
+                                    )))
+                            }))
+                            .children(match &pending {
+                                Some((a, Some(keys), Some(c))) if *a == r.action => Some(
+                                    row()
+                                        .gap_2()
+                                        .text_color(t.modified)
+                                        .child(format!(
+                                            "{} is already {}",
+                                            kbd_label(keys),
+                                            c.label
+                                        ))
+                                        .child(
+                                            div()
+                                                .id(("kb-replace", i))
+                                                .cursor_pointer()
+                                                .text_color(t.accent)
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.confirm_replace(cx)
+                                                }))
+                                                .child("Replace"),
+                                        )
+                                        .child(
+                                            div()
+                                                .id(("kb-cancel", i))
+                                                .cursor_pointer()
+                                                .text_color(t.accent)
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.cancel_edit(cx)
+                                                }))
+                                                .child("Cancel"),
+                                        ),
+                                ),
+                                _ => None,
+                            })
                     })),
             )
             .into_any_element()

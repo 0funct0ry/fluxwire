@@ -28,7 +28,10 @@ pub use fence::parse_info;
 pub use fmt::{format, is_canonical};
 pub use frontmatter::{decode_scalar, encode_scalar};
 pub use fsops::*;
-pub use keymap::{Keymap, KeymapEntry, load_keymap, parse_keymap};
+pub use keymap::{
+    Keymap, KeymapEntry, load_keymap, parse_keymap, remove_action_bindings, remove_binding,
+    remove_entries, save_keymap, set_binding,
+};
 pub use lines::{Line, lines};
 pub use parse::{parse, parse_with};
 pub use schema::front_matter_schema_json;
