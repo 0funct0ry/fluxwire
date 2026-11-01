@@ -57,6 +57,13 @@ fn name_input(cx: &mut Context<WorkspaceView>) -> (Entity<TextInput>, Subscripti
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConfirmAction {
     Cancel,
+    /// Clear a scope of History (pinned entries stay unless `include_pinned`).
+    ClearHistory {
+        scope: fluxwire_store::Scope,
+        include_pinned: bool,
+    },
+    /// Delete these History entries (pinned or not: this is explicit).
+    DeleteHistory(Vec<i64>),
     /// Close the Workspace (after the confirm), then do `AfterClose`.
     Close(AfterClose, CloseMode),
     /// Start a new request/folder in this directory (collection picker).
@@ -497,6 +504,11 @@ impl WorkspaceView {
                 self.request_close(AfterClose::Open(dir), window, cx)
             }
             ConfirmAction::DeleteCollection(key) => self.delete_collection(&key, cx),
+            ConfirmAction::ClearHistory {
+                scope,
+                include_pinned,
+            } => self.history_clear_scope(scope, include_pinned, cx),
+            ConfirmAction::DeleteHistory(ids) => self.history_delete(ids, cx),
             ConfirmAction::DeleteEnvironment { root, name } => self.delete_env_in(&root, &name, cx),
             ConfirmAction::CloseEnvTab(id, save) => self.finish_close_env_tab(id, save, cx),
             ConfirmAction::Close(after, mode) => self.finish_close(after, mode, window, cx),

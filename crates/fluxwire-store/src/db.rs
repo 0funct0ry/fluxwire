@@ -4,7 +4,10 @@ use std::sync::{Arc, Mutex};
 use rusqlite::{Connection, params, params_from_iter, types::Value as Sql};
 use sha2::{Digest, Sha256};
 
-use crate::model::{Entry, Filter, NewEntry, Scope, Summary};
+use crate::export;
+use crate::model::{
+    Counts, Entry, ExportFormat, Filter, NewEntry, SLOW_MS, Scope, SortCol, Stats, Summary,
+};
 use crate::redact::{Redactor, cap_bodies};
 use crate::settings::HistorySettings;
 
@@ -55,7 +58,18 @@ CREATE INDEX entries_ws_req ON entries (workspace, request_path, id DESC);
     "
 CREATE INDEX entries_ws_run ON entries (workspace, run_id);
 ",
+    "
+ALTER TABLE entries ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE entries ADD COLUMN note TEXT;
+",
 ];
+
+/// Milliseconds in a day (timeline buckets).
+pub const DAY_MS: i64 = 86_400_000;
+
+const SUMMARY_COLS: &str =
+    "id, ts_ms, collection, request_path, request_name, protocol, method, url,
+                    status, total_ms, env, dirty, summary, run_id, pinned, note";
 
 /// The user data dir (`FLUXWIRE_DATA_DIR` overrides it, for tests and demos).
 pub fn data_dir() -> Option<PathBuf> {
@@ -169,79 +183,166 @@ impl Store {
     }
 
     pub fn list(&self, workspace: &str, f: &Filter) -> Result<Vec<Summary>> {
-        let mut sql = String::from(
-            "SELECT id, ts_ms, collection, request_path, request_name, protocol, method, url,
-                    status, total_ms, env, dirty, summary, run_id FROM entries WHERE workspace = ?",
-        );
-        let mut args: Vec<Sql> = vec![workspace.to_string().into()];
-        let like = |s: &str| {
-            format!(
-                "%{}%",
-                s.replace('\\', "\\\\")
-                    .replace('%', "\\%")
-                    .replace('_', "\\_")
-            )
+        let (mut sql, mut args) = build_where(workspace, f, true);
+        let dir = if f.sort.asc { "ASC" } else { "DESC" };
+        let col = match f.sort.col {
+            SortCol::Time => "id",
+            SortCol::Method => "method COLLATE NOCASE",
+            SortCol::Name => "request_name COLLATE NOCASE",
+            SortCol::Url => "url",
+            SortCol::Status => "COALESCE(status, 0)",
+            SortCol::Duration => "total_ms",
+            SortCol::Env => "COALESCE(env, '') COLLATE NOCASE",
         };
-        if let Some(m) = &f.method {
-            sql += " AND method = ? COLLATE NOCASE";
-            args.push(m.clone().into());
+        if f.sort.col == SortCol::Time {
+            sql += &format!(" ORDER BY id {dir} LIMIT ?");
+        } else {
+            sql += &format!(" ORDER BY {col} {dir}, id DESC LIMIT ?");
         }
-        match f.status_class {
-            Some(0) => sql += " AND status IS NULL",
-            Some(c) => {
-                sql += " AND status >= ? AND status < ?";
-                args.push((i64::from(c) * 100).into());
-                args.push((i64::from(c) * 100 + 100).into());
-            }
-            None => {}
-        }
-        if let Some(n) = f.name.as_ref().filter(|s| !s.is_empty()) {
-            sql += " AND request_name LIKE ? ESCAPE '\\'";
-            args.push(like(n).into());
-        }
-        if let Some(x) = f.text.as_ref().filter(|s| !s.is_empty()) {
-            sql += " AND (request_name LIKE ? ESCAPE '\\' OR url LIKE ? ESCAPE '\\')";
-            args.push(like(x).into());
-            args.push(like(x).into());
-        }
-        if let Some(u) = f.url_text.as_ref().filter(|s| !s.is_empty()) {
-            sql += " AND url LIKE ? ESCAPE '\\'";
-            args.push(like(u).into());
-        }
-        if let Some(p) = &f.request_path {
-            sql += " AND request_path = ?";
-            args.push(p.clone().into());
-        }
-        if let Some(r) = &f.run_id {
-            sql += " AND run_id = ?";
-            args.push(r.clone().into());
-        }
-        if let Some(b) = f.before_id {
-            sql += " AND id < ?";
-            args.push(b.into());
-        }
-        sql += " ORDER BY id DESC LIMIT ?";
         args.push((f.limit.unwrap_or(200) as i64).into());
+        sql += " OFFSET ?";
+        args.push((f.offset.unwrap_or(0) as i64).into());
         let conn = self.lock();
         let mut st = conn.prepare(&sql)?;
         let rows = st.query_map(params_from_iter(args), row_summary)?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
-    pub fn get(&self, id: i64) -> Result<Option<Entry>> {
+    /// Count, success rate, and duration percentiles of the filtered set (paging fields ignored).
+    pub fn stats(&self, workspace: &str, f: &Filter) -> Result<Stats> {
+        let mut f = f.clone();
+        f.before_id = None;
+        let (mut sql, args) = build_where(workspace, &f, false);
+        sql = sql.replacen(SUMMARY_COLS, "status, total_ms", 1);
+        sql += " ORDER BY total_ms";
+        let conn = self.lock();
+        let mut st = conn.prepare(&sql)?;
+        let rows: Vec<(Option<i64>, f64)> = st
+            .query_map(params_from_iter(args), |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<std::result::Result<_, _>>()?;
+        if rows.is_empty() {
+            return Ok(Stats::default());
+        }
+        let n = rows.len();
+        let ok = rows
+            .iter()
+            .filter(|(s, _)| matches!(s, Some(200..=399)))
+            .count();
+        // Nearest rank: the smallest value with at least p% of the set at or below it.
+        let pct = |p: f64| rows[((p * n as f64).ceil() as usize).clamp(1, n) - 1].1;
+        Ok(Stats {
+            count: n as i64,
+            success_rate: ok as f64 / n as f64,
+            p50_ms: pct(0.50),
+            p95_ms: pct(0.95),
+        })
+    }
+
+    /// Navigator counts. `day_start_ms` is the start of the user's current local day.
+    pub fn counts(&self, workspace: &str, day_start_ms: i64) -> Result<Counts> {
+        let conn = self.lock();
+        let n = |cond: &str, args: &[Sql]| -> Result<i64> {
+            let sql = format!("SELECT COUNT(*) FROM entries WHERE workspace = ?1 AND {cond}");
+            let mut all: Vec<Sql> = vec![workspace.to_string().into()];
+            all.extend_from_slice(args);
+            Ok(conn.query_row(&sql, params_from_iter(all), |r| r.get(0))?)
+        };
+        let yday = day_start_ms - DAY_MS;
+        let week = day_start_ms - 6 * DAY_MS;
+        let mut c = Counts {
+            today: n("ts_ms >= ?2", &[day_start_ms.into()])?,
+            yesterday: n(
+                "ts_ms >= ?2 AND ts_ms < ?3",
+                &[yday.into(), day_start_ms.into()],
+            )?,
+            this_week: n("ts_ms >= ?2 AND ts_ms < ?3", &[week.into(), yday.into()])?,
+            older: n("ts_ms < ?2", &[week.into()])?,
+            failures: n("(status IS NULL OR status >= 400)", &[])?,
+            slow: n("total_ms > ?2", &[SLOW_MS.into()])?,
+            unsaved: n("dirty = 1", &[])?,
+            pinned: n("pinned = 1", &[])?,
+            runs: n("run_id IS NOT NULL", &[])?,
+            requests: vec![],
+        };
+        let mut st = conn.prepare(
+            "SELECT collection, request_path, MAX(request_name), COUNT(*) FROM entries
+             WHERE workspace = ? GROUP BY collection, request_path ORDER BY collection, request_path",
+        )?;
+        c.requests = st
+            .query_map([workspace], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })?
+            .collect::<std::result::Result<_, _>>()?;
+        Ok(c)
+    }
+
+    pub fn set_pinned(&self, id: i64, pinned: bool) -> Result<()> {
+        self.lock().execute(
+            "UPDATE entries SET pinned = ? WHERE id = ?",
+            params![pinned, id],
+        )?;
+        Ok(())
+    }
+
+    /// An empty note clears it. Notes are user text, redacted with the same secrets as bodies.
+    pub fn set_note(&self, id: i64, note: Option<String>, red: &Redactor) -> Result<()> {
+        let note = note
+            .map(|n| red.redact_str(n.trim()))
+            .filter(|n| !n.is_empty());
+        self.lock().execute(
+            "UPDATE entries SET note = ? WHERE id = ?",
+            params![note, id],
+        )?;
+        Ok(())
+    }
+
+    /// Delete the given entries (pinned or not: this is an explicit action).
+    pub fn delete(&self, ids: &[i64]) -> Result<usize> {
+        let conn = self.lock();
+        let mut n = 0;
+        for id in ids {
+            n += conn.execute("DELETE FROM entries WHERE id = ?", [id])?;
+        }
+        Ok(n)
+    }
+
+    /// The last earlier entry of the same request (for "Compare to previous").
+    pub fn previous_of(&self, id: i64) -> Result<Option<i64>> {
         let conn = self.lock();
         let mut st = conn.prepare(
-            "SELECT id, ts_ms, collection, request_path, request_name, protocol, method, url,
-                    status, total_ms, env, dirty, summary, truncated, payload, run_id
-             FROM entries WHERE id = ?",
+            "SELECT p.id FROM entries p JOIN entries e
+             ON p.workspace = e.workspace AND p.collection = e.collection
+                AND p.request_path = e.request_path
+             WHERE e.id = ? AND p.id < e.id ORDER BY p.id DESC LIMIT 1",
         )?;
+        let mut rows = st.query_map([id], |r| r.get(0))?;
+        Ok(rows.next().transpose()?)
+    }
+
+    /// The whole filtered set (limit and paging ignored) as JSON or CSV.
+    pub fn export(&self, workspace: &str, f: &Filter, format: ExportFormat) -> Result<String> {
+        let mut f = f.clone();
+        f.before_id = None;
+        f.offset = None;
+        f.limit = Some(usize::MAX >> 1);
+        let rows = self.list(workspace, &f)?;
+        Ok(match format {
+            ExportFormat::Json => export::to_json(&rows),
+            ExportFormat::Csv => export::to_csv(&rows),
+        })
+    }
+
+    pub fn get(&self, id: i64) -> Result<Option<Entry>> {
+        let conn = self.lock();
+        let mut st = conn.prepare(&format!(
+            "SELECT {SUMMARY_COLS}, truncated, payload FROM entries WHERE id = ?"
+        ))?;
         let mut rows = st.query_map([id], |r| {
-            let mut summary = row_summary(r)?;
-            summary.run_id = r.get(15)?;
-            let payload: String = r.get(14)?;
+            let summary = row_summary(r)?;
+            let payload: String = r.get(17)?;
             Ok(Entry {
                 summary,
-                truncated: r.get(13)?,
+                truncated: r.get(16)?,
                 payload: serde_json::from_str(&payload).unwrap_or_default(),
             })
         })?;
@@ -256,32 +357,47 @@ impl Store {
         )?)
     }
 
-    /// Delete history for a scope in one workspace; returns rows removed.
-    pub fn clear(&self, workspace: &str, scope: &Scope) -> Result<usize> {
+    /// Delete history for a scope in one workspace; returns rows removed. Pinned entries stay
+    /// unless `include_pinned`.
+    pub fn clear(&self, workspace: &str, scope: &Scope, include_pinned: bool) -> Result<usize> {
         let conn = self.lock();
+        let keep = if include_pinned {
+            ""
+        } else {
+            " AND pinned = 0"
+        };
         Ok(match scope {
-            Scope::All => conn.execute("DELETE FROM entries WHERE workspace = ?", [workspace])?,
+            Scope::All => conn.execute(
+                &format!("DELETE FROM entries WHERE workspace = ?{keep}"),
+                [workspace],
+            )?,
             Scope::Collection(c) => conn.execute(
-                "DELETE FROM entries WHERE workspace = ? AND collection = ?",
+                &format!("DELETE FROM entries WHERE workspace = ? AND collection = ?{keep}"),
                 params![workspace, c],
             )?,
             Scope::Request { collection, path } => conn.execute(
-                "DELETE FROM entries WHERE workspace = ? AND collection = ? AND request_path = ?",
+                &format!(
+                    "DELETE FROM entries WHERE workspace = ? AND collection = ? AND request_path = ?{keep}"
+                ),
                 params![workspace, collection, path],
             )?,
         })
     }
 
     /// Keep at most `max_entries` per workspace and nothing older than `max_age_days`.
+    /// Pinned entries are exempt from both.
     pub fn enforce_retention(&self, s: &HistorySettings, now_ms: i64) -> Result<usize> {
-        let cutoff = now_ms - (s.max_age_days as i64) * 86_400_000;
+        let cutoff = now_ms - (s.max_age_days as i64) * DAY_MS;
         let conn = self.lock();
-        let mut n = conn.execute("DELETE FROM entries WHERE ts_ms < ?", [cutoff])?;
+        let mut n = conn.execute(
+            "DELETE FROM entries WHERE ts_ms < ? AND pinned = 0",
+            [cutoff],
+        )?;
         n += conn.execute(
             "DELETE FROM entries WHERE id IN (
                 SELECT id FROM (
                     SELECT id, ROW_NUMBER() OVER (PARTITION BY workspace ORDER BY id DESC) AS rn
-                    FROM entries) WHERE rn > ?)",
+                    FROM entries WHERE pinned = 0) WHERE rn > ?)",
             [s.max_entries as i64],
         )?;
         Ok(n)
@@ -310,13 +426,97 @@ fn row_summary(r: &rusqlite::Row<'_>) -> rusqlite::Result<Summary> {
         env: r.get(10)?,
         dirty: r.get(11)?,
         summary: r.get(12)?,
-        run_id: r.get(13).unwrap_or(None),
+        run_id: r.get(13)?,
+        pinned: r.get(14)?,
+        note: r.get(15)?,
     })
+}
+
+/// `SELECT … WHERE` for a filter. `paging` adds the `before_id` bound.
+fn build_where(workspace: &str, f: &Filter, paging: bool) -> (String, Vec<Sql>) {
+    let mut sql = format!("SELECT {SUMMARY_COLS} FROM entries WHERE workspace = ?");
+    let mut args: Vec<Sql> = vec![workspace.to_string().into()];
+    let like = |s: &str| {
+        format!(
+            "%{}%",
+            s.replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
+        )
+    };
+    if let Some(m) = &f.method {
+        sql += " AND method = ? COLLATE NOCASE";
+        args.push(m.clone().into());
+    }
+    match f.status_class {
+        Some(0) => sql += " AND status IS NULL",
+        Some(c) => {
+            sql += " AND status >= ? AND status < ?";
+            args.push((i64::from(c) * 100).into());
+            args.push((i64::from(c) * 100 + 100).into());
+        }
+        None => {}
+    }
+    if let Some(n) = f.name.as_ref().filter(|s| !s.is_empty()) {
+        sql += " AND request_name LIKE ? ESCAPE '\\'";
+        args.push(like(n).into());
+    }
+    if let Some(x) = f.text.as_ref().filter(|s| !s.is_empty()) {
+        sql += " AND (request_name LIKE ? ESCAPE '\\' OR url LIKE ? ESCAPE '\\')";
+        args.push(like(x).into());
+        args.push(like(x).into());
+    }
+    if let Some(u) = f.url_text.as_ref().filter(|s| !s.is_empty()) {
+        sql += " AND url LIKE ? ESCAPE '\\'";
+        args.push(like(u).into());
+    }
+    for (col, v) in [
+        ("request_path", &f.request_path),
+        ("run_id", &f.run_id),
+        ("env", &f.env),
+        ("protocol", &f.protocol),
+        ("collection", &f.collection),
+    ] {
+        if let Some(v) = v {
+            sql += &format!(" AND {col} = ?");
+            args.push(v.clone().into());
+        }
+    }
+    if f.pinned {
+        sql += " AND pinned = 1";
+    }
+    if f.dirty {
+        sql += " AND dirty = 1";
+    }
+    if f.failed {
+        sql += " AND (status IS NULL OR status >= 400)";
+    }
+    if f.slow {
+        sql += " AND total_ms > ?";
+        args.push(SLOW_MS.into());
+    }
+    if f.runs_only {
+        sql += " AND run_id IS NOT NULL";
+    }
+    if let Some(t) = f.since_ms {
+        sql += " AND ts_ms >= ?";
+        args.push(t.into());
+    }
+    if let Some(t) = f.until_ms {
+        sql += " AND ts_ms < ?";
+        args.push(t.into());
+    }
+    if let (true, Some(b)) = (paging, f.before_id) {
+        sql += " AND id < ?";
+        args.push(b.into());
+    }
+    (sql, args)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::Sort;
     use serde_json::json;
 
     fn entry(path: &str, method: &str, status: Option<i64>, ts: i64) -> NewEntry {
@@ -485,10 +685,14 @@ mod tests {
                     collection: "c".into(),
                     path: "b".into(),
                 },
+                false,
             )
             .unwrap();
         assert_eq!(rm, 1);
-        assert_eq!(s.clear("w", &Scope::Collection("c".into())).unwrap(), 3);
+        assert_eq!(
+            s.clear("w", &Scope::Collection("c".into()), false).unwrap(),
+            3
+        );
         assert_eq!(s.count("w").unwrap(), 0);
     }
 
@@ -525,5 +729,264 @@ mod tests {
         let a = workspace_key(Path::new("/tmp/does-not-exist-x"));
         assert_eq!(a, workspace_key(Path::new("/tmp/does-not-exist-x")));
         assert_ne!(a, workspace_key(Path::new("/tmp/does-not-exist-y")));
+    }
+
+    fn q(s: &Store, f: Filter) -> Vec<i64> {
+        s.list("w", &f).unwrap().iter().map(|r| r.id).collect()
+    }
+
+    #[test]
+    fn migrates_a_v2_database_in_place() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("h.sqlite");
+        {
+            let c = Connection::open(&p).unwrap();
+            c.execute_batch("CREATE TABLE schema_version (version INTEGER NOT NULL);")
+                .unwrap();
+            for (i, sql) in MIGRATIONS.iter().take(2).enumerate() {
+                c.execute_batch(sql).unwrap();
+                c.execute("INSERT INTO schema_version VALUES (?)", [i as i64 + 1])
+                    .unwrap();
+            }
+            c.execute(
+                "INSERT INTO entries (workspace, ts_ms, collection, request_path, request_name,
+                 protocol, method, url, status, total_ms, env, dirty, summary, truncated, payload)
+                 VALUES ('w',1,'c','a','a','http','GET','u',200,1.0,NULL,0,'s',0,'{}')",
+                [],
+            )
+            .unwrap();
+        }
+        let s = Store::open(&p).unwrap();
+        assert_eq!(s.schema_version().unwrap(), 3);
+        let rows = s.list("w", &Filter::default()).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(!rows[0].pinned && rows[0].note.is_none());
+    }
+
+    #[test]
+    fn new_filters_and_sort() {
+        let s = Store::open_in_memory().unwrap();
+        let r = Redactor::default();
+        let mut a = entry("a", "GET", Some(200), 100);
+        a.total_ms = 2000.0;
+        a.dirty = true;
+        let mut b = entry("b", "POST", Some(500), 200);
+        b.env = Some("prod".into());
+        b.protocol = "ws".into();
+        b.collection = "other".into();
+        b.run_id = Some("r1".into());
+        let c = entry("c", "GET", None, 300);
+        let ids: Vec<i64> = [a, b, c]
+            .into_iter()
+            .map(|e| s.insert("w", e, &r).unwrap())
+            .collect();
+        let f = |f: Filter| q(&s, f);
+        assert_eq!(
+            f(Filter {
+                env: Some("prod".into()),
+                ..Default::default()
+            }),
+            vec![ids[1]]
+        );
+        assert_eq!(
+            f(Filter {
+                protocol: Some("ws".into()),
+                ..Default::default()
+            }),
+            vec![ids[1]]
+        );
+        assert_eq!(
+            f(Filter {
+                collection: Some("other".into()),
+                ..Default::default()
+            }),
+            vec![ids[1]]
+        );
+        assert_eq!(
+            f(Filter {
+                failed: true,
+                ..Default::default()
+            }),
+            vec![ids[2], ids[1]]
+        );
+        assert_eq!(
+            f(Filter {
+                slow: true,
+                ..Default::default()
+            }),
+            vec![ids[0]]
+        );
+        assert_eq!(
+            f(Filter {
+                dirty: true,
+                ..Default::default()
+            }),
+            vec![ids[0]]
+        );
+        assert_eq!(
+            f(Filter {
+                runs_only: true,
+                ..Default::default()
+            }),
+            vec![ids[1]]
+        );
+        assert_eq!(
+            f(Filter {
+                since_ms: Some(150),
+                until_ms: Some(300),
+                ..Default::default()
+            }),
+            vec![ids[1]]
+        );
+        let sort = |col, asc| Filter {
+            sort: Sort { col, asc },
+            ..Default::default()
+        };
+        assert_eq!(f(sort(SortCol::Time, true)), vec![ids[0], ids[1], ids[2]]);
+        assert_eq!(f(sort(SortCol::Duration, false))[0], ids[0]);
+        assert_eq!(f(sort(SortCol::Method, true))[2], ids[1]);
+        assert_eq!(f(sort(SortCol::Status, false))[0], ids[1]);
+        let page = Filter {
+            sort: Sort {
+                col: SortCol::Method,
+                asc: true,
+            },
+            limit: Some(2),
+            offset: Some(2),
+            ..Default::default()
+        };
+        assert_eq!(f(page), vec![ids[1]]);
+    }
+
+    #[test]
+    fn stats_match_a_hand_computed_fixture() {
+        let s = Store::open_in_memory().unwrap();
+        let r = Redactor::default();
+        // durations 10..=100, statuses: 8 success (2xx/3xx), one 404, one failed send.
+        for i in 1..=10 {
+            let status = match i {
+                9 => Some(404),
+                10 => None,
+                8 => Some(302),
+                _ => Some(200),
+            };
+            let mut e = entry("a", "GET", status, i);
+            e.total_ms = (i * 10) as f64;
+            s.insert("w", e, &r).unwrap();
+        }
+        let st = s.stats("w", &Filter::default()).unwrap();
+        assert_eq!(st.count, 10);
+        assert!((st.success_rate - 0.8).abs() < 1e-9);
+        assert_eq!(st.p50_ms, 50.0); // rank ceil(0.5*10) = 5
+        assert_eq!(st.p95_ms, 100.0); // rank ceil(9.5) = 10
+        let none = s
+            .stats(
+                "w",
+                &Filter {
+                    env: Some("x".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(none, Stats::default());
+    }
+
+    #[test]
+    fn pin_note_delete_and_previous() {
+        let s = Store::open_in_memory().unwrap();
+        let r = Redactor::with_secrets(vec![("k".into(), "SEKRET".into())]);
+        let a1 = s.insert("w", entry("a", "GET", Some(200), 1), &r).unwrap();
+        let b1 = s.insert("w", entry("b", "GET", Some(200), 2), &r).unwrap();
+        let a2 = s.insert("w", entry("a", "GET", Some(200), 3), &r).unwrap();
+        assert_eq!(s.previous_of(a2).unwrap(), Some(a1));
+        assert_eq!(s.previous_of(a1).unwrap(), None);
+        s.set_pinned(a1, true).unwrap();
+        s.set_note(a1, Some("  baseline SEKRET ".into()), &r)
+            .unwrap();
+        let e = s.get(a1).unwrap().unwrap().summary;
+        assert!(e.pinned);
+        assert_eq!(e.note.as_deref(), Some("baseline ‹secret:k›"));
+        s.set_note(a1, Some("  ".into()), &r).unwrap();
+        assert_eq!(s.get(a1).unwrap().unwrap().summary.note, None);
+        assert_eq!(s.delete(&[b1, 999]).unwrap(), 1);
+        assert_eq!(s.count("w").unwrap(), 2);
+    }
+
+    #[test]
+    fn pinned_survive_retention_and_clear() {
+        let s = Store::open_in_memory().unwrap();
+        let r = Redactor::default();
+        let now = 100 * DAY_MS;
+        let old = s
+            .insert("w", entry("old", "GET", Some(200), now - 50 * DAY_MS), &r)
+            .unwrap();
+        s.set_pinned(old, true).unwrap();
+        for i in 0..4 {
+            s.insert("w", entry("a", "GET", Some(200), now - i), &r)
+                .unwrap();
+        }
+        let cfg = HistorySettings {
+            max_entries: 2,
+            max_age_days: 30,
+        };
+        s.enforce_retention(&cfg, now).unwrap();
+        assert_eq!(s.count("w").unwrap(), 3); // pinned + 2 newest
+        assert_eq!(s.clear("w", &Scope::All, false).unwrap(), 2);
+        assert_eq!(s.count("w").unwrap(), 1);
+        assert_eq!(s.clear("w", &Scope::All, true).unwrap(), 1);
+    }
+
+    #[test]
+    fn counts_buckets_views_and_requests() {
+        let s = Store::open_in_memory().unwrap();
+        let r = Redactor::default();
+        let day = 10 * DAY_MS;
+        let mut slow = entry("a", "GET", Some(200), day + 5);
+        slow.total_ms = 5000.0;
+        s.insert("w", slow, &r).unwrap();
+        s.insert("w", entry("b", "GET", Some(500), day - 1), &r)
+            .unwrap();
+        let mut run = entry("a", "GET", None, day - 3 * DAY_MS);
+        run.run_id = Some("r".into());
+        run.dirty = true;
+        s.insert("w", run, &r).unwrap();
+        let id = s
+            .insert("w", entry("a", "GET", Some(200), day - 9 * DAY_MS), &r)
+            .unwrap();
+        s.set_pinned(id, true).unwrap();
+        s.insert("other", entry("a", "GET", Some(200), day), &r)
+            .unwrap();
+        let c = s.counts("w", day).unwrap();
+        assert_eq!((c.today, c.yesterday, c.this_week, c.older), (1, 1, 1, 1));
+        assert_eq!(
+            (c.failures, c.slow, c.unsaved, c.pinned, c.runs),
+            (2, 1, 1, 1, 1)
+        );
+        assert_eq!(c.requests.len(), 2);
+        assert_eq!((c.requests[0].1.as_str(), c.requests[0].3), ("a", 3));
+    }
+
+    #[test]
+    fn export_covers_the_whole_filtered_set_without_secrets() {
+        let s = Store::open_in_memory().unwrap();
+        let r = Redactor::with_secrets(vec![("k".into(), "TOP-SECRET".into())]);
+        for i in 0..3 {
+            let mut e = entry("a", "GET", Some(200), i);
+            e.url = "https://api/a?key=TOP-SECRET".into();
+            s.insert("w", e, &r).unwrap();
+        }
+        s.insert("w", entry("b", "POST", Some(500), 9), &r).unwrap();
+        let f = Filter {
+            limit: Some(1),
+            method: Some("GET".into()),
+            ..Default::default()
+        };
+        let json = s.export("w", &f, ExportFormat::Json).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["entries"].as_array().unwrap().len(), 3);
+        assert!(!json.contains("TOP-SECRET"));
+        let csv = s.export("w", &f, ExportFormat::Csv).unwrap();
+        assert_eq!(csv.trim_end().split("\r\n").count(), 4);
+        assert!(!csv.contains("TOP-SECRET"));
     }
 }

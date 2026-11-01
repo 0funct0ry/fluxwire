@@ -83,7 +83,7 @@ impl WorkspaceView {
     fn render_left_dock(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let content = match self.scope.panel {
             Panel::Workspace => self.render_workspace_tree(t, cx).into_any_element(),
-            Panel::History => self.render_history(t, cx).into_any_element(),
+            Panel::History => self.render_history_nav(t, cx),
             Panel::Environments => self.render_envs(t, cx).into_any_element(),
             Panel::Sync => self.render_sync_panel(t, cx).into_any_element(),
         };

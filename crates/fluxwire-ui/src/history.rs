@@ -1,8 +1,9 @@
-//! History in the UI (SPEC §13): recording every send, the History panel, the read-only
-//! History entry and diff tabs, restore, copy as cURL, and the response-pane dropdown.
+//! History in the UI (SPEC §13): recording every send, the store plumbing behind the History
+//! tab and navigator (`history_tab.rs`, `history_nav.rs`), the read-only History entry and diff
+//! tabs, restore, copy as cURL, and the response-pane dropdown.
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap, HashSet},
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -11,13 +12,12 @@ use fluxwire_format as fmt;
 use fluxwire_protocol::HistoryRecord;
 use fluxwire_runner::{RunResult, runner};
 use fluxwire_store::{
-    DiffKind, DiffRow, Entry, Filter, HistorySettings, NewEntry, Redactor, Scope, Store, Summary,
-    data_dir, diff_headers, diff_json_or_text, workspace_key,
+    Counts, DiffKind, DiffRow, Entry, Filter, HistorySettings, NewEntry, Redactor, Scope, Stats,
+    Store, Summary, data_dir, diff_headers, diff_json_or_text, workspace_key,
 };
 use gpui::{
     AnyElement, ClipboardItem, Context, InteractiveElement, IntoElement, ParentElement,
     StatefulInteractiveElement, Styled, UniformListScrollHandle, Window, div, prelude::*, px,
-    uniform_list,
 };
 use serde_json::Value;
 
@@ -25,13 +25,13 @@ use crate::{
     assets::BUFFER_FONT,
     center::button,
     editor::{Lang, code_view},
+    history_query::{DEFAULT_WIDTHS, HistRow, PAGE, Query, build_rows},
     tabs::{Tab, TabKind},
     theme::Theme,
     ui::row,
     workspace::WorkspaceView,
 };
 
-const PAGE: usize = 200;
 const RECENT: usize = 10;
 const DIFF_ROW_CAP: usize = 2000;
 const REDACTED: &str = "‹redacted›";
@@ -40,13 +40,6 @@ pub const METHOD_CHIPS: [&str; 5] = ["GET", "POST", "PUT", "PATCH", "DELETE"];
 /// `0` is "failed before a response".
 pub const CLASS_CHIPS: [(u8, &str); 5] =
     [(2, "2xx"), (3, "3xx"), (4, "4xx"), (5, "5xx"), (0, "err")];
-
-#[derive(Clone, Debug)]
-pub enum HistRow {
-    Day(String),
-    Entry(usize),
-    More,
-}
 
 /// Four side-by-side comparisons of two entries.
 #[derive(Debug, Default)]
@@ -57,11 +50,20 @@ pub struct DiffSet {
     pub res_body: Vec<DiffRow>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ClearScope {
     Request,
     Collection,
     All,
+}
+
+/// A pointer drag in the History tab.
+#[derive(Clone, Copy, Debug)]
+pub enum HistResize {
+    /// Column index, pointer x and width at the start.
+    Col(usize, f32, f32),
+    /// Pointer x and detail width at the start.
+    Divider(f32, f32),
 }
 
 pub struct HistoryState {
@@ -70,17 +72,35 @@ pub struct HistoryState {
     pub entries: Vec<Summary>,
     pub rows: Arc<Vec<HistRow>>,
     pub all_loaded: bool,
-    pub method: Option<&'static str>,
-    pub class: Option<u8>,
-    pub text: String,
+    pub query: Query,
     pub input: Option<gpui::Entity<crate::text_input::TextInput>>,
-    /// Show only the sends of this folder run.
-    pub run: Option<String>,
+    pub stats: Stats,
+    pub counts: Counts,
+    /// The row shown in the detail pane.
+    pub selected: Option<i64>,
+    /// Rows ticked for diff, pin and delete.
+    pub ticked: BTreeSet<i64>,
+    /// Folder runs whose sends are shown under their group row.
+    pub expanded: HashSet<String>,
+    pub widths: [f32; 7],
+    /// Width of the detail pane.
+    pub divider: f32,
+    pub resizing: Option<HistResize>,
+    pub note_input: Option<gpui::Entity<crate::text_input::TextInput>>,
+    /// The entry whose note the note field holds.
+    pub note_for: Option<i64>,
+    pub menu: Option<(i64, gpui::Point<gpui::Pixels>)>,
+    pub nav_menu: Option<(crate::history_nav::NavTarget, gpui::Point<gpui::Pixels>)>,
+    pub clear_menu: bool,
+    pub export_menu: bool,
+    pub include_pinned: bool,
+    pub focus: Option<gpui::FocusHandle>,
     pub cache: HashMap<i64, Arc<Entry>>,
     pub diffs: HashMap<(i64, i64), Arc<DiffSet>>,
     /// First entry picked for "Diff with…".
     pub pick: Option<i64>,
     pub scroll: UniformListScrollHandle,
+    pub nav_scroll: UniformListScrollHandle,
     /// Recent sends of the active request, for the response-pane dropdown.
     pub recent: Vec<Summary>,
     pub dropdown: bool,
@@ -111,51 +131,51 @@ impl HistoryState {
             entries: Vec::new(),
             rows: Arc::default(),
             all_loaded: true,
-            method: None,
-            class: None,
-            text: String::new(),
+            query: Query::default(),
             input: None,
-            run: None,
+            stats: Stats::default(),
+            counts: Counts::default(),
+            selected: None,
+            ticked: BTreeSet::new(),
+            expanded: HashSet::new(),
+            widths: DEFAULT_WIDTHS,
+            divider: 420.0,
+            resizing: None,
+            note_input: None,
+            note_for: None,
+            menu: None,
+            nav_menu: None,
+            clear_menu: false,
+            export_menu: false,
+            include_pinned: false,
+            focus: None,
             cache: HashMap::new(),
             diffs: HashMap::new(),
             pick: None,
             scroll: UniformListScrollHandle::new(),
+            nav_scroll: UniformListScrollHandle::new(),
             recent: Vec::new(),
             dropdown: false,
             generation: 0,
         }
     }
 
-    fn filter(&self) -> Filter {
-        Filter {
-            method: self.method.map(String::from),
-            status_class: self.class,
-            text: Some(self.text.clone()).filter(|s| !s.is_empty()),
-            run_id: self.run.clone(),
-            limit: Some(PAGE),
-            ..Default::default()
-        }
+    pub(crate) fn filter(&self, before: Option<i64>, offset: usize) -> Filter {
+        let now = now_ms();
+        self.query.to_filter(now, day_start_ms(now), before, offset)
     }
 
     pub fn rebuild_rows_pub(&mut self) {
         self.rebuild_rows()
     }
 
-    fn rebuild_rows(&mut self) {
-        let mut rows = Vec::with_capacity(self.entries.len() + 8);
-        let mut last = String::new();
-        for (i, e) in self.entries.iter().enumerate() {
-            let d = day_label(e.ts_ms);
-            if d != last {
-                rows.push(HistRow::Day(d.clone()));
-                last = d;
-            }
-            rows.push(HistRow::Entry(i));
-        }
-        if !self.all_loaded {
-            rows.push(HistRow::More);
-        }
-        self.rows = Arc::new(rows);
+    pub(crate) fn rebuild_rows(&mut self) {
+        self.rows = Arc::new(build_rows(
+            &self.entries,
+            &self.expanded,
+            self.all_loaded,
+            day_label,
+        ));
     }
 }
 
@@ -165,7 +185,17 @@ pub fn now_ms() -> i64 {
         .map_or(0, |d| d.as_millis() as i64)
 }
 
-fn local(ts_ms: i64) -> chrono::DateTime<chrono::Local> {
+/// Start of the user's current local day, in ms.
+pub fn day_start_ms(now: i64) -> i64 {
+    use chrono::TimeZone;
+    local(now)
+        .date_naive()
+        .and_hms_opt(0, 0, 0)
+        .and_then(|d| chrono::Local.from_local_datetime(&d).earliest())
+        .map_or(now, |d| d.timestamp_millis())
+}
+
+pub(crate) fn local(ts_ms: i64) -> chrono::DateTime<chrono::Local> {
     use chrono::TimeZone;
     chrono::Local
         .timestamp_millis_opt(ts_ms)
@@ -189,7 +219,7 @@ pub fn time_label(ts_ms: i64) -> String {
     local(ts_ms).format("%H:%M:%S").to_string()
 }
 
-fn short_method(m: &str) -> &str {
+pub(crate) fn short_method(m: &str) -> &str {
     if m == "DELETE" { "DEL" } else { m }
 }
 
@@ -201,7 +231,7 @@ pub(crate) fn blocking<T: Send + 'static>(
 }
 
 /// Text of a stored `body` object (`text`, or a placeholder for binary).
-fn body_text(v: Option<&Value>) -> String {
+pub(crate) fn body_text(v: Option<&Value>) -> String {
     let Some(b) = v else { return String::new() };
     if let Some(t) = b.get("text").and_then(Value::as_str) {
         t.to_string()
@@ -215,12 +245,12 @@ fn body_text(v: Option<&Value>) -> String {
     }
 }
 
-fn headers_of(v: Option<&Value>) -> Vec<(String, String)> {
+pub(crate) fn headers_of(v: Option<&Value>) -> Vec<(String, String)> {
     v.and_then(|h| serde_json::from_value(h.clone()).ok())
         .unwrap_or_default()
 }
 
-fn lang_for(text: &str) -> Lang {
+pub(crate) fn lang_for(text: &str) -> Lang {
     let t = text.trim_start();
     if t.starts_with('{') || t.starts_with('[') {
         Lang::Json
@@ -231,7 +261,7 @@ fn lang_for(text: &str) -> Lang {
     }
 }
 
-fn pretty(text: &str) -> String {
+pub(crate) fn pretty(text: &str) -> String {
     serde_json::from_str::<Value>(text)
         .ok()
         .and_then(|v| serde_json::to_string_pretty(&v).ok())
@@ -278,6 +308,19 @@ impl WorkspaceView {
         self.history.cache.clear();
         self.history.diffs.clear();
         self.history.pick = None;
+        self.history.selected = None;
+        self.history.ticked.clear();
+        self.history.expanded.clear();
+        self.history.note_for = None;
+        self.history.menu = None;
+        self.history.nav_menu = None;
+        self.history.query.clear();
+        self.history.query.nav = None;
+        if let Some(i) = &self.history.input {
+            i.update(cx, |i, cx| i.set_text("", cx));
+        }
+        self.history.stats = Stats::default();
+        self.history.counts = Counts::default();
         self.history.rebuild_rows();
         self.history_reload(cx);
     }
@@ -290,10 +333,13 @@ impl WorkspaceView {
         };
         self.history.generation += 1;
         let gen_ = self.history.generation;
-        let filter = self.history.filter();
+        let filter = self.history.filter(None, 0);
         let recent_path = self.active_key();
+        let day_start = day_start_ms(now_ms());
         let task = blocking(move || {
             let list = store.list(&ws, &filter).unwrap_or_default();
+            let stats = store.stats(&ws, &filter).unwrap_or_default();
+            let counts = store.counts(&ws, day_start).unwrap_or_default();
             let recent = recent_path
                 .map(|p| {
                     store
@@ -308,10 +354,10 @@ impl WorkspaceView {
                         .unwrap_or_default()
                 })
                 .unwrap_or_default();
-            (list, recent)
+            (list, recent, stats, counts)
         });
         cx.spawn(async move |this, cx| {
-            let Some((list, recent)) = task.await else {
+            let Some((list, recent, stats, counts)) = task.await else {
                 return;
             };
             this.update(cx, |this, cx| {
@@ -321,6 +367,11 @@ impl WorkspaceView {
                 this.history.all_loaded = list.len() < PAGE;
                 this.history.entries = list;
                 this.history.recent = recent;
+                this.history.stats = stats;
+                this.history.counts = counts;
+                this.history
+                    .ticked
+                    .retain(|id| this.history.entries.iter().any(|e| e.id == *id));
                 this.history.rebuild_rows();
                 cx.notify();
             })
@@ -341,8 +392,7 @@ impl WorkspaceView {
             return;
         }
         let gen_ = self.history.generation;
-        let mut filter = self.history.filter();
-        filter.before_id = Some(last);
+        let filter = self.history.filter(Some(last), self.history.entries.len());
         let task = blocking(move || store.list(&ws, &filter).unwrap_or_default());
         cx.spawn(async move |this, cx| {
             let Some(list) = task.await else { return };
@@ -429,7 +479,7 @@ impl WorkspaceView {
     }
 
     /// Fetch entries into the cache, then run `then`.
-    fn history_fetch(
+    pub(crate) fn history_fetch(
         &mut self,
         ids: Vec<i64>,
         cx: &mut Context<Self>,
@@ -475,13 +525,26 @@ impl WorkspaceView {
     // ---- actions ----------------------------------------------------------------------------
 
     pub fn open_history_entry(&mut self, id: i64, permanent: bool, cx: &mut Context<Self>) {
+        self.open_history_entry_titled(id, None, permanent, cx);
+    }
+
+    /// `title` is the saved tab title when restoring a session, before the list has loaded.
+    pub fn open_history_entry_titled(
+        &mut self,
+        id: i64,
+        title: Option<&str>,
+        permanent: bool,
+        cx: &mut Context<Self>,
+    ) {
         let title = self
             .history
             .entries
             .iter()
             .chain(&self.history.recent)
             .find(|e| e.id == id)
-            .map_or_else(|| format!("History {id}"), |e| e.request_name.clone());
+            .map(|e| e.request_name.clone())
+            .or_else(|| title.filter(|t| !t.is_empty()).map(String::from))
+            .unwrap_or_else(|| format!("History {id}"));
         self.open_tab(
             &format!("history/{id}"),
             &title,
@@ -608,10 +671,9 @@ impl WorkspaceView {
     }
 
     pub fn history_clear(&mut self, scope: ClearScope, cx: &mut Context<Self>) {
-        let (Some(store), Some(ws)) = (self.history.store.clone(), self.history.ws_key.clone())
-        else {
+        if self.history.store.is_none() {
             return;
-        };
+        }
         let active = self.active_key();
         let collection = active.as_ref().and_then(|k| {
             let p = self.scope.workspace.as_ref()?;
@@ -634,11 +696,28 @@ impl WorkspaceView {
                 return;
             }
         };
-        let task = blocking(move || store.clear(&ws, &scope));
+        let include = self.history.include_pinned;
+        self.history_clear_scope(scope, include, cx);
+    }
+
+    /// Delete a scope of history; pinned entries stay unless `include_pinned`.
+    pub fn history_clear_scope(
+        &mut self,
+        scope: Scope,
+        include_pinned: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let (Some(store), Some(ws)) = (self.history.store.clone(), self.history.ws_key.clone())
+        else {
+            return;
+        };
+        let task = blocking(move || store.clear(&ws, &scope, include_pinned));
         cx.spawn(async move |this, cx| {
             let n = task.await.and_then(Result::ok).unwrap_or(0);
             this.update(cx, |this, cx| {
                 this.history.cache.clear();
+                this.history.selected = None;
+                this.history.ticked.clear();
                 this.notice = Some(format!("Cleared {n} history entries."));
                 this.history_reload(cx);
             })
@@ -669,265 +748,6 @@ impl WorkspaceView {
         cx.notify();
     }
 
-    pub fn on_history_key(&mut self, ev: &gpui::KeyDownEvent, cx: &mut Context<Self>) {
-        let ks = &ev.keystroke;
-        if ks.key == "escape" {
-            self.history.text.clear();
-            if let Some(i) = &self.history.input {
-                i.update(cx, |i, cx| i.set_text("", cx));
-            }
-            self.history_reload(cx);
-        }
-    }
-
-    // ---- panel ------------------------------------------------------------------------------
-
-    pub(crate) fn render_history(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let chip = |id: String, label: &str, on: bool| {
-            div()
-                .id(gpui::ElementId::Name(id.into()))
-                .px_1p5()
-                .h(px(18.))
-                .flex()
-                .items_center()
-                .rounded(px(3.))
-                .cursor_pointer()
-                .text_size(px(10.))
-                .font_family(BUFFER_FONT)
-                .when(on, |d| d.bg(t.element_selected).text_color(t.text))
-                .when(!on, |d| {
-                    let h = t.element_hover;
-                    d.text_color(t.text_muted).hover(move |s| s.bg(h))
-                })
-                .child(label.to_string())
-        };
-        let methods = row().gap_1().children(METHOD_CHIPS.iter().map(|m| {
-            let on = self.history.method == Some(*m);
-            let m = *m;
-            chip(format!("hm-{m}"), short_method(m), on).on_click(cx.listener(
-                move |this, _, _, cx| {
-                    this.history.method = if this.history.method == Some(m) {
-                        None
-                    } else {
-                        Some(m)
-                    };
-                    this.history_reload(cx);
-                },
-            ))
-        }));
-        let classes = row().gap_1().children(CLASS_CHIPS.iter().map(|(c, label)| {
-            let on = self.history.class == Some(*c);
-            let c = *c;
-            chip(format!("hc-{c}"), label, on).on_click(cx.listener(move |this, _, _, cx| {
-                this.history.class = if this.history.class == Some(c) {
-                    None
-                } else {
-                    Some(c)
-                };
-                this.history_reload(cx);
-            }))
-        }));
-        let run_pill = self.history.run.clone().map(|id| {
-            chip(
-                "hist-run".into(),
-                &format!("run {} ×", id.split('-').next_back().unwrap_or(&id)),
-                true,
-            )
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.history.run = None;
-                this.history_reload(cx);
-            }))
-        });
-        let search = row()
-            .id("history-search")
-            .track_focus(&self.history_focus)
-            .on_key_down(cx.listener(|this, ev, _, cx| this.on_history_key(ev, cx)))
-            .h(px(22.))
-            .px_2()
-            .rounded(px(4.))
-            .border_1()
-            .border_color(t.border)
-            .focus({
-                let a = t.accent;
-                move |s| s.border_color(a)
-            })
-            .font_family(BUFFER_FONT)
-            .text_size(px(12.))
-            .overflow_hidden()
-            .children(self.history.input.clone());
-        let rows = self.history.rows.clone();
-        let list = if self.history.ws_key.is_none() {
-            div()
-                .p_3()
-                .text_size(px(12.))
-                .text_color(t.text_placeholder)
-                .child("Open a workspace to see its history.")
-                .into_any_element()
-        } else if rows.is_empty() {
-            div()
-                .p_3()
-                .text_size(px(12.))
-                .text_color(t.text_placeholder)
-                .child("No history yet. Send a request.")
-                .into_any_element()
-        } else {
-            let n = rows.len();
-            uniform_list(
-                "history-list",
-                n,
-                cx.processor(
-                    move |this: &mut WorkspaceView, range: std::ops::Range<usize>, _w, cx| {
-                        let t = crate::theme::theme(cx).clone();
-                        let rows = this.history.rows.clone();
-                        range
-                            .filter_map(|i| rows.get(i).cloned().map(|r| (i, r)))
-                            .map(|(i, r)| this.history_row(&t, i, r, cx))
-                            .collect::<Vec<_>>()
-                    },
-                ),
-            )
-            .track_scroll(self.history.scroll.clone())
-            .flex_1()
-            .min_h_0()
-            .into_any_element()
-        };
-        div()
-            .flex()
-            .flex_col()
-            .flex_1()
-            .min_h_0()
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .p_2()
-                    .border_b_1()
-                    .border_color(t.border_variant)
-                    .child(search)
-                    .child(methods)
-                    .child(classes)
-                    .children(run_pill),
-            )
-            .child(list)
-            .child(
-                row()
-                    .flex_none()
-                    .h(px(28.))
-                    .px_2()
-                    .gap_2()
-                    .border_t_1()
-                    .border_color(t.border_variant)
-                    .text_size(px(11.))
-                    .text_color(t.text_muted)
-                    .child(
-                        div()
-                            .id("hist-clear-req")
-                            .cursor_pointer()
-                            .child("Clear request")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.history_clear(ClearScope::Request, cx)
-                            })),
-                    )
-                    .child(
-                        div()
-                            .id("hist-clear-coll")
-                            .cursor_pointer()
-                            .child("Clear collection")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.history_clear(ClearScope::Collection, cx)
-                            })),
-                    )
-                    .child(
-                        div()
-                            .id("hist-clear-all")
-                            .cursor_pointer()
-                            .child("Clear all")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.history_clear(ClearScope::All, cx)
-                            })),
-                    ),
-            )
-    }
-
-    fn history_row(&self, t: &Theme, i: usize, r: HistRow, cx: &mut Context<Self>) -> AnyElement {
-        match r {
-            HistRow::Day(d) => div()
-                .h(px(24.))
-                .px_2()
-                .pt_1()
-                .text_size(px(11.))
-                .text_color(t.text_placeholder)
-                .child(d)
-                .into_any_element(),
-            HistRow::More => div()
-                .id("hist-more")
-                .h(px(24.))
-                .px_2()
-                .cursor_pointer()
-                .text_size(px(11.))
-                .text_color(t.accent)
-                .child("Load more…")
-                .on_click(cx.listener(|this, _, _, cx| this.history_more(cx)))
-                .into_any_element(),
-            HistRow::Entry(ix) => {
-                let Some(e) = self.history.entries.get(ix).cloned() else {
-                    return div().into_any_element();
-                };
-                let id = e.id;
-                let key = format!("history/{id}");
-                let active = self.scope.tabs.active().is_some_and(|a| a.key == key);
-                let picked = self.history.pick == Some(id);
-                self.tree_row(t, ("hist", i).into(), 0, active)
-                    .gap_2()
-                    .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, _, cx| {
-                        this.open_history_entry(id, ev.click_count() >= 2, cx);
-                    }))
-                    .child(
-                        div()
-                            .w(px(34.))
-                            .text_size(px(10.))
-                            .font_family(BUFFER_FONT)
-                            .text_color(t.method_color(&e.method))
-                            .child(short_method(&e.method).to_string()),
-                    )
-                    .child(div().flex_1().truncate().child(e.request_name.clone()))
-                    .child(
-                        div()
-                            .font_family(BUFFER_FONT)
-                            .text_size(px(11.))
-                            .text_color(match e.status {
-                                Some(s) => t.status_color(s as u16),
-                                None => t.deleted,
-                            })
-                            .child(e.status.map_or("err".to_string(), |s| s.to_string())),
-                    )
-                    .child(
-                        div()
-                            .font_family(BUFFER_FONT)
-                            .text_size(px(11.))
-                            .text_color(t.text_placeholder)
-                            .child(time_label(e.ts_ms)),
-                    )
-                    .child(
-                        div()
-                            .id(("hist-diff", i))
-                            .px_1()
-                            .rounded(px(3.))
-                            .cursor_pointer()
-                            .text_size(px(12.))
-                            .text_color(if picked { t.accent } else { t.text_muted })
-                            .child("⇄")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                cx.stop_propagation();
-                                this.history_pick_diff(id, cx)
-                            })),
-                    )
-                    .into_any_element()
-            }
-        }
-    }
-
     // ---- tabs -------------------------------------------------------------------------------
 
     pub(crate) fn render_history_tab(
@@ -936,6 +756,9 @@ impl WorkspaceView {
         tab: &Tab,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if tab.key == "history" {
+            return self.render_history_viewer(t, cx);
+        }
         if let Some(rest) = tab.key.strip_prefix("historydiff/") {
             let mut it = rest.split('/').filter_map(|s| s.parse::<i64>().ok());
             if let (Some(a), Some(b)) = (it.next(), it.next()) {

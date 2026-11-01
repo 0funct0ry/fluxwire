@@ -1594,18 +1594,18 @@ fn filters_restore_and_response_dropdown(cx: &mut TestAppContext) {
 
     // filters
     view.update(cx, |w, cx| {
-        w.history.method = Some("POST");
+        w.history.query.method = Some("POST".into());
         w.history_reload(cx);
     });
     wait_until(&view, cx, "POST filter", |w| w.history.entries.is_empty());
     view.update(cx, |w, cx| {
-        w.history.method = None;
-        w.history.text = "/v1/one".to_string();
+        w.history.query.method = None;
+        w.history.query.text = "/v1/one".to_string();
         w.history_reload(cx);
     });
     wait_until(&view, cx, "text filter", |w| w.history.entries.len() == 1);
     view.update(cx, |w, cx| {
-        w.history.text.clear();
+        w.history.query.text.clear();
         w.history_reload(cx);
     });
     wait_until(&view, cx, "filters cleared", |w| {
@@ -1648,6 +1648,213 @@ fn filters_restore_and_response_dropdown(cx: &mut TestAppContext) {
         w.history_clear(crate::history::ClearScope::All, cx)
     });
     wait_until(&view, cx, "cleared", |w| w.history.entries.is_empty());
+}
+
+// ---- M9.03: History viewer -------------------------------------------------------------------
+
+fn seed_history(view: &Entity<WorkspaceView>, cx: &mut VisualTestContext, n: usize) {
+    use fluxwire_store::{NewEntry, Redactor};
+    view.update(cx, |w, _| {
+        let (store, ws) = (
+            w.history.store.clone().unwrap(),
+            w.history.ws_key.clone().unwrap(),
+        );
+        for i in 0..n {
+            let status = if i % 5 == 0 { Some(500) } else { Some(200) };
+            store
+                .insert(
+                    &ws,
+                    NewEntry {
+                        ts_ms: crate::history::now_ms() - (n - i) as i64 * 1000,
+                        collection: "c".into(),
+                        request_path: format!("r{}.flux.md", i % 3),
+                        request_name: format!("R{}", i % 3),
+                        protocol: "http".into(),
+                        method: "GET".into(),
+                        url: format!("http://x/{i}"),
+                        status,
+                        total_ms: 10.0 + i as f64,
+                        env: Some("staging".into()),
+                        dirty: false,
+                        run_id: None,
+                        summary: "s".into(),
+                        payload: serde_json::json!({"request": {"headers": [], "method": "GET"},
+                            "response": {"headers": [], "body": {"text": "{\"ok\":true}"}}}),
+                    },
+                    &Redactor::default(),
+                )
+                .unwrap();
+        }
+    });
+    view.update(cx, |w, cx| w.history_reload(cx));
+}
+
+#[gpui::test]
+fn history_opens_as_one_tab_and_navigator_items_filter_it(cx: &mut TestAppContext) {
+    use crate::history_query::{NavItem, SavedView};
+    let (view, cx, _root) = setup_with(cx, "payments-api", "hist-nav");
+    seed_history(&view, cx, 10);
+    wait_until(&view, cx, "seeded", |w| w.history.entries.len() == 10);
+    view.update(cx, |w, cx| {
+        w.history_open(cx);
+        w.history_open(cx);
+    });
+    view.read_with(cx, |w, _| {
+        let tabs: Vec<_> = w
+            .scope
+            .tabs
+            .all()
+            .iter()
+            .filter(|t| t.key == "history")
+            .collect();
+        assert_eq!(tabs.len(), 1, "reopen-or-focus");
+        assert_eq!(w.scope.tabs.active().unwrap().key, "history");
+    });
+    view.update(cx, |w, cx| {
+        w.history_show(NavItem::View(SavedView::Failures), cx)
+    });
+    wait_until(&view, cx, "failures only", |w| {
+        w.history.entries.len() == 2 && w.history.entries.iter().all(|e| e.status == Some(500))
+    });
+    view.read_with(cx, |w, _| {
+        assert_eq!(
+            w.history.query.nav,
+            Some(NavItem::View(SavedView::Failures))
+        );
+        assert_eq!(w.history.stats.count, 2);
+        assert_eq!(w.history.counts.failures, 2);
+        assert_eq!(w.history.counts.requests.len(), 3);
+    });
+    // the navigator item for a request filters by that request
+    view.update(cx, |w, cx| {
+        w.history_show(
+            NavItem::Request {
+                collection: "c".into(),
+                path: "r1.flux.md".into(),
+            },
+            cx,
+        )
+    });
+    wait_until(&view, cx, "one request", |w| {
+        !w.history.entries.is_empty()
+            && w.history
+                .entries
+                .iter()
+                .all(|e| e.request_path == "r1.flux.md")
+    });
+    view.update(cx, |w, cx| w.history_clear_filters(cx));
+    wait_until(&view, cx, "all", |w| w.history.entries.len() == 10);
+}
+
+#[gpui::test]
+fn selecting_shows_detail_without_a_tab_and_pin_note_delete_work(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "hist-detail");
+    seed_history(&view, cx, 4);
+    wait_until(&view, cx, "seeded", |w| w.history.entries.len() == 4);
+    let tabs_before = view.read_with(cx, |w, _| w.scope.tabs.all().len());
+    let id = view.read_with(cx, |w, _| w.history.entries[1].id);
+    view.update(cx, |w, cx| w.history_select(id, cx));
+    wait_until(&view, cx, "detail loaded", move |w| {
+        w.history.cache.contains_key(&id) && w.history.note_for == Some(id)
+    });
+    view.read_with(cx, |w, _| assert_eq!(w.scope.tabs.all().len(), tabs_before));
+    // pin
+    view.update(cx, |w, cx| w.history_toggle_pin(cx));
+    wait_until(&view, cx, "pinned", move |w| {
+        w.history.entries.iter().any(|e| e.id == id && e.pinned)
+    });
+    // note round-trips
+    view.update(cx, |w, cx| {
+        let i = w.history.note_input.clone().unwrap();
+        i.update(cx, |i, cx| i.set_text("baseline", cx));
+        w.history_commit_note(cx);
+    });
+    wait_until(&view, cx, "note saved", move |w| {
+        w.history
+            .entries
+            .iter()
+            .any(|e| e.id == id && e.note.as_deref() == Some("baseline"))
+    });
+    // clearing keeps the pinned entry
+    view.update(cx, |w, cx| {
+        w.history_clear_scope(fluxwire_store::Scope::All, false, cx)
+    });
+    wait_until(&view, cx, "cleared but pinned", move |w| {
+        w.history.entries.len() == 1 && w.history.entries[0].id == id
+    });
+    view.update(cx, |w, cx| w.history_delete(vec![id], cx));
+    wait_until(&view, cx, "deleted", |w| w.history.entries.is_empty());
+}
+
+#[gpui::test]
+fn ticked_rows_diff_and_compare_to_previous_open_a_diff_tab(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "hist-diff");
+    seed_history(&view, cx, 6);
+    wait_until(&view, cx, "seeded", |w| w.history.entries.len() == 6);
+    let (a, b) = view.read_with(cx, |w, _| {
+        (w.history.entries[1].id, w.history.entries[0].id)
+    });
+    view.update(cx, |w, cx| {
+        w.history_toggle_tick(a, cx);
+        w.history_toggle_tick(b, cx);
+        w.history_diff_ticked(cx);
+    });
+    wait_until(&view, cx, "diff of ticked rows", move |w| {
+        w.history.diffs.keys().any(|k| k.0 == a && k.1 == b)
+    });
+    // entries 0 and 3 are the same request (i % 3); the newest is index 0 here
+    let newest = view.read_with(cx, |w, _| w.history.entries[0].id);
+    view.update(cx, |w, cx| w.history_compare_previous(newest, cx));
+    wait_until(&view, cx, "compare to previous", move |w| {
+        w.scope
+            .tabs
+            .all()
+            .iter()
+            .any(|t| t.key.starts_with("historydiff/") && t.key.ends_with(&format!("/{newest}")))
+    });
+}
+
+#[gpui::test]
+fn ten_thousand_entries_build_only_the_loaded_page_of_rows(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "hist-big");
+    seed_history(&view, cx, 10_000);
+    wait_until(&view, cx, "first page", |w| {
+        w.history.entries.len() == crate::history_query::PAGE
+    });
+    view.read_with(cx, |w, _| {
+        assert!(!w.history.all_loaded);
+        assert_eq!(w.history.stats.count, 10_000, "stats cover the whole set");
+        assert!(
+            w.history.rows.len() <= crate::history_query::PAGE + 4,
+            "one page of rows plus headers"
+        );
+    });
+}
+
+#[gpui::test]
+fn history_layout_round_trips_through_the_session(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "hist-layout");
+    view.update(cx, |w, _| {
+        w.history.widths[2] = 222.0;
+        w.history.divider = 500.0;
+        w.history.query.sort = fluxwire_store::Sort {
+            col: fluxwire_store::SortCol::Duration,
+            asc: true,
+        };
+    });
+    let layout = view.read_with(cx, |w, _| w.layout());
+    view.update(cx, |w, _| {
+        w.history.widths = crate::history_query::DEFAULT_WIDTHS;
+        w.history.divider = 420.0;
+        w.history.query.sort = Default::default();
+        w.apply_layout(&layout);
+    });
+    view.read_with(cx, |w, _| {
+        assert_eq!(w.history.widths[2], 222.0);
+        assert_eq!(w.history.divider, 500.0);
+        assert_eq!(w.history.query.sort.col, fluxwire_store::SortCol::Duration);
+        assert!(w.history.query.sort.asc);
+    });
 }
 
 // ---- M6: search, tabs, layout, keymap -------------------------------------------------------

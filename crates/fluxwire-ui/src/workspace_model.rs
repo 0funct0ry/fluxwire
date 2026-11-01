@@ -763,6 +763,30 @@ pub struct SessionTab {
     pub scroll: f32,
 }
 
+/// The History tab's table layout, remembered per workspace (SPEC §13.1).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct HistoryLayout {
+    /// Column widths in table order.
+    pub widths: Vec<f32>,
+    /// Sorted column name (`Time`, `Method`, ...).
+    pub sort: String,
+    pub asc: bool,
+    /// Width of the detail pane.
+    pub divider: f32,
+}
+
+impl Default for HistoryLayout {
+    fn default() -> Self {
+        HistoryLayout {
+            widths: crate::history_query::DEFAULT_WIDTHS.to_vec(),
+            sort: "Time".into(),
+            asc: false,
+            divider: 420.0,
+        }
+    }
+}
+
 /// Window layout remembered per workspace (SPEC §17.1).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
@@ -777,6 +801,7 @@ pub struct Layout {
     pub bottom_height: f32,
     pub split_vertical: bool,
     pub group_by_kind: bool,
+    pub history: HistoryLayout,
 }
 
 impl Default for Layout {
@@ -790,6 +815,7 @@ impl Default for Layout {
             bottom_height: 200.0,
             split_vertical: true,
             group_by_kind: false,
+            history: HistoryLayout::default(),
         }
     }
 }

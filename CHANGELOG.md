@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- **History viewer (M9.03).** History is a workspace-level tab (Cmd/Ctrl+Shift+H): a sortable, filterable, virtualized table with resizable columns, folder-run groups, an inline detail pane (request, response, error and phase for failed sends), a stats strip (count, success rate, p50, p95), pin, notes, multi-select, diff, *Compare to previous*, restore, and JSON/CSV export. The left-dock History panel is now a navigator (timeline, saved views, requests with counts) whose items open the tab with a filter. Pinned entries survive retention and Clear. New actions: `history: open`, `history: focus search`, `history: pin`, `history: export`. Store migration 3 adds `pinned` and `note`.
 - **Environment management (M9.02).** Environments are workspace-level (`<workspace>/environments/`, one active environment); collection-level environments are deferred. Environment switcher overlay (title-bar pill, Cmd/Ctrl+E) with *New environment…*, *Create environment “q”*, and *Manage environments…*; Environments panel; New environment dialog (Start from, Set as active); validated rename; delete confirm listing files.
 - **Environment editor.** Key–value table with live Name/Value inputs, Secret lock, Source, drag reorder, filter, bulk edit, validation (E101–E106), document undo, dirty state, Cmd/Ctrl+S, close confirm, and an external-change banner. Sends use unsaved values.
 - **One active environment per workspace,** remembered in the session (including an explicit "No environment").

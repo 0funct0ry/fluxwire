@@ -146,7 +146,7 @@ impl WorkspaceView {
                 }
                 TabKind::History => {
                     match t.key.strip_prefix("history/").and_then(|n| n.parse().ok()) {
-                        Some(id) => self.open_history_entry(id, true, cx),
+                        Some(id) => self.open_history_entry_titled(id, Some(&t.title), true, cx),
                         None => self.open_tab(&t.key, &t.title, t.kind.clone(), true),
                     }
                 }
@@ -321,6 +321,12 @@ impl WorkspaceView {
             bottom_height: self.scope.bottom_height,
             split_vertical: self.scope.split_vertical,
             group_by_kind: self.scope.tabs.group_by_kind,
+            history: crate::workspace_model::HistoryLayout {
+                widths: self.history.widths.to_vec(),
+                sort: crate::history_query::sort_name(self.history.query.sort.col).into(),
+                asc: self.history.query.sort.asc,
+                divider: self.history.divider,
+            },
         }
     }
 
@@ -343,6 +349,15 @@ impl WorkspaceView {
         self.scope.bottom_height = l.bottom_height.clamp(80.0, 600.0);
         self.scope.split_vertical = l.split_vertical;
         self.scope.tabs.group_by_kind = l.group_by_kind;
+        let h = &l.history;
+        for (i, w) in h.widths.iter().take(7).enumerate() {
+            self.history.widths[i] = crate::history_query::clamp_width(*w);
+        }
+        self.history.query.sort = fluxwire_store::Sort {
+            col: crate::history_query::sort_from_name(&h.sort),
+            asc: h.asc,
+        };
+        self.history.divider = h.divider.clamp(240.0, 900.0);
     }
 
     /// Session entry for a tab (open or closed).
@@ -377,6 +392,9 @@ impl WorkspaceView {
                 }
                 self.open_env_doc(&root, &name, !t.preview);
             }
+            TabKind::History if t.key == crate::history_tab::TAB_KEY => {
+                self.open_tab(&t.key, "History", TabKind::History, !t.preview);
+            }
             TabKind::History => {
                 let Some(id) = t
                     .key
@@ -385,7 +403,7 @@ impl WorkspaceView {
                 else {
                     return false;
                 };
-                self.open_history_entry(id, !t.preview, cx);
+                self.open_history_entry_titled(id, Some(&title), !t.preview, cx);
             }
             _ => self.open_tab(&t.key, &title, kind, !t.preview),
         }

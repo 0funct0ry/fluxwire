@@ -750,9 +750,11 @@ impl WorkspaceView {
             .key_context("RequestEditor")
             .flex()
             .flex_col()
-            .flex_1()
             .min_h_0()
-            .min_w_0();
+            .min_w_0()
+            .overflow_hidden();
+        editor.style().flex_grow = Some(self.scope.split_frac);
+        editor.style().flex_basis = Some(gpui::relative(0.).into());
         if doc.text_mode {
             editor = editor
                 .child(
@@ -804,6 +806,27 @@ impl WorkspaceView {
         }
         let response = self.render_response(t, ui, cx);
         let vertical = self.scope.split_vertical;
+        let frac = self.scope.split_frac;
+        let mut response_pane = div();
+        response_pane.style().flex_grow = Some(1.0 - frac);
+        response_pane.style().flex_basis = Some(gpui::relative(0.).into());
+        let divider = div()
+            .id("split-divider")
+            .flex_none()
+            .when(vertical, |d| d.h(px(5.)).w_full().cursor_row_resize())
+            .when(!vertical, |d| d.w(px(5.)).h_full().cursor_col_resize())
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, ev: &gpui::MouseDownEvent, _, cx| {
+                    let p = if this.scope.split_vertical {
+                        f32::from(ev.position.y)
+                    } else {
+                        f32::from(ev.position.x)
+                    };
+                    this.resizing_split = Some((p, this.scope.split_frac));
+                    cx.notify();
+                }),
+            );
         div()
             .flex_1()
             .min_h_0()
@@ -811,9 +834,10 @@ impl WorkspaceView {
             .when(vertical, |d| d.flex_col())
             .when(!vertical, |d| d.flex_row())
             .child(editor)
+            .child(divider)
             .child(
-                div()
-                    .flex_1()
+                response_pane
+                    .overflow_hidden()
                     .min_h_0()
                     .min_w_0()
                     .flex()

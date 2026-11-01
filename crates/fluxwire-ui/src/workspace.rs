@@ -223,6 +223,8 @@ pub struct WorkspaceView {
     pub keymap_watcher: Option<fluxwire_format::WatchHandle>,
     pub keymap_issues: Vec<crate::actions::KeymapIssue>,
     pub resizing_bottom: bool,
+    /// Pointer position and editor share when a drag of the request/response divider began.
+    pub resizing_split: Option<(f32, f32)>,
     pub keybind_query: String,
     pub keybind_input: crate::text_input::LazyInput,
     pub keybind_focus: FocusHandle,
@@ -292,6 +294,7 @@ impl WorkspaceView {
             keymap_watcher: None,
             keymap_issues: Vec::new(),
             resizing_bottom: false,
+            resizing_split: None,
             keybind_query: String::new(),
             keybind_input: Default::default(),
             keybind_focus: cx.focus_handle(),
@@ -329,7 +332,8 @@ impl WorkspaceView {
             "Filter by name or URL",
             cx,
             |this: &mut Self, text, cx| {
-                this.history.text = text;
+                this.history.query.text = text;
+                this.history.query.nav = None;
                 this.history_reload(cx);
             },
         ));
@@ -363,7 +367,7 @@ impl WorkspaceView {
         matches!(t.kind, TabKind::Http { .. } | TabKind::WebSocket).then(|| t.key.clone())
     }
 
-    /// Open non-request tabs (history, environment, ...), which are still mock-backed.
+    /// Open non-request tabs (history, environment, ...).
     pub fn open_tab(&mut self, key: &str, title: &str, kind: TabKind, permanent: bool) {
         let id = if permanent {
             self.scope.tabs.open_permanent(key, title, kind)
@@ -881,6 +885,9 @@ impl WorkspaceView {
                     } else {
                         this.scope.panel = p;
                         this.scope.left_open = true;
+                        if p == Panel::History {
+                            this.history_open(cx);
+                        }
                     }
                     cx.notify();
                 }))
@@ -1311,8 +1318,35 @@ impl Render for WorkspaceView {
             .font_family(UI_FONT)
             .text_size(px(14.))
             .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, window, cx| {
+                if this.history.resizing.is_some() {
+                    this.history_drag(f32::from(ev.position.x), cx);
+                }
                 if this.resizing {
                     this.scope.left_width = f32::from(ev.position.x).clamp(180.0, 520.0);
+                    cx.notify();
+                }
+                if let Some((p0, f0)) = this.resizing_split {
+                    // The editor/response area is roughly the window minus the chrome around it.
+                    let size = window.bounds().size;
+                    let (p, total) = if this.scope.split_vertical {
+                        (f32::from(ev.position.y), f32::from(size.height) - 150.0)
+                    } else {
+                        let dock = if this.scope.left_open {
+                            this.scope.left_width
+                        } else {
+                            0.0
+                        };
+                        (f32::from(ev.position.x), f32::from(size.width) - dock)
+                    };
+                    // Keep both panes wide enough for their tab strips and toolbars.
+                    let total = total.max(200.0);
+                    let min_px = if this.scope.split_vertical {
+                        140.0
+                    } else {
+                        360.0
+                    };
+                    let lo = (min_px / total).min(0.5);
+                    this.scope.split_frac = (f0 + (p - p0) / total).clamp(lo, 1.0 - lo);
                     cx.notify();
                 }
                 if this.resizing_bottom {
@@ -1335,6 +1369,10 @@ impl Render for WorkspaceView {
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
+                    this.history_drag_end(cx);
+                    if this.resizing_split.take().is_some() {
+                        cx.notify();
+                    }
                     if this.resizing || this.resizing_bottom {
                         this.resizing = false;
                         this.resizing_bottom = false;
@@ -1351,7 +1389,9 @@ impl Render for WorkspaceView {
             Dismiss => |this, w, c| {
                 if this.dialog.is_some() { this.close_dialog(w, c); return; }
                 if let Some(sw) = this.switcher.take() { if let Some(first) = sw.order.first() { this.scope.tabs.peek(*first) } return; }
-                let open = this.scope.tab_menu.is_some() || this.scope.method_menu || this.scope.tree_menu.is_some() || this.scope.cell.is_some() || this.scope.inline.is_some() || this.modal.is_some();
+                let hist_open = this.history.menu.is_some() || this.history.nav_menu.is_some() || this.history.clear_menu || this.history.export_menu;
+                this.history.menu = None; this.history.nav_menu = None; this.history.clear_menu = false; this.history.export_menu = false;
+                let open = hist_open || this.scope.tab_menu.is_some() || this.scope.method_menu || this.scope.tree_menu.is_some() || this.scope.cell.is_some() || this.scope.inline.is_some() || this.modal.is_some();
                 this.scope.tab_menu = None; this.scope.method_menu = false; this.scope.tree_menu = None; this.scope.cell = None; this.scope.inline = None; this.close_modal(w, c);
                 // Esc with nothing to dismiss cancels an in-flight send
                 if !open { this.cancel_request(c); }
@@ -1359,8 +1399,12 @@ impl Render for WorkspaceView {
             ToggleLeftDock => |this, _w, _c| { this.scope.left_open = !this.scope.left_open; this.session_dirty = true },
             ToggleBottomDock => |this, _w, _c| { this.scope.bottom_open = !this.scope.bottom_open; this.session_dirty = true },
             ShowWorkspacePanel => |this, _w, _c| { this.scope.panel = Panel::Workspace; this.scope.left_open = true; this.session_dirty = true },
+            HistoryOpen => |this, _w, c| this.history_open(c),
+            HistoryFocusSearch => |this, w, c| this.history_focus_search(w, c),
+            HistoryPin => |this, _w, c| this.history_toggle_pin(c),
+            HistoryExport => |this, _w, c| this.history_export(fluxwire_store::ExportFormat::Json, c),
             ShowHistoryPanel => |this, _w, _c| { this.scope.panel = Panel::History; this.scope.left_open = true; this.session_dirty = true },
-            ClearHistoryAll => |this, _w, c| this.history_clear(crate::history::ClearScope::All, c),
+            ClearHistoryAll => |this, w, c| this.confirm_clear_history(fluxwire_store::Scope::All, "this workspace".into(), w, c),
             ClearHistoryCollection => |this, _w, c| this.history_clear(crate::history::ClearScope::Collection, c),
             ClearHistoryRequest => |this, _w, c| this.history_clear(crate::history::ClearScope::Request, c),
             ShowEnvironmentsPanel => |this, _w, _c| { this.scope.panel = Panel::Environments; this.scope.left_open = true; this.session_dirty = true },
@@ -1475,6 +1519,8 @@ impl Render for WorkspaceView {
             .children(self.render_dialog(&t, cx))
             .children(self.render_tree_menu(&t, cx))
             .children(self.render_tab_menu(&t, cx))
+            .children(self.render_history_menu(&t, cx))
+            .children(self.render_history_nav_menu(&t, cx))
             .children(self.render_switcher(&t))
     }
 }

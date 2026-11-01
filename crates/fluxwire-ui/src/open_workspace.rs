@@ -32,6 +32,8 @@ pub struct OpenWorkspace {
     pub bottom_tab: BottomTab,
     pub bottom_height: f32,
     pub split_vertical: bool,
+    /// Share of the request/response area given to the editor (0.15..=0.85).
+    pub split_frac: f32,
     pub envs: EnvStore,
     pub collapsed: HashSet<String>,
     /// Tab context menu: tab id and where it opened.
@@ -76,6 +78,7 @@ impl Default for OpenWorkspace {
             bottom_tab: BottomTab::Console,
             bottom_height: 200.0,
             split_vertical: true,
+            split_frac: 0.5,
             envs: EnvStore::default(),
             collapsed: HashSet::new(),
             tab_menu: None,

@@ -715,9 +715,12 @@ impl WorkspaceView {
         let Some(id) = self.scope.runs.get(&tab_id).and_then(|r| r.run_id.clone()) else {
             return;
         };
-        self.history.run = Some(id);
+        self.history.query.clear();
+        self.history.query.nav = None;
+        self.history.query.run = Some(id);
         self.scope.panel = Panel::History;
         self.scope.left_open = true;
+        self.open_history_tab(cx);
         self.history_reload(cx);
     }
 
