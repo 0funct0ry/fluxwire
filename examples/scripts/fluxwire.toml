@@ -1,0 +1,10 @@
+[collection]
+name = "Script Examples"
+format = 1
+
+[defaults]
+script_language = "ts"
+timeout_ms = 30000
+
+[secrets]
+names = ["apiKey", "token"]

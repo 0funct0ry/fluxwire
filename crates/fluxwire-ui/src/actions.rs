@@ -45,6 +45,7 @@ actions!(
         GroupTabsByKind,
         ToggleSplitOrientation,
         ToggleTheme,
+        SelectTheme,
         ShowWorkspacePanel,
         ShowHistoryPanel,
         HistoryOpen,
@@ -259,6 +260,7 @@ pub static ACTIONS: &[ActionInfo] = &[
         None
     ),
     a!("theme: toggle", ToggleTheme, None, None),
+    a!("theme: select…", SelectTheme, None, None),
     a!("panel: workspace", ShowWorkspacePanel, None, None),
     a!("panel: history", ShowHistoryPanel, None, None),
     a!(
@@ -581,6 +583,7 @@ const APP_ACTIONS: &[&str] = &[
     "NewWindow",
     "CommandPalette",
     "ToggleTheme",
+    "SelectTheme",
     "OpenSettingsFile",
     "OpenKeymapFile",
     "ReloadKeymap",
@@ -956,6 +959,7 @@ mod tests {
         "tab: close all",
         "tab: copy path",
         "theme: toggle",
+        "theme: select…",
         "panel: workspace",
         "panel: history",
         "panel: environments",

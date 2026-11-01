@@ -47,6 +47,8 @@ pub enum ModalKind {
     Workspaces,
     /// Single-line text prompt (new request, rename, ...).
     Prompt,
+    /// `theme: select…`: every theme, previewed live.
+    ThemePicker,
 }
 
 #[derive(Clone, Debug)]
@@ -137,6 +139,10 @@ pub enum ItemRun {
     Workspace(String),
     /// "New workspace…" entry of the switcher.
     NewWorkspace,
+    /// A colour theme row (picker or `~` palette).
+    Theme(String),
+    /// "Follow system appearance" row of the theme picker.
+    ThemeSystem,
 }
 
 #[derive(Clone, Debug)]
@@ -237,6 +243,8 @@ pub struct WorkspaceView {
     pub inline_focus: FocusHandle,
     /// Transient message for the status bar (errors, notices).
     pub notice: Option<String>,
+    /// The theme to put back when a live theme preview ends without being kept.
+    pub theme_restore: Option<Theme>,
     pub open_error: Option<String>,
     pub recent: Recent,
     pub state_dir: Option<PathBuf>,
@@ -267,6 +275,13 @@ impl WorkspaceView {
         window.focus(&root_focus);
         window
             .observe_window_appearance(|window, cx| {
+                // A configured theme ignores the OS appearance.
+                if cx
+                    .try_global::<crate::theme::ThemeChoice>()
+                    .is_some_and(|c| c.configured.is_some())
+                {
+                    return;
+                }
                 set_theme(
                     Theme::for_appearance(appearance_of(window.appearance())),
                     cx,
@@ -306,7 +321,10 @@ impl WorkspaceView {
             recent_ids: Vec::new(),
             prompt: None,
             inline_focus: cx.focus_handle(),
-            notice: None,
+            notice: cx
+                .try_global::<crate::theme::StartupNotice>()
+                .map(|n| n.0.clone()),
+            theme_restore: None,
             open_error: None,
             recent,
             watch_enabled: state_dir.is_some(),
@@ -385,12 +403,15 @@ impl WorkspaceView {
     // ---- modals ---------------------------------------------------------------------------
 
     pub fn open_modal(&mut self, kind: ModalKind, window: &mut Window, cx: &mut Context<Self>) {
+        // A modal replacing another one ends its theme preview.
+        self.revert_theme_preview(cx);
         let placeholder = match kind {
             ModalKind::Palette => "Type a command…",
             ModalKind::QuickSearch => "Search requests, folders, environments…",
             ModalKind::Environment => "Switch environment…",
             ModalKind::Workspaces => "Switch workspace…",
             ModalKind::Prompt => "Name",
+            ModalKind::ThemePicker => "Select a theme…",
         };
         let query = cx.new(|cx| {
             let mut i = TextInput::new(placeholder, cx);
@@ -407,6 +428,7 @@ impl WorkspaceView {
                 }
                 this.modal_scroll.scroll_to_item(0);
                 this.recompute_modal(cx);
+                this.preview_highlighted_theme(cx);
                 cx.notify();
             }
         });
@@ -419,6 +441,14 @@ impl WorkspaceView {
             results: Vec::new(),
         });
         self.recompute_modal(cx);
+        if kind == ModalKind::ThemePicker {
+            self.theme_restore = Some(theme(cx).clone());
+            let row = self.current_theme_row(cx);
+            if let Some(m) = &mut self.modal {
+                m.selected = row;
+            }
+            self.modal_scroll.scroll_to_item(row);
+        }
         window.focus(&focus);
         cx.notify();
     }
@@ -440,6 +470,7 @@ impl WorkspaceView {
     }
 
     pub fn close_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.revert_theme_preview(cx);
         self.prompt = None;
         if self.modal.take().is_some() {
             window.focus(&self.root_focus);
@@ -476,6 +507,14 @@ impl WorkspaceView {
                 .file_name()
                 .map_or(w.clone(), |n| n.to_string_lossy().into_owned());
             Item::new(format!("ws:{w}"), Kind::Workspace, name).detail(w.clone())
+        }));
+        want.extend(crate::theme::registry().all().iter().map(|t| {
+            // No detail on the item: the fuzzy matcher would match "dark" and "light" too.
+            Item::new(
+                format!("theme:{}", t.name),
+                Kind::Theme,
+                format!("Theme: {}", t.name),
+            )
         }));
         let bindings = cx.try_global::<KeymapState>();
         want.extend(
@@ -541,7 +580,9 @@ impl WorkspaceView {
         };
         let (kind, q) = (m.kind, m.query.read(cx).text().to_string());
         let results = match kind {
+            ModalKind::Palette if q.starts_with('~') => self.search_results(&q, cx),
             ModalKind::Palette => self.search_results(&format!(">{q}"), cx),
+            ModalKind::ThemePicker => crate::theme_picker::picker_items(&q),
             ModalKind::QuickSearch => self.search_results(&q, cx),
             ModalKind::Prompt => vec![],
             ModalKind::Workspaces => {
@@ -630,6 +671,11 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        match &item.run {
+            ItemRun::Theme(name) => self.commit_theme(Some(name.clone()), cx),
+            ItemRun::ThemeSystem => self.commit_theme(None, cx),
+            _ => {}
+        }
         self.close_modal(window, cx);
         self.remember_recent(&item.id);
         let prev = self.scope.tabs.active_id();
@@ -679,6 +725,7 @@ impl WorkspaceView {
             }
             ItemRun::History(id) => self.open_history_entry(id, true, cx),
             ItemRun::NewWorkspace => self.start_new_workspace(window, cx),
+            ItemRun::Theme(_) | ItemRun::ThemeSystem => {}
             ItemRun::Workspace(path) => {
                 let path = PathBuf::from(path);
                 if !path.is_dir() {
@@ -725,6 +772,8 @@ impl WorkspaceView {
     fn on_modal_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let count = self.modal.as_ref().map_or(0, |m| m.results.len());
         let key = ev.keystroke.key.as_str();
+        let moves = matches!(key, "down" | "up" | "pageup" | "pagedown" | "home" | "end")
+            && self.modal.is_some();
         match key {
             "down" | "up" => {
                 if let Some(m) = &mut self.modal {
@@ -732,6 +781,23 @@ impl WorkspaceView {
                         (m.selected + 1).min(count.saturating_sub(1))
                     } else {
                         m.selected.saturating_sub(1)
+                    };
+                    self.modal_scroll.scroll_to_item(m.selected);
+                }
+            }
+            "pageup" | "pagedown" | "home" | "end"
+                if self
+                    .modal
+                    .as_ref()
+                    .is_some_and(|m| m.kind == ModalKind::ThemePicker) =>
+            {
+                if let Some(m) = &mut self.modal {
+                    let last = count.saturating_sub(1);
+                    m.selected = match key {
+                        "pagedown" => (m.selected + 8).min(last),
+                        "pageup" => m.selected.saturating_sub(8),
+                        "home" => 0,
+                        _ => last,
                     };
                     self.modal_scroll.scroll_to_item(m.selected);
                 }
@@ -749,6 +815,9 @@ impl WorkspaceView {
                 }
             }
             _ => {}
+        }
+        if moves {
+            self.preview_highlighted_theme(cx);
         }
         cx.notify();
     }
@@ -1021,6 +1090,7 @@ impl WorkspaceView {
         let items = m.results.clone();
         let title = self.prompt_title().or_else(|| self.env_modal_title());
         let selected = m.selected;
+        let original_theme = self.original_theme_name(cx);
         Some(
             div()
                 .id("modal-backdrop")
@@ -1106,7 +1176,23 @@ impl WorkspaceView {
                                                 )
                                             },
                                         ))
-                                        .child(highlighted(&item.label, &item.indices, &t))
+                                        .child(
+                                            row()
+                                                .gap_2()
+                                                .children(match &item.run {
+                                                    ItemRun::Theme(n) => Some(icon(
+                                                        if *n == original_theme {
+                                                            "check"
+                                                        } else {
+                                                            "palette"
+                                                        },
+                                                        14.,
+                                                        t.text_muted,
+                                                    )),
+                                                    _ => None,
+                                                })
+                                                .child(highlighted(&item.label, &item.indices, &t)),
+                                        )
                                         .child(
                                             row()
                                                 .gap_2()
@@ -1216,6 +1302,14 @@ fn modal_item(item: &fluxwire_search::Item, indices: Vec<u32>) -> ModalItem {
         )
     } else if let Some(p) = id.strip_prefix("ws:") {
         (ItemRun::Workspace(p.into()), item.detail.clone())
+    } else if let Some(name) = id.strip_prefix("theme:") {
+        let dark = crate::theme::registry()
+            .get(name)
+            .is_some_and(|t| t.is_dark());
+        (
+            ItemRun::Theme(name.into()),
+            if dark { "dark" } else { "light" }.into(),
+        )
     } else {
         let name = id.strip_prefix("act:").unwrap_or(&id);
         let i = ACTIONS.iter().position(|a| a.name == name).unwrap_or(0);
@@ -1435,6 +1529,7 @@ impl Render for WorkspaceView {
                 };
                 set_theme(Theme::for_appearance(next), c);
             },
+            SelectTheme => |this, w, c| this.open_modal(ModalKind::ThemePicker, w, c),
             ToggleSplitOrientation => |this, _w, _c| { this.scope.split_vertical = !this.scope.split_vertical; this.session_dirty = true },
             CloseTab => |this, w, c| if let Some(id) = this.scope.tabs.active_id() { if this.is_env_tab(id) { this.close_env_tab(id, w, c) } else { this.scope.tabs.close(id); this.session_dirty = true } },
             PinTab => |this, _w, _c| if let Some(id) = this.scope.tabs.active_id() { this.scope.tabs.toggle_pin(id); this.session_dirty = true },
@@ -1575,19 +1670,41 @@ pub fn open_window(cx: &mut gpui::App) -> anyhow::Result<gpui::WindowHandle<Work
     Ok(handle)
 }
 
+/// Applies the `theme` setting at startup; an unknown name falls back to the OS default with a
+/// notice and leaves the OS appearance in charge.
+pub fn install_theme(configured: Option<String>, cx: &mut gpui::App) {
+    let os_dark = appearance_of(cx.window_appearance()) == Appearance::Dark;
+    let known = configured
+        .as_deref()
+        .is_some_and(|n| crate::theme::registry().get(n).is_some());
+    if let (Some(name), false) = (&configured, known) {
+        let fallback = Theme::resolve(None, os_dark);
+        cx.set_global(crate::theme::StartupNotice(format!(
+            "Unknown theme \"{name}\" in settings.toml; using {}.",
+            fallback.name
+        )));
+    }
+    let configured = configured.filter(|_| known);
+    cx.set_global(Theme::resolve(configured.as_deref(), os_dark));
+    cx.set_global(crate::theme::ThemeChoice { configured });
+}
+
 /// Launches the application and blocks until the last window closes.
 pub fn run() {
     gpui::Application::new()
         .with_assets(crate::assets::Assets)
         .run(|cx: &mut gpui::App| {
             crate::assets::load_fonts(cx).expect("bundled fonts load");
-            let initial = Theme::for_appearance(appearance_of(cx.window_appearance()));
-            cx.set_global(initial);
             crate::actions::install(cx);
-            if let Some(dirs) = directories::ProjectDirs::from("dev", "fluxwire", "fluxwire") {
+            let dirs = directories::ProjectDirs::from("dev", "fluxwire", "fluxwire");
+            if let Some(dirs) = &dirs {
                 cx.set_global(StateDir(dirs.data_dir().to_path_buf()));
                 cx.set_global(crate::envs::ConfigDir(dirs.config_dir().to_path_buf()));
             }
+            let configured = dirs
+                .as_ref()
+                .and_then(|d| fluxwire_format::load_settings(d.config_dir()).theme);
+            install_theme(configured, cx);
             cx.on_window_closed(|cx| {
                 if cx.windows().is_empty() {
                     cx.quit();

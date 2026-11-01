@@ -1,24 +1,14 @@
-//! Theme tokens loaded from Zed-schema JSON (SPEC §17.7). Views read colors only from here.
+//! Theme tokens as GPUI colours, converted from `fluxwire_format::theme` (SPEC §17.7). Views
+//! read colors only from here.
 
-use std::collections::HashMap;
+use std::sync::OnceLock;
 
+use fluxwire_format::theme::{
+    self as fmt_theme, DEFAULT_DARK, DEFAULT_LIGHT, ThemeRegistry, ThemeTokens,
+};
 use gpui::{App, Global, Hsla, Rgba};
-use serde::Deserialize;
 
-use crate::assets::{THEME_ONE_DARK, THEME_ONE_LIGHT};
-
-#[derive(Deserialize)]
-struct ThemeFile {
-    name: String,
-    appearance: String,
-    style: Style,
-}
-
-#[derive(Deserialize)]
-struct Style {
-    #[serde(flatten)]
-    colors: HashMap<String, serde_json::Value>,
-}
+use crate::assets::BUNDLED_THEMES;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Appearance {
@@ -60,84 +50,90 @@ pub struct Theme {
 
 impl Global for Theme {}
 
-fn hex(s: &str) -> anyhow::Result<Hsla> {
-    let h = s.trim_start_matches('#');
-    let (rgb, a) = match h.len() {
-        6 => (h, 255),
-        8 => (&h[..6], u8::from_str_radix(&h[6..], 16)?),
-        _ => anyhow::bail!("bad color {s:?}"),
-    };
-    let v = u32::from_str_radix(rgb, 16)?;
-    Ok(Rgba {
-        r: ((v >> 16) & 0xff) as f32 / 255.0,
-        g: ((v >> 8) & 0xff) as f32 / 255.0,
-        b: (v & 0xff) as f32 / 255.0,
-        a: a as f32 / 255.0,
-    }
-    .into())
+/// The bundled themes, parsed once (never per frame or per preview step).
+pub fn registry() -> &'static ThemeRegistry {
+    static REGISTRY: OnceLock<ThemeRegistry> = OnceLock::new();
+    REGISTRY.get_or_init(|| ThemeRegistry::bundled(BUNDLED_THEMES))
 }
 
+fn hsla(c: fmt_theme::Rgba) -> Hsla {
+    Rgba {
+        r: f32::from(c.r) / 255.0,
+        g: f32::from(c.g) / 255.0,
+        b: f32::from(c.b) / 255.0,
+        a: c.alpha(),
+    }
+    .into()
+}
+
+/// Which theme the user chose. `None` follows the OS appearance (SPEC §17.7).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ThemeChoice {
+    pub configured: Option<String>,
+}
+
+impl Global for ThemeChoice {}
+
+/// Message for the status bar when the app starts (an unknown `theme` setting).
+#[derive(Clone, Debug)]
+pub struct StartupNotice(pub String);
+
+impl Global for StartupNotice {}
+
 impl Theme {
-    pub fn from_json(json: &str) -> anyhow::Result<Theme> {
-        let file: ThemeFile = serde_json::from_str(json)?;
-        let c = &file.style.colors;
-        let get = |key: &str| -> anyhow::Result<Hsla> {
-            let v = c
-                .get(key)
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("theme {:?} is missing {key:?}", file.name))?;
-            hex(v)
-        };
-        let syn = |key: &str| -> anyhow::Result<Hsla> {
-            let v = c
-                .get("syntax")
-                .and_then(|s| s.get(key))
-                .and_then(|s| s.get("color"))
-                .and_then(|s| s.as_str())
-                .ok_or_else(|| anyhow::anyhow!("theme {:?} is missing syntax.{key}", file.name))?;
-            hex(v)
-        };
-        Ok(Theme {
-            appearance: if file.appearance == "light" {
-                Appearance::Light
-            } else {
+    pub fn from_tokens(t: &ThemeTokens) -> Theme {
+        let s = &t.syntax;
+        Theme {
+            name: t.name.clone(),
+            appearance: if t.is_dark() {
                 Appearance::Dark
+            } else {
+                Appearance::Light
             },
-            title_bar: get("title_bar.background")?,
-            surface: get("surface.background")?,
-            editor: get("editor.background")?,
-            elevated: get("elevated_surface.background")?,
-            border: get("border")?,
-            border_variant: get("border.variant")?,
-            text: get("text")?,
-            text_muted: get("text.muted")?,
-            text_placeholder: get("text.placeholder")?,
-            element_hover: get("element.hover")?,
-            element_selected: get("element.selected")?,
-            accent: get("text.accent")?,
-            gutter: get("editor.gutter")?,
-            created: get("created")?,
-            modified: get("modified")?,
-            deleted: get("deleted")?,
-            syntax_function: syn("function")?,
-            syntax_type: syn("type")?,
-            syntax_keyword: syn("keyword")?,
-            syntax_string: syn("string")?,
-            syntax_number: syn("number")?,
-            syntax_boolean: syn("boolean")?,
-            syntax_property: syn("property")?,
-            syntax_punctuation: syn("punctuation")?,
-            syntax_comment: syn("comment").or_else(|_| get("text.placeholder"))?,
-            name: file.name,
-        })
+            title_bar: hsla(t.title_bar),
+            surface: hsla(t.surface),
+            editor: hsla(t.editor),
+            elevated: hsla(t.elevated),
+            border: hsla(t.border),
+            border_variant: hsla(t.border_variant),
+            text: hsla(t.text),
+            text_muted: hsla(t.text_muted),
+            text_placeholder: hsla(t.text_placeholder),
+            element_hover: hsla(t.element_hover),
+            element_selected: hsla(t.element_selected),
+            accent: hsla(t.accent),
+            gutter: hsla(t.gutter),
+            created: hsla(t.created),
+            modified: hsla(t.modified),
+            deleted: hsla(t.deleted),
+            syntax_function: hsla(s.function),
+            syntax_type: hsla(s.type_),
+            syntax_keyword: hsla(s.keyword),
+            syntax_string: hsla(s.string),
+            syntax_number: hsla(s.number),
+            syntax_boolean: hsla(s.boolean),
+            syntax_property: hsla(s.property),
+            syntax_punctuation: hsla(s.punctuation),
+            syntax_comment: hsla(s.comment),
+        }
+    }
+
+    /// The named bundled theme, if it exists.
+    pub fn named(name: &str) -> Option<Theme> {
+        registry().get(name).map(Theme::from_tokens)
+    }
+
+    /// The configured theme, else One Dark / One Light for the OS appearance.
+    pub fn resolve(name: Option<&str>, os_dark: bool) -> Theme {
+        Theme::from_tokens(registry().resolve(name, os_dark))
     }
 
     pub fn one_dark() -> Theme {
-        Theme::from_json(THEME_ONE_DARK).expect("bundled One Dark theme is valid")
+        Theme::named(DEFAULT_DARK).expect("One Dark is bundled")
     }
 
     pub fn one_light() -> Theme {
-        Theme::from_json(THEME_ONE_LIGHT).expect("bundled One Light theme is valid")
+        Theme::named(DEFAULT_LIGHT).expect("One Light is bundled")
     }
 
     pub fn for_appearance(a: Appearance) -> Theme {
@@ -193,9 +189,19 @@ mod tests {
     }
 
     #[test]
-    fn missing_key_is_an_error() {
-        let json = r#"{"name":"x","appearance":"dark","style":{}}"#;
-        assert!(Theme::from_json(json).is_err());
+    fn every_bundled_theme_converts() {
+        assert_eq!(registry().len(), 53);
+        let nord = Theme::named("nord").unwrap();
+        assert_eq!(nord.name, "Nord");
+        assert_eq!(nord.appearance, Appearance::Dark);
+        assert!(Theme::named("nope").is_none());
+    }
+
+    #[test]
+    fn resolve_falls_back_to_the_os_default() {
+        assert_eq!(Theme::resolve(Some("Nope"), true).name, "One Dark");
+        assert_eq!(Theme::resolve(None, false).name, "One Light");
+        assert_eq!(Theme::resolve(Some("Dracula"), false).name, "Dracula");
     }
 
     #[test]

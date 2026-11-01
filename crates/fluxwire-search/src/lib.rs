@@ -19,6 +19,7 @@ pub enum Kind {
     History,
     Workspace,
     Action,
+    Theme,
 }
 
 /// One searchable thing. `id` is stable and unique within the index (e.g. `req:auth/login.flux.md`).
@@ -70,9 +71,10 @@ pub enum Filter {
     Tags,
     Folders,
     History,
+    Themes,
 }
 
-/// Splits a leading filter prefix (`>` `@` `#` `/` `!`) off the query.
+/// Splits a leading filter prefix (`>` `@` `#` `/` `!` `~`) off the query.
 pub fn parse_query(raw: &str) -> (Filter, &str) {
     let mut chars = raw.chars();
     let filter = match chars.next() {
@@ -81,6 +83,7 @@ pub fn parse_query(raw: &str) -> (Filter, &str) {
         Some('#') => Filter::Tags,
         Some('/') => Filter::Folders,
         Some('!') => Filter::History,
+        Some('~') => Filter::Themes,
         _ => return (Filter::All, raw),
     };
     (filter, chars.as_str().trim_start())
@@ -89,12 +92,13 @@ pub fn parse_query(raw: &str) -> (Filter, &str) {
 impl Filter {
     fn accepts(self, item: &Item) -> bool {
         match self {
-            Filter::All => item.kind != Kind::Action,
+            Filter::All => !matches!(item.kind, Kind::Action | Kind::Theme),
             Filter::Actions => item.kind == Kind::Action,
             Filter::Environments => item.kind == Kind::Environment,
             Filter::Tags => !item.tags.is_empty(),
             Filter::Folders => item.kind == Kind::Folder,
             Filter::History => item.kind == Kind::History,
+            Filter::Themes => item.kind == Kind::Theme,
         }
     }
 }
@@ -343,6 +347,8 @@ mod tests {
             "POST Create payment 201",
         ));
         ix.upsert(Item::new("act:save", Kind::Action, "file: save"));
+        ix.upsert(Item::new("theme:Nord", Kind::Theme, "Theme: Nord").detail("dark"));
+        ix.upsert(Item::new("theme:Nordfox", Kind::Theme, "Theme: Nordfox").detail("dark"));
         ix
     }
 
@@ -362,6 +368,20 @@ mod tests {
         assert_eq!(ids(&mut ix, ">save"), ["act:save"]);
         assert_eq!(ids(&mut ix, "#bill"), ["req:payments/create.flux.md"]);
         assert!(!ids(&mut ix, "save").contains(&"act:save".to_string()));
+    }
+
+    #[test]
+    fn tilde_lists_themes_and_nothing_else_does() {
+        let mut ix = sample();
+        assert_eq!(ids(&mut ix, "~nord"), ["theme:Nord", "theme:Nordfox"]);
+        assert_eq!(ids(&mut ix, "~").len(), 2);
+        assert!(!ids(&mut ix, "nord").iter().any(|i| i.starts_with("theme:")));
+        assert!(
+            !ids(&mut ix, ">nord")
+                .iter()
+                .any(|i| i.starts_with("theme:"))
+        );
+        assert_eq!(parse_query("~ nord"), (Filter::Themes, "nord"));
     }
 
     #[test]

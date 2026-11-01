@@ -35,6 +35,7 @@ pub mod session_log;
 pub mod tabs;
 pub mod text_input;
 pub mod theme;
+pub mod theme_picker;
 pub mod ui;
 pub mod viewer;
 pub mod workspace;
