@@ -4,21 +4,18 @@ use fluxwire_model::FmValue;
 use fluxwire_protocol::{Cookie, now_unix};
 use fluxwire_runner::{SendOptions, net_config_from_dir, runner, settings_from_defaults};
 use gpui::{
-    AnyElement, Context, InteractiveElement, IntoElement, ParentElement,
-    StatefulInteractiveElement, Styled, div, prelude::*, px,
+    AnyElement, Context, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
+    ParentElement, StatefulInteractiveElement, Styled, div, prelude::*, px,
 };
 
 use crate::{
     assets::BUFFER_FONT,
-    center::{button, pill},
-    envs::{EditTarget, EnvCol},
-    tabs::{Tab, TabKind},
+    center::button,
+    envs::EditTarget,
     theme::Theme,
     ui::{icon, row},
-    workspace::WorkspaceView,
+    workspace::{MenuKind, WorkspaceView},
 };
-
-const MASK: &str = "••••••••";
 
 /// Auth types offered in the picker: (label, `type` value).
 const AUTH_TYPES: [(&str, &str); 5] = [
@@ -85,13 +82,13 @@ fn fmt_expiry(expires_at: Option<i64>) -> String {
 }
 
 impl WorkspaceView {
-    fn edit_text_for(&self, target: &EditTarget) -> Option<String> {
+    fn edit_text_for(&self, target: &EditTarget, cx: &gpui::App) -> Option<String> {
         self.scope
             .envs
             .edit
             .as_ref()
             .filter(|e| &e.target == target)
-            .map(|e| e.text.text().to_string())
+            .map(|e| e.text.read(cx).text().to_string())
     }
 
     /// A single-line text field that is edited in place. `shown` is used while not editing.
@@ -104,7 +101,7 @@ impl WorkspaceView {
         placeholder: &'static str,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let editing = self.edit_text_for(&target);
+        let editing = self.edit_text_for(&target, cx);
         let base = row()
             .id(id)
             .h(px(24.))
@@ -122,11 +119,8 @@ impl WorkspaceView {
             .text_size(px(12.));
         match editing {
             Some(_) => base
-                .track_focus(&self.env_focus)
                 .on_key_down(cx.listener(|this, ev, w, cx| this.on_env_key(ev, w, cx)))
-                .children(self.scope.envs.edit.as_ref().map(|e| {
-                    crate::ui::field_text(&e.text, "", t, self.is_focused(&self.env_focus))
-                }))
+                .children(self.scope.envs.edit.as_ref().map(|e| e.text.clone()))
                 .into_any_element(),
             None => {
                 let start = shown.clone();
@@ -185,225 +179,12 @@ impl WorkspaceView {
 
     // ---- Environment tab ---------------------------------------------------------------------
 
-    pub(crate) fn render_environment(
+    pub(crate) fn render_cookies_section(
         &self,
         t: &Theme,
-        tab: &Tab,
+        env: &str,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let name = tab.key.strip_prefix("env/").unwrap_or(&tab.key).to_string();
-        let rows = if self.scope.envs.loaded.contains_key(&name) {
-            self.env_rows(&name)
-        } else {
-            // Not loaded yet (first frame): read straight from disk.
-            self.env_root()
-                .map(|r| fluxwire_format::load_environment(&r, &name, &[]).rows)
-                .unwrap_or_default()
-        };
-        let tracked = self.scope.envs.tracked.get(&name).copied().unwrap_or(false);
-        let active = self.scope.envs.active.as_deref() == Some(name.as_str());
-        let n = rows.len();
-        // A row that is being added is drawn (empty) until it has a name and reaches the file.
-        let mut rows = rows;
-        if self.scope.envs.edit.as_ref().is_some_and(
-            |e| matches!(&e.target, EditTarget::Env { env, row, .. } if *env == name && *row >= n),
-        ) {
-            rows.push(fluxwire_format::EnvRow {
-                name: String::new(),
-                value: String::new(),
-                secret: false,
-                local: false,
-                line: 0,
-            });
-        }
-        let nm = name.clone();
-        let mut page = div()
-            .id("env-page")
-            .flex_1()
-            .overflow_y_scroll()
-            .p_4()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .child(
-                row()
-                    .gap_2()
-                    .child(
-                        div()
-                            .text_size(px(18.))
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .child(name.clone()),
-                    )
-                    .when(active, |d| d.child(pill(t, "active"))),
-            )
-            .child(div().text_color(t.text_muted).child(format!(
-                "environments/{name}.env holds shared values; secret values live in environments/{name}.local.env, which is git-ignored."
-            )));
-        if tracked {
-            page = page.child(
-                div()
-                    .p_2()
-                    .rounded(px(4.))
-                    .border_1()
-                    .border_color(t.deleted)
-                    .text_color(t.deleted)
-                    .text_size(px(12.))
-                    .child(format!(
-                        "{name}.local.env is tracked by git, so its secrets may be published. Run: git rm --cached environments/{name}.local.env"
-                    )),
-            );
-        }
-        let head = |label: &'static str, w: Option<f32>| {
-            let d = div()
-                .text_size(px(11.))
-                .text_color(t.text_placeholder)
-                .child(label);
-            match w {
-                Some(w) => d.w(px(w)).flex_none(),
-                None => d.flex_1(),
-            }
-        };
-        let table = div()
-            .flex()
-            .flex_col()
-            .child(
-                row()
-                    .h(px(24.))
-                    .px_3()
-                    .gap_3()
-                    .border_b_1()
-                    .border_color(t.border_variant)
-                    .child(head("Name", Some(200.)))
-                    .child(head("Value", None))
-                    .child(head("Secret", Some(48.)))
-                    .child(head("", Some(16.))),
-            )
-            .children(rows.into_iter().enumerate().map(|(i, r)| {
-                let env = nm.clone();
-                let masked = r.secret && !self.scope.envs.is_revealed(&r.name);
-                let editing_value = self.edit_text_for(&EditTarget::Env {
-                    env: env.clone(),
-                    row: i,
-                    col: EnvCol::Value,
-                });
-                let value_cell: AnyElement = if masked && editing_value.is_none() {
-                    let var = r.name.clone();
-                    row()
-                        .id(("env-val-mask", i))
-                        .h(px(24.))
-                        .px_1()
-                        .flex_1()
-                        .cursor_pointer()
-                        .font_family(BUFFER_FONT)
-                        .text_size(px(12.))
-                        .text_color(t.text_muted)
-                        .on_click(cx.listener(move |this, _, _, cx| this.reveal_secret(&var, cx)))
-                        .child(MASK)
-                        .child(div().flex_1())
-                        .child(
-                            div()
-                                .text_size(px(10.))
-                                .text_color(t.text_placeholder)
-                                .child("click to reveal"),
-                        )
-                        .into_any_element()
-                } else {
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .child(self.field(
-                            t,
-                            ("env-val", i),
-                            EditTarget::Env {
-                                env: env.clone(),
-                                row: i,
-                                col: EnvCol::Value,
-                            },
-                            r.value.clone(),
-                            "value",
-                            cx,
-                        ))
-                        .into_any_element()
-                };
-                let (e1, e2) = (env.clone(), env.clone());
-                row()
-                    .h(px(28.))
-                    .px_3()
-                    .gap_3()
-                    .border_b_1()
-                    .border_color(t.border_variant)
-                    .child(div().w(px(200.)).flex_none().child(self.field(
-                        t,
-                        ("env-key", i),
-                        EditTarget::Env {
-                            env,
-                            row: i,
-                            col: EnvCol::Name,
-                        },
-                        r.name.clone(),
-                        "name",
-                        cx,
-                    )))
-                    .child(value_cell)
-                    .child(
-                        div()
-                            .id(("env-secret", i))
-                            .w(px(48.))
-                            .flex_none()
-                            .cursor_pointer()
-                            .on_click(
-                                cx.listener(move |this, _, _, cx| {
-                                    this.toggle_env_secret(&e1, i, cx)
-                                }),
-                            )
-                            .child(
-                                div()
-                                    .size(px(14.))
-                                    .rounded(px(3.))
-                                    .border_1()
-                                    .border_color(t.border)
-                                    .when(r.secret, |d| d.bg(t.accent).border_color(t.accent)),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .id(("env-del", i))
-                            .w(px(16.))
-                            .flex_none()
-                            .cursor_pointer()
-                            .on_click(
-                                cx.listener(move |this, _, _, cx| this.delete_env_row(&e2, i, cx)),
-                            )
-                            .child(icon("x", 12., t.text_placeholder)),
-                    )
-            }))
-            .child({
-                let env = nm.clone();
-                row()
-                    .id("env-add")
-                    .h(px(28.))
-                    .px_3()
-                    .gap_1()
-                    .cursor_pointer()
-                    .text_size(px(12.))
-                    .text_color(t.text_muted)
-                    .hover({
-                        let h = t.element_hover;
-                        move |s| s.bg(h)
-                    })
-                    .on_click(cx.listener(move |this, _, w, cx| {
-                        this.start_env_edit(&env, n, EnvCol::Name, w, cx)
-                    }))
-                    .child(icon("plus", 12., t.text_muted))
-                    .child("Add variable")
-            });
-        page = page
-            .child(table)
-            .child(self.render_cookies_section(t, &name, cx));
-        page
-    }
-
-    fn render_cookies_section(&self, t: &Theme, env: &str, cx: &mut Context<Self>) -> AnyElement {
+    ) -> AnyElement {
         let jar: Vec<Cookie> = self
             .env_root()
             .and_then(|r| self.scope.envs.states.get(&(r, env.to_string())))
@@ -480,7 +261,7 @@ impl WorkspaceView {
 
     pub fn remove_cookie(&mut self, domain: &str, path: &str, name: &str, cx: &mut Context<Self>) {
         if let Some(root) = self.env_root()
-            && let Some(env) = self.scope.envs.active.clone()
+            && let Some(env) = self.active_env_name()
             && let Some(s) = self.scope.envs.states.get(&(root.clone(), env))
         {
             s.cookies.remove(domain, path, name);
@@ -491,201 +272,141 @@ impl WorkspaceView {
 
     // ---- Environments panel ------------------------------------------------------------------
 
-    pub(crate) fn render_envs(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let names = self.env_names();
-        let active = self.scope.envs.active.clone();
-        let rows: Vec<crate::envs::EnvVarView> = active
-            .as_deref()
-            .map(|n| self.env_var_views(n))
-            .unwrap_or_default();
-        let action = |id: &'static str, label: &'static str| {
-            div()
-                .id(id)
-                .px_1()
-                .cursor_pointer()
-                .text_size(px(11.))
-                .text_color(t.text_muted)
-                .hover({
-                    let c = t.text;
-                    move |s| s.text_color(c)
-                })
-                .child(label)
+    /// The workspace's environment rows for the panel.
+    fn env_section_rows(&self, t: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let Some(root) = self.env_root() else {
+            return Vec::new();
         };
+        let names = fluxwire_format::list_environments(&root);
+        let active = self.active_env_name();
+        if names.is_empty() {
+            return vec![
+                div()
+                    .px_2()
+                    .py_1()
+                    .text_size(px(12.))
+                    .text_color(t.text_placeholder)
+                    .child("No environments in this workspace.")
+                    .child(
+                        div()
+                            .id("env-empty-new")
+                            .cursor_pointer()
+                            .text_color(t.accent)
+                            .child("New environment…")
+                            .on_click(cx.listener(|this, _, w, cx| this.start_new_env(w, cx))),
+                    )
+                    .into_any_element(),
+            ];
+        }
+        names
+            .into_iter()
+            .enumerate()
+            .map(|(i, name)| {
+                let is_active = active.as_deref() == Some(name.as_str());
+                let key = (root.clone(), name.clone());
+                let dirty = self.env_doc_dirty(&key);
+                let count = self.env_var_count(&root, &name);
+                let tracked = self
+                    .scope
+                    .envs
+                    .tracked
+                    .get(&key)
+                    .copied()
+                    .unwrap_or_else(|| fluxwire_format::local_env_is_tracked(&root, &name));
+                let (r1, n1, n2) = (root.clone(), name.clone(), name.clone());
+                let id: gpui::ElementId = ("env", i).into();
+                let group = format!("env-row-{i}");
+                let dots = self.row_dots(t, &group, &name, MenuKind::Environment, i, cx);
+                let menu_name = name.clone();
+                self.tree_row(t, id, 0, false)
+                    .group(group)
+                    .gap_2()
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
+                            this.open_tree_menu(&menu_name, MenuKind::Environment, ev.position, cx)
+                        }),
+                    )
+                    .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, _, cx| {
+                        // Opening never activates; double-click pins the tab.
+                        this.open_env_doc(&r1, &n1, ev.click_count() >= 2);
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .id(("env-dot", i))
+                            .size(px(12.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                let v = (this.active_env_name().as_deref() != Some(n2.as_str()))
+                                    .then(|| n2.clone());
+                                this.set_active_env(v, cx);
+                            }))
+                            .child(
+                                div()
+                                    .size(px(8.))
+                                    .rounded_full()
+                                    .border_1()
+                                    .border_color(if is_active { t.created } else { t.border })
+                                    .when(is_active, |d| d.bg(t.created)),
+                            ),
+                    )
+                    .child(div().flex_1().truncate().child(name.clone()))
+                    .when(dirty, |d| {
+                        d.child(div().size(px(8.)).rounded_full().bg(t.modified))
+                    })
+                    .when(tracked, |d| d.child(icon("triangle-alert", 12., t.deleted)))
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .text_color(t.text_placeholder)
+                            .child(count.to_string()),
+                    )
+                    .child(dots)
+                    .into_any_element()
+            })
+            .collect()
+    }
+
+    /// Number of variables of an environment (open document or files).
+    fn env_var_count(&self, root: &std::path::Path, name: &str) -> usize {
+        match self
+            .scope
+            .envs
+            .docs
+            .get(&(root.to_path_buf(), name.to_string()))
+        {
+            Some(d) => d.env.rows.len(),
+            None => fluxwire_format::load_environment(root, name, &[])
+                .rows
+                .len(),
+        }
+    }
+
+    pub(crate) fn render_envs(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let sections = self.env_section_rows(t, cx);
         div()
             .flex()
             .flex_col()
             .child(
-                row()
-                    .px_2()
-                    .h(px(24.))
-                    .gap_2()
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_size(px(11.))
-                            .text_color(t.text_placeholder)
-                            .child("Environments"),
-                    )
-                    .child(
-                        div()
-                            .id("env-new")
-                            .cursor_pointer()
-                            .on_click(cx.listener(|this, _, w, cx| this.start_new_env(w, cx)))
-                            .child(icon("plus", 14., t.text_muted)),
-                    ),
+                row().px_2().h(px(24.)).justify_end().child(
+                    div()
+                        .id("env-new")
+                        .cursor_pointer()
+                        .tooltip(|_, cx| {
+                            cx.new(|_| crate::ui::VarTip {
+                                text: "New environment…".into(),
+                            })
+                            .into()
+                        })
+                        .on_click(cx.listener(|this, _, w, cx| this.start_new_env(w, cx)))
+                        .child(icon("plus", 14., t.text_muted)),
+                ),
             )
-            .when(names.is_empty(), |d| {
-                d.child(
-                    div()
-                        .px_2()
-                        .py_1()
-                        .text_size(px(12.))
-                        .text_color(t.text_placeholder)
-                        .child("No environments yet. Click + to create one."),
-                )
-            })
-            .children(names.iter().enumerate().map(|(i, name)| {
-                let is_active = active.as_deref() == Some(name.as_str());
-                let n1 = name.clone();
-                self.tree_row(t, ("env", i).into(), 0, is_active)
-                    .gap_2()
-                    .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, _, cx| {
-                        this.set_active_env(Some(n1.clone()), cx);
-                        if ev.click_count() >= 2 {
-                            this.open_env_tab(&n1);
-                        }
-                        cx.notify();
-                    }))
-                    .child(div().size(px(7.)).rounded_full().bg(if is_active {
-                        t.created
-                    } else {
-                        t.border
-                    }))
-                    .child(name.clone())
-            }))
-            .when_some(active.clone(), |d, name| {
-                let (a, b, c, e) = (name.clone(), name.clone(), name.clone(), name.clone());
-                d.child(
-                    row()
-                        .px_2()
-                        .pt_2()
-                        .gap_1()
-                        .child(action("env-open", "Edit").on_click(cx.listener(
-                            move |this, _, _, cx| {
-                                this.open_env_tab(&e);
-                                cx.notify();
-                            },
-                        )))
-                        .child(action("env-rename", "Rename").on_click(
-                            cx.listener(move |this, _, w, cx| this.start_rename_env(&a, w, cx)),
-                        ))
-                        .child(action("env-dup", "Duplicate").on_click(
-                            cx.listener(move |this, _, _, cx| this.duplicate_env(&b, cx)),
-                        ))
-                        .child(
-                            action("env-delete", "Delete").on_click(
-                                cx.listener(move |this, _, _, cx| this.delete_env(&c, cx)),
-                            ),
-                        ),
-                )
-                .child(
-                    div()
-                        .px_2()
-                        .pt_3()
-                        .pb_1()
-                        .text_size(px(11.))
-                        .text_color(t.text_placeholder)
-                        .child(format!("Variables · {name}")),
-                )
-            })
-            .children(rows.into_iter().enumerate().map(|(i, v)| {
-                let var = v.name.clone();
-                let masked = v.secret && !self.scope.envs.is_revealed(&v.name);
-                row()
-                    .id(("env-var", i))
-                    .px_2()
-                    .py(px(2.))
-                    .gap_2()
-                    .font_family(BUFFER_FONT)
-                    .text_size(px(12.))
-                    .text_color(t.text_muted)
-                    .when(masked, |d| {
-                        d.cursor_pointer().on_click(
-                            cx.listener(move |this, _, _, cx| this.reveal_secret(&var, cx)),
-                        )
-                    })
-                    .child(
-                        div()
-                            .w(px(80.))
-                            .flex_none()
-                            .truncate()
-                            .text_color(t.text)
-                            .child(v.name.clone()),
-                    )
-                    .child(div().truncate().child(if masked {
-                        MASK.to_string()
-                    } else {
-                        v.value.clone()
-                    }))
-            }))
-            .child(
-                row()
-                    .px_2()
-                    .pt_3()
-                    .pb_1()
-                    .gap_2()
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_size(px(11.))
-                            .text_color(t.text_placeholder)
-                            .child(format!(
-                                "Runtime variables · {}",
-                                self.scope.envs.runtime.len()
-                            )),
-                    )
-                    .child(
-                        action("runtime-clear", "Clear")
-                            .on_click(cx.listener(|this, _, _, cx| this.clear_runtime_vars(cx))),
-                    ),
-            )
-            .children(self.scope.envs.runtime.iter().map(|(k, (v, secret))| {
-                let masked = *secret && !self.scope.envs.is_revealed(k);
-                row()
-                    .px_2()
-                    .py(px(2.))
-                    .gap_2()
-                    .font_family(BUFFER_FONT)
-                    .text_size(px(12.))
-                    .text_color(t.text_muted)
-                    .child(
-                        div()
-                            .w(px(80.))
-                            .flex_none()
-                            .truncate()
-                            .text_color(t.text)
-                            .child(k.clone()),
-                    )
-                    .child(div().truncate().child(if masked {
-                        MASK.to_string()
-                    } else {
-                        v.clone()
-                    }))
-            }))
-            .when(self.scope.envs.runtime.is_empty(), |d| {
-                d.child(
-                    div()
-                        .px_2()
-                        .text_size(px(12.))
-                        .text_color(t.text_placeholder)
-                        .child("None. Scripts and captures set these."),
-                )
-            })
-    }
-
-    pub fn open_env_tab(&mut self, name: &str) {
-        self.load_env(name);
-        self.open_tab(&format!("env/{name}"), name, TabKind::Environment, true);
+            .children(sections)
     }
 
     // ---- Auth tab ------------------------------------------------------------------------------
@@ -1010,11 +731,11 @@ impl WorkspaceView {
                 .scope
                 .envs
                 .states
-                .get(&(root, self.scope.envs.active.clone()?))?;
+                .get(&(root, self.active_env_name()?))?;
             let scope = self.scope_for(key)?;
             runner().token_info(&doc.parsed, &scope, env)
         })();
-        let status = match (&info, self.scope.envs.active.as_ref()) {
+        let status = match (&info, self.active_env_name().as_ref()) {
             (_, None) => "No environment selected; tokens are cached per environment.".to_string(),
             (None, Some(e)) => format!("No token yet for {e}. Send a request or fetch one now."),
             (Some(i), Some(e)) => format!(

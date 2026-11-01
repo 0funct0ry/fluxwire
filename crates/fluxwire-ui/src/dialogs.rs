@@ -4,48 +4,54 @@
 use std::path::{Path, PathBuf};
 
 use gpui::{
-    Context, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, ParentElement,
-    PathPromptOptions, SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::*,
-    px,
+    Context, Entity, Focusable, InteractiveElement, IntoElement, KeyDownEvent, MouseButton,
+    ParentElement, PathPromptOptions, SharedString, StatefulInteractiveElement, Styled,
+    Subscription, Window, div, prelude::*, px,
 };
 
 use crate::{
-    assets::{BUFFER_FONT, UI_FONT},
+    assets::BUFFER_FONT,
     containment::{
         self, AddOutcome, NewCollectionError, NewWorkspaceError, classify_add, plan_new_collection,
         plan_new_workspace,
     },
+    text_input::{TextInput, TextInputEvent},
     theme::Theme,
-    ui::{TextEdit, char_index_at, field_text, row},
+    ui::row,
     workspace::WorkspaceView,
 };
 
-/// Which text field a mouse event belongs to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FieldKind {
-    Dialog,
-    Modal,
-}
-
-impl FieldKind {
-    /// Font and size the field's text is laid out in (for caret placement from a click).
-    pub fn font(self) -> (&'static str, f32) {
-        match self {
-            Self::Dialog => (UI_FONT, 13.),
-            Self::Modal => (UI_FONT, 14.),
-        }
-    }
-}
-
 pub struct NewWorkspaceForm {
-    pub name: TextEdit,
+    pub name: Entity<TextInput>,
     pub location: PathBuf,
+    _sub: Subscription,
+}
+
+pub struct NewEnvForm {
+    pub name: Entity<TextInput>,
+    pub collection: PathBuf,
+    /// Environment to copy both files from; `None` starts empty.
+    pub start_from: Option<String>,
+    pub activate: bool,
+    _sub: Subscription,
 }
 
 pub struct NewCollectionForm {
-    pub name: TextEdit,
+    pub name: Entity<TextInput>,
     pub location: PathBuf,
     pub note: Option<String>,
+    _sub: Subscription,
+}
+
+/// A dialog's name field; the dialog re-renders when its text changes (validation, Create).
+fn name_input(cx: &mut Context<WorkspaceView>) -> (Entity<TextInput>, Subscription) {
+    let input = cx.new(|cx| TextInput::new("", cx));
+    let sub = cx.subscribe(&input, |_, _, ev: &TextInputEvent, cx| {
+        if *ev == TextInputEvent::Changed {
+            cx.notify();
+        }
+    });
+    (input, sub)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -65,6 +71,13 @@ pub enum ConfirmAction {
     OpenAsWorkspace(PathBuf),
     /// Move this collection (by key) to the trash.
     DeleteCollection(String),
+    /// Close an Environment tab with unsaved edits: save first (true) or discard (false).
+    CloseEnvTab(u64, bool),
+    /// Move an environment's files to the trash.
+    DeleteEnvironment {
+        root: PathBuf,
+        name: String,
+    },
 }
 
 /// What happens once the Workspace has been closed.
@@ -93,6 +106,7 @@ pub struct Confirm {
 pub enum Dialog {
     NewWorkspace(NewWorkspaceForm),
     NewCollection(NewCollectionForm),
+    NewEnvironment(NewEnvForm),
     Confirm(Confirm),
 }
 
@@ -121,11 +135,13 @@ impl WorkspaceView {
             .and_then(|w| Path::new(w).parent().map(Path::to_path_buf))
             .filter(|p| p.is_dir())
             .unwrap_or_else(home_dir);
+        let (name, _sub) = name_input(cx);
+        window.focus(&name.read(cx).focus_handle(cx));
         self.dialog = Some(Dialog::NewWorkspace(NewWorkspaceForm {
-            name: TextEdit::default(),
+            name,
             location,
+            _sub,
         }));
-        window.focus(&self.dialog_focus);
         cx.notify();
     }
 
@@ -133,7 +149,7 @@ impl WorkspaceView {
         let Some(Dialog::NewWorkspace(f)) = &self.dialog else {
             return;
         };
-        let Ok(target) = plan_new_workspace(f.name.text(), &f.location) else {
+        let Ok(target) = plan_new_workspace(f.name.read(cx).text(), &f.location) else {
             return;
         };
         if let Err(e) = std::fs::create_dir_all(&target) {
@@ -143,6 +159,98 @@ impl WorkspaceView {
         }
         self.dialog = None;
         self.request_close(AfterClose::Open(target), window, cx);
+    }
+
+    // ---- New environment ------------------------------------------------------------------
+
+    /// Open the New environment dialog for the current collection.
+    pub fn start_new_env(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(root) = self.env_root() {
+            self.start_new_env_in(&root, "", window, cx);
+        }
+    }
+
+    pub fn start_new_env_in(
+        &mut self,
+        root: &Path,
+        name: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (input, _sub) = name_input(cx);
+        input.update(cx, |i, cx| i.set_text(name, cx));
+        window.focus(&input.read(cx).focus_handle(cx));
+        self.dialog = Some(Dialog::NewEnvironment(NewEnvForm {
+            name: input,
+            collection: root.to_path_buf(),
+            start_from: None,
+            activate: true,
+            _sub,
+        }));
+        cx.notify();
+    }
+
+    fn new_env_error(&self, f: &NewEnvForm, cx: &gpui::App) -> Option<String> {
+        self.env_name_error(&f.collection, f.name.read(cx).text(), None)
+    }
+
+    fn submit_new_env(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(Dialog::NewEnvironment(f)) = &self.dialog else {
+            return;
+        };
+        if self.new_env_error(f, cx).is_some() {
+            return;
+        }
+        let (root, name, from, activate) = (
+            f.collection.clone(),
+            f.name.read(cx).text().to_string(),
+            f.start_from.clone(),
+            f.activate,
+        );
+        let made = match &from {
+            Some(src) => [
+                (
+                    fluxwire_format::env_path(&root, src),
+                    fluxwire_format::env_path(&root, &name),
+                ),
+                (
+                    fluxwire_format::local_env_path(&root, src),
+                    fluxwire_format::local_env_path(&root, &name),
+                ),
+            ]
+            .into_iter()
+            .try_for_each(|(a, b)| {
+                if a.exists() {
+                    std::fs::create_dir_all(b.parent().unwrap_or(&root))?;
+                    std::fs::copy(a, b).map(|_| ())
+                } else {
+                    Ok(())
+                }
+            })
+            .and_then(|()| {
+                let p = fluxwire_format::env_path(&root, &name);
+                if p.exists() {
+                    Ok(())
+                } else {
+                    fluxwire_format::create_environment(&root, &name)
+                }
+            }),
+            None => fluxwire_format::create_environment(&root, &name),
+        };
+        if let Err(e) = made {
+            self.notice = Some(format!("Could not create {name}: {e}"));
+            cx.notify();
+            return;
+        }
+        self.dialog = None;
+        self.scope.envs.invalidate();
+        if activate {
+            self.set_active_env(Some(name.clone()), cx);
+        }
+        self.open_env_doc(&root, &name, true);
+        self.env_focus_first_cell(&(root, name), window, cx);
+        self.session_dirty = true;
+        cx.notify();
     }
 
     // ---- New collection -------------------------------------------------------------------
@@ -162,32 +270,39 @@ impl WorkspaceView {
             cx.notify();
             return;
         }
+        let (location, note) = (ws.root.clone(), note.map(str::to_string));
+        let (name, _sub) = name_input(cx);
+        window.focus(&name.read(cx).focus_handle(cx));
         self.dialog = Some(Dialog::NewCollection(NewCollectionForm {
-            name: TextEdit::default(),
-            location: ws.root.clone(),
-            note: note.map(str::to_string),
+            name,
+            location,
+            note,
+            _sub,
         }));
-        window.focus(&self.dialog_focus);
         cx.notify();
     }
 
-    fn collection_plan(&self, f: &NewCollectionForm) -> Result<PathBuf, NewCollectionError> {
+    fn collection_plan(
+        &self,
+        f: &NewCollectionForm,
+        cx: &gpui::App,
+    ) -> Result<PathBuf, NewCollectionError> {
         let ws = self
             .scope
             .workspace
             .as_ref()
             .ok_or(NewCollectionError::EmptyName)?;
-        plan_new_collection(ws, f.name.text(), &f.location)
+        plan_new_collection(ws, f.name.read(cx).text(), &f.location)
     }
 
     fn submit_new_collection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(Dialog::NewCollection(f)) = &self.dialog else {
             return;
         };
-        let Ok(target) = self.collection_plan(f) else {
+        let Ok(target) = self.collection_plan(f, cx) else {
             return;
         };
-        let name = f.name.text().trim().to_string();
+        let name = f.name.read(cx).text().trim().to_string();
         self.dialog = None;
         self.create_collection_at(&target, &name, window, cx);
     }
@@ -382,6 +497,8 @@ impl WorkspaceView {
                 self.request_close(AfterClose::Open(dir), window, cx)
             }
             ConfirmAction::DeleteCollection(key) => self.delete_collection(&key, cx),
+            ConfirmAction::DeleteEnvironment { root, name } => self.delete_env_in(&root, &name, cx),
+            ConfirmAction::CloseEnvTab(id, save) => self.finish_close_env_tab(id, save, cx),
             ConfirmAction::Close(after, mode) => self.finish_close(after, mode, window, cx),
             ConfirmAction::StartNew {
                 websocket,
@@ -410,6 +527,11 @@ impl WorkspaceView {
             .dirty_keys()
             .iter()
             .map(|k| ws.doc(k).map_or(k.clone(), |d| d.title()))
+            .chain(
+                self.dirty_env_docs()
+                    .into_iter()
+                    .map(|(_, n)| format!("environment {n}")),
+            )
             .collect();
         let running = self.scope.running();
         if names.is_empty() && running == 0 {
@@ -478,6 +600,21 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        match mode {
+            CloseMode::Save => {
+                if let Err(e) = self.save_all_env_docs(cx) {
+                    self.notice = Some(e);
+                    cx.notify();
+                    return;
+                }
+            }
+            CloseMode::Discard => {
+                for k in self.dirty_env_docs() {
+                    self.discard_env_doc(&k);
+                }
+            }
+            CloseMode::Stop => {}
+        }
         if let Some(ws) = self.scope.workspace.as_mut() {
             let dirty = ws.dirty_keys();
             match mode {
@@ -600,77 +737,7 @@ impl WorkspaceView {
         self.start_new(websocket, folder, window, cx);
     }
 
-    // ---- text field mouse -----------------------------------------------------------------
-
-    fn field_edit(&mut self, kind: FieldKind) -> Option<&mut TextEdit> {
-        match kind {
-            FieldKind::Modal => self.modal.as_mut().map(|m| &mut m.query),
-            FieldKind::Dialog => match self.dialog.as_mut()? {
-                Dialog::NewWorkspace(f) => Some(&mut f.name),
-                Dialog::NewCollection(f) => Some(&mut f.name),
-                Dialog::Confirm(_) => None,
-            },
-        }
-    }
-
-    fn field_index(
-        &mut self,
-        kind: FieldKind,
-        pos: gpui::Point<gpui::Pixels>,
-        window: &Window,
-    ) -> Option<(usize, String)> {
-        let x = f32::from(pos.x - self.field_bounds.get().origin.x);
-        let (font, size) = kind.font();
-        let text = self.field_edit(kind)?.text().to_string();
-        Some((char_index_at(window, &text, font, size, x), text))
-    }
-
-    /// Click places the caret, double-click selects a word, triple-click everything; dragging
-    /// extends the selection.
-    pub(crate) fn field_down(
-        &mut self,
-        kind: FieldKind,
-        ev: &gpui::MouseDownEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some((idx, text)) = self.field_index(kind, ev.position, window) else {
-            return;
-        };
-        if let Some(e) = self.field_edit(kind) {
-            match ev.click_count {
-                1 => e.set_cursor(idx, ev.modifiers.shift),
-                2 => {
-                    let (a, b) = crate::ui::word_range(&text, idx);
-                    e.select(a, b);
-                }
-                _ => e.select_all(),
-            }
-        }
-        self.field_drag = ev.click_count == 1;
-        cx.notify();
-    }
-
-    pub(crate) fn field_move(
-        &mut self,
-        kind: FieldKind,
-        ev: &gpui::MouseMoveEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if !self.field_drag || ev.pressed_button != Some(MouseButton::Left) {
-            return;
-        }
-        let Some((idx, _)) = self.field_index(kind, ev.position, window) else {
-            return;
-        };
-        if let Some(e) = self.field_edit(kind) {
-            e.set_cursor(idx, true);
-            cx.notify();
-        }
-    }
-
-    fn name_field(&self, t: &Theme, edit: &TextEdit, cx: &mut Context<Self>) -> gpui::Div {
+    fn name_field(&self, t: &Theme, edit: &Entity<TextInput>) -> gpui::Div {
         div()
             .flex()
             .flex_col()
@@ -692,32 +759,7 @@ impl WorkspaceView {
                     .border_1()
                     .border_color(t.accent)
                     .bg(t.editor)
-                    .cursor_text()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, ev: &gpui::MouseDownEvent, w, cx| {
-                            this.field_down(FieldKind::Dialog, ev, w, cx)
-                        }),
-                    )
-                    .on_mouse_move(cx.listener(|this, ev: &gpui::MouseMoveEvent, w, cx| {
-                        this.field_move(FieldKind::Dialog, ev, w, cx)
-                    }))
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(|this, _: &gpui::MouseUpEvent, _, _| this.field_drag = false),
-                    )
-                    .child(
-                        div()
-                            .relative()
-                            .flex_1()
-                            .child(field_text(edit, "", t, self.is_focused(&self.dialog_focus)))
-                            .child({
-                                let cell = self.field_bounds.clone();
-                                gpui::canvas(move |b, _, _| cell.set(b), |_, _, _, _| {})
-                                    .absolute()
-                                    .size_full()
-                            }),
-                    ),
+                    .child(div().flex_1().child(edit.clone())),
             )
     }
 
@@ -732,16 +774,11 @@ impl WorkspaceView {
         match (&mut self.dialog, key) {
             (Some(Dialog::NewWorkspace(_)), "enter") => self.submit_new_workspace(window, cx),
             (Some(Dialog::NewCollection(_)), "enter") => self.submit_new_collection(window, cx),
+            (Some(Dialog::NewEnvironment(_)), "enter") => self.submit_new_env(window, cx),
             (Some(Dialog::Confirm(c)), "enter") => {
                 if let Some((_, a)) = c.buttons.first().cloned() {
                     self.run_confirm_action(a, window, cx);
                 }
-            }
-            (Some(Dialog::NewWorkspace(f)), _) => {
-                f.name.handle_key(ev);
-            }
-            (Some(Dialog::NewCollection(f)), _) => {
-                f.name.handle_key(ev);
             }
             _ => {}
         }
@@ -768,7 +805,15 @@ impl WorkspaceView {
                     Some(Dialog::NewCollection(f)) => f.location = dir,
                     _ => {}
                 }
-                window.focus(&this.dialog_focus);
+                match &this.dialog {
+                    Some(Dialog::NewWorkspace(f)) => {
+                        window.focus(&f.name.read(cx).focus_handle(cx))
+                    }
+                    Some(Dialog::NewCollection(f)) => {
+                        window.focus(&f.name.read(cx).focus_handle(cx))
+                    }
+                    _ => window.focus(&this.dialog_focus),
+                }
                 cx.notify();
             })
             .ok();
@@ -809,7 +854,7 @@ impl WorkspaceView {
         };
         match dialog {
             Dialog::NewWorkspace(f) => {
-                let plan = plan_new_workspace(f.name.text(), &f.location);
+                let plan = plan_new_workspace(f.name.read(cx).text(), &f.location);
                 let (preview, error) = match &plan {
                     Ok(p) => (Some(p.display().to_string()), None),
                     Err(e) => (None, Some(e.clone())),
@@ -822,7 +867,7 @@ impl WorkspaceView {
                 };
                 panel = panel
                     .child(heading("New workspace".into()))
-                    .child(self.name_field(&t, &f.name, cx))
+                    .child(self.name_field(&t, &f.name))
                     .child(location_row(&t, &f.location.display().to_string(), cx))
                     .children(preview.map(|p| muted_path(&t, format!("Will create {p}"))))
                     .children(error.map(|e| error_line(&t, e.to_string())))
@@ -841,7 +886,7 @@ impl WorkspaceView {
             Dialog::NewCollection(f) => {
                 let ws = self.scope.workspace.as_ref();
                 let root = ws.map(|w| w.root.clone()).unwrap_or_default();
-                let plan = self.collection_plan(f);
+                let plan = self.collection_plan(f, cx);
                 let error = match &plan {
                     Err(NewCollectionError::EmptyName) => None,
                     Err(e) => Some(e.clone()),
@@ -867,7 +912,7 @@ impl WorkspaceView {
                 if let Some(n) = &f.note {
                     panel = panel.child(div().text_color(t.text_muted).child(n.clone()));
                 }
-                panel = panel.child(self.name_field(&t, &f.name, cx));
+                panel = panel.child(self.name_field(&t, &f.name));
                 panel = panel
                     .children(preview.map(|p| muted_path(&t, p)))
                     .children(error.map(|e| error_line(&t, e.to_string())))
@@ -879,7 +924,7 @@ impl WorkspaceView {
                                     .as_ref()
                                     .and_then(|d| match d {
                                         Dialog::NewCollection(f) => {
-                                            Some(f.name.text().trim().to_string())
+                                            Some(f.name.read(cx).text().trim().to_string())
                                         }
                                         _ => None,
                                     })
@@ -891,6 +936,95 @@ impl WorkspaceView {
                     }))
                     .child(buttons(&t, cx, "Create", plan.is_ok(), |this, w, cx| {
                         this.submit_new_collection(w, cx)
+                    }));
+            }
+            Dialog::NewEnvironment(f) => {
+                let error = self
+                    .new_env_error(f, cx)
+                    .filter(|_| !f.name.read(cx).text().is_empty());
+                let valid = self.new_env_error(f, cx).is_none();
+                let chip = |id: gpui::ElementId, label: String, on: bool| {
+                    div()
+                        .id(id)
+                        .px_2()
+                        .h(px(24.))
+                        .flex()
+                        .items_center()
+                        .rounded(px(4.))
+                        .border_1()
+                        .border_color(if on { t.accent } else { t.border })
+                        .cursor_pointer()
+                        .text_size(px(12.))
+                        .child(label)
+                };
+                let label = |s: &'static str| {
+                    div()
+                        .text_size(px(11.))
+                        .text_color(t.text_placeholder)
+                        .child(s)
+                };
+                panel = panel
+                    .child(heading("New environment".into()))
+                    .child(self.name_field(&t, &f.name));
+                let existing = fluxwire_format::list_environments(&f.collection);
+                panel = panel.child(label("Start from")).child(
+                    row()
+                        .gap_2()
+                        .child(
+                            chip(
+                                "env-from-empty".into(),
+                                "Empty".into(),
+                                f.start_from.is_none(),
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(Dialog::NewEnvironment(f)) = &mut this.dialog {
+                                    f.start_from = None;
+                                }
+                                cx.notify();
+                            })),
+                        )
+                        .children(existing.into_iter().enumerate().map(|(i, n)| {
+                            let on = f.start_from.as_deref() == Some(n.as_str());
+                            let pick = n.clone();
+                            chip(("env-from", i).into(), format!("Duplicate of {n}"), on).on_click(
+                                cx.listener(move |this, _, _, cx| {
+                                    if let Some(Dialog::NewEnvironment(f)) = &mut this.dialog {
+                                        f.start_from = Some(pick.clone());
+                                    }
+                                    cx.notify();
+                                }),
+                            )
+                        })),
+                );
+                let name_now = f.name.read(cx).text().to_string();
+                panel = panel
+                    .child(
+                        chip(
+                            "env-activate".into(),
+                            format!("{} Set as active", if f.activate { "☑" } else { "☐" }),
+                            false,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            if let Some(Dialog::NewEnvironment(f)) = &mut this.dialog {
+                                f.activate = !f.activate;
+                            }
+                            cx.notify();
+                        })),
+                    )
+                    .child(muted_path(
+                        &t,
+                        format!(
+                            "environments/{}.env",
+                            if name_now.is_empty() {
+                                "<name>"
+                            } else {
+                                &name_now
+                            }
+                        ),
+                    ))
+                    .children(error.map(|e| error_line(&t, e)))
+                    .child(buttons(&t, cx, "Create", valid, |this, w, cx| {
+                        this.submit_new_env(w, cx)
                     }));
             }
             Dialog::Confirm(c) => {

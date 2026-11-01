@@ -1,9 +1,6 @@
 //! The Keybindings tab: every action with its effective binding, searchable (SPEC §17.6).
 
-use gpui::{
-    Context, InteractiveElement, IntoElement, MouseButton, ParentElement, Styled, div, prelude::*,
-    px,
-};
+use gpui::{Context, InteractiveElement, IntoElement, ParentElement, Styled, div, prelude::*, px};
 
 use crate::{
     actions::{ACTIONS, BindingSource, KeymapState, OpenKeymapFile},
@@ -24,7 +21,7 @@ pub struct KeyRow {
 impl WorkspaceView {
     /// Rows matching the search box: bound actions first-class, unbound actions with no keys.
     pub fn keybinding_rows(&self, state: &KeymapState) -> Vec<KeyRow> {
-        let q = self.keybind_query.text().to_string();
+        let q = self.keybind_query.clone();
         let mut rows: Vec<KeyRow> = Vec::new();
         for a in ACTIONS {
             let bound: Vec<_> = state.rows.iter().filter(|r| r.action == a.name).collect();
@@ -57,6 +54,15 @@ impl WorkspaceView {
         let state = cx.try_global::<KeymapState>().cloned().unwrap_or_default();
         let rows = self.keybinding_rows(&state);
         let t = t.clone();
+        let search = crate::text_input::lazy_input(
+            &self.keybind_input,
+            "Search keybindings…",
+            cx,
+            |this: &mut WorkspaceView, text, cx| {
+                this.keybind_query = text;
+                cx.notify();
+            },
+        );
         div()
             .flex_1()
             .min_h_0()
@@ -69,27 +75,7 @@ impl WorkspaceView {
                     .gap_3()
                     .border_b_1()
                     .border_color(t.border_variant)
-                    .child(
-                        row()
-                            .id("keybind-search")
-                            .track_focus(&self.keybind_focus)
-                            .on_key_down(cx.listener(|this, ev, _, cx| {
-                                if this.keybind_query.handle_key(ev) {
-                                    cx.notify();
-                                }
-                            }))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _, w, _| w.focus(&this.keybind_focus)),
-                            )
-                            .flex_1()
-                            .child(crate::ui::field_text(
-                                &self.keybind_query,
-                                "Search keybindings…",
-                                &t,
-                                self.is_focused(&self.keybind_focus),
-                            )),
-                    )
+                    .child(row().id("keybind-search").flex_1().child(search))
                     .child(
                         div()
                             .id("open-keymap")

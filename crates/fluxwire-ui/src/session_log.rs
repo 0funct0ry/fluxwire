@@ -10,7 +10,7 @@ use std::collections::VecDeque;
 use fluxwire_runner::Frame;
 use gpui::UniformListScrollHandle;
 
-use crate::{highlight::Lang, ui::TextEdit, viewer};
+use crate::{highlight::Lang, viewer};
 
 /// Frames kept in the log; older ones are dropped and counted.
 pub const LOG_CAP: usize = 50_000;
@@ -49,7 +49,8 @@ pub struct SessionLog {
     /// Frames dropped from the front because of the cap.
     pub dropped: u64,
     pub dir: DirFilter,
-    pub filter: TextEdit,
+    pub filter: String,
+    pub filter_input: crate::text_input::LazyInput,
     /// Ids of the entries that pass the filters, oldest first.
     visible: VecDeque<u64>,
     pub selected: Option<u64>,
@@ -71,7 +72,8 @@ impl SessionLog {
             next_id: 0,
             dropped: 0,
             dir: DirFilter::All,
-            filter: TextEdit::default(),
+            filter: String::new(),
+            filter_input: Default::default(),
             visible: VecDeque::new(),
             selected: None,
             scroll: UniformListScrollHandle::new(),
@@ -125,7 +127,7 @@ impl SessionLog {
         if !self.dir.allows(f.outbound) {
             return false;
         }
-        let q = self.filter.text().trim();
+        let q = self.filter.trim();
         q.is_empty()
             || f.kind.to_lowercase().contains(&q.to_lowercase())
             || String::from_utf8_lossy(&f.data)
@@ -288,7 +290,7 @@ mod tests {
         log.push(frame(false, "text", "got later"));
         assert_eq!(log.visible_len(), 2);
         log.set_dir(DirFilter::All);
-        log.filter.insert("LATER");
+        log.filter = "LATER".into();
         log.refilter();
         assert_eq!(log.visible_len(), 2);
         assert_eq!(log.counts(), (2, 2));

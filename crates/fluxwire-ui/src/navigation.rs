@@ -139,7 +139,11 @@ impl WorkspaceView {
                         continue; // file is gone: try the one before it
                     }
                 }
-                TabKind::Environment => self.open_env_tab(&t.title),
+                TabKind::Environment => {
+                    if let Some((root, name)) = self.parse_env_tab_key(&t.key) {
+                        self.open_env_doc(&root, &name, true);
+                    }
+                }
                 TabKind::History => {
                     match t.key.strip_prefix("history/").and_then(|n| n.parse().ok()) {
                         Some(id) => self.open_history_entry(id, true, cx),
@@ -365,11 +369,13 @@ impl WorkspaceView {
         };
         match kind {
             TabKind::Environment => {
-                let name = t.key.strip_prefix("env/").unwrap_or(&t.key).to_string();
-                if !self.env_names().contains(&name) {
+                let Some((root, name)) = self.parse_env_tab_key(&t.key) else {
+                    return false;
+                };
+                if !fluxwire_format::list_environments(&root).contains(&name) {
                     return false;
                 }
-                self.open_env_tab(&name);
+                self.open_env_doc(&root, &name, !t.preview);
             }
             TabKind::History => {
                 let Some(id) = t

@@ -2481,6 +2481,7 @@ dependencies = [
  "tree-sitter-xml",
  "tree-sitter-yaml",
  "tungstenite 0.30.0",
+ "unicode-segmentation",
 ]
 
 [[package]]

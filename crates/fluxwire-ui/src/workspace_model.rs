@@ -800,9 +800,12 @@ pub struct Session {
     pub active: Option<String>,
     /// Unsaved buffers: key -> text.
     pub unsaved: BTreeMap<String, String>,
-    /// Active environment, remembered per workspace.
+    /// Active environment of the Workspace, remembered per workspace.
     #[serde(default)]
     pub active_env: Option<String>,
+    /// "No environment" was chosen explicitly (otherwise the first environment is the default).
+    #[serde(default)]
+    pub no_environment: bool,
     #[serde(default)]
     pub layout: Layout,
     /// Recently closed tabs, oldest first, for "reopen closed tab" after a restart.

@@ -1,6 +1,7 @@
 //! Every visible action, registered with GPUI and listed in `ACTIONS` so the command palette,
 //! keymap and tests read from one table (SPEC §17.5, §17.6). Most are no-ops in M1.
 
+use crate::input_keys::*;
 use gpui::{Action, App, KeyBinding, actions};
 
 actions!(
@@ -56,7 +57,8 @@ actions!(
         OpenAsText,
         CloseWorkspace,
         OpenDocs,
-        OpenEnvironment,
+        EditActiveEnvironment,
+        ManageEnvironments,
         OpenSync,
         Connect,
         Dismiss,
@@ -259,7 +261,13 @@ pub static ACTIONS: &[ActionInfo] = &[
         None
     ),
     a!("docs: open for request", OpenDocs, None, None),
-    a!("environment: open editor", OpenEnvironment, None, None),
+    a!(
+        "environment: edit active",
+        EditActiveEnvironment,
+        None,
+        None
+    ),
+    a!("environment: manage", ManageEnvironments, None, None),
     a!("sync: open", OpenSync, None, None),
     a!("websocket: connect or disconnect", Connect, None, None),
     a!("modal: dismiss", Dismiss, Some("escape"), None),
@@ -284,15 +292,10 @@ pub static ACTIONS: &[ActionInfo] = &[
     a!("response: show tests", ShowResponseTests, None, None),
     a!("response: show console", ShowResponseConsole, None, None),
     a!("request: choose method", ToggleMethodMenu, None, None),
-    a!("environment: new", NewEnvironment, None, None),
-    a!("environment: rename active", RenameEnvironment, None, None),
-    a!(
-        "environment: duplicate active",
-        DuplicateEnvironment,
-        None,
-        None
-    ),
-    a!("environment: delete active", DeleteEnvironment, None, None),
+    a!("environment: new…", NewEnvironment, None, None),
+    a!("environment: rename…", RenameEnvironment, None, None),
+    a!("environment: duplicate", DuplicateEnvironment, None, None),
+    a!("environment: delete…", DeleteEnvironment, None, None),
     a!("workspace: new window", NewWindow, None, None),
     a!("keymap: open keybindings", OpenKeybindings, None, None),
     a!("keymap: reload", ReloadKeymap, None, None),
@@ -317,11 +320,205 @@ pub static ACTIONS: &[ActionInfo] = &[
         Some("secondary-enter"),
         Some("Modal")
     ),
+    a!(
+        "input: move left",
+        InputLeft,
+        None,
+        Some(crate::input_keys::CONTEXT)
+    ),
+    a!(
+        "input: move right",
+        InputRight,
+        None,
+        Some(crate::input_keys::CONTEXT)
+    ),
+    a!(
+        "input: move word left",
+        InputWordLeft,
+        None,
+        Some(crate::input_keys::CONTEXT)
+    ),
+    a!(
+        "input: move word right",
+        InputWordRight,
+        None,
+        Some(crate::input_keys::CONTEXT)
+    ),
+    a!(
+        "input: move to line start",
+        InputLineStart,
+        None,
+        Some(crate::input_keys::CONTEXT)
+    ),
+    a!(
+        "input: move to line end",
+        InputLineEnd,
+        None,
+        Some(crate::input_keys::CONTEXT)
+    ),
+    a!(
+        "input: move up",
+        InputUp,
+        None,
+        Some(crate::input_keys::CONTEXT)
+    ),
+    a!(
+        "input: move down",
+        InputDown,
+        None,
+        Some(crate::input_keys::CONTEXT)
+    ),
+    a!(
+        "input: move to start",
+        InputDocStart,
+        None,
+        Some(crate::input_keys::CONTEXT)
+    ),
+    a!(
+        "input: move to end",
+        InputDocEnd,
+        None,
+        Some(crate::input_keys::CONTEXT)
+    ),
+    a!(
+        "input: select left",
+        InputSelectLeft,
+        None,
+        Some(crate::input_keys::CONTEXT)
+    ),
+    a!(
+        "input: select right",
+        InputSelectRight,
+        None,
+        Some(crate::input_keys::CONTEXT)
+    ),
+    a!(
+        "input: select word left",
+        InputSelectWordLeft,
+        None,
+        Some(crate::input_keys::CONTEXT)
+    ),
+    a!(
+        "input: select word right",
+        InputSelectWordRight,
+        None,
+        Some(crate::input_keys::CONTEXT)
+    ),
+    a!(
+        "input: select to line start",
+        InputSelectLineStart,
+        None,
+        Some(crate::input_keys::CONTEXT)
+    ),
+    a!(
+        "input: select to line end",
+        InputSelectLineEnd,
+        None,
+        Some(crate::input_keys::CONTEXT)
+    ),
+    a!(
+        "input: select up",
+        InputSelectUp,
+        None,
+        Some(crate::input_keys::CONTEXT)
+    ),
+    a!(
+        "input: select down",
+        InputSelectDown,
+        None,
+        Some(crate::input_keys::CONTEXT)
+    ),
+    a!(
+        "input: select to start",
+        InputSelectDocStart,
+        None,
+        Some(crate::input_keys::CONTEXT)
+    ),
+    a!(
+        "input: select to end",
+        InputSelectDocEnd,
+        None,
+        Some(crate::input_keys::CONTEXT)
+    ),
+    a!(
+        "input: select all",
+        InputSelectAll,
+        None,
+        Some(crate::input_keys::CONTEXT)
+    ),
+    a!(
+        "input: copy",
+        InputCopy,
+        None,
+        Some(crate::input_keys::CONTEXT)
+    ),
+    a!(
+        "input: cut",
+        InputCut,
+        None,
+        Some(crate::input_keys::CONTEXT)
+    ),
+    a!(
+        "input: paste",
+        InputPaste,
+        None,
+        Some(crate::input_keys::CONTEXT)
+    ),
+    a!(
+        "input: undo",
+        InputUndo,
+        None,
+        Some(crate::input_keys::CONTEXT)
+    ),
+    a!(
+        "input: redo",
+        InputRedo,
+        None,
+        Some(crate::input_keys::CONTEXT)
+    ),
+    a!(
+        "input: delete backward",
+        InputBackspace,
+        None,
+        Some(crate::input_keys::CONTEXT)
+    ),
+    a!(
+        "input: delete forward",
+        InputDelete,
+        None,
+        Some(crate::input_keys::CONTEXT)
+    ),
+    a!(
+        "input: delete word backward",
+        InputDeleteWordBack,
+        None,
+        Some(crate::input_keys::CONTEXT)
+    ),
+    a!(
+        "input: delete word forward",
+        InputDeleteWordForward,
+        None,
+        Some(crate::input_keys::CONTEXT)
+    ),
+    a!(
+        "input: delete to line start",
+        InputDeleteToLineStart,
+        None,
+        Some(crate::input_keys::CONTEXT)
+    ),
+    a!(
+        "input: context menu",
+        InputContextMenu,
+        None,
+        Some(crate::input_keys::CONTEXT)
+    ),
 ];
 
 /// Old action names (Rust names and palette labels) that a user `keymap.toml` may still use;
 /// they map to the current action without a diagnostic. Kept for v1.0.
 const ALIASES: &[(&str, &str)] = &[
+    ("OpenEnvironment", "EditActiveEnvironment"),
+    ("environment: open editor", "EditActiveEnvironment"),
     ("panel: project", "ShowWorkspacePanel"), // legacy-project alias
     ("ShowProjectPanel", "ShowWorkspacePanel"), // legacy-project alias
     ("OpenFolder", "OpenWorkspace"),
@@ -355,6 +552,13 @@ const APP_ACTIONS: &[&str] = &[
 ];
 
 const WORKSPACE_ACTIONS: &[&str] = &[
+    "SwitchEnvironment",
+    "NewEnvironment",
+    "EditActiveEnvironment",
+    "ManageEnvironments",
+    "RenameEnvironment",
+    "DuplicateEnvironment",
+    "DeleteEnvironment",
     "CloseWorkspace",
     "NewCollection",
     "NewRequest",
@@ -388,7 +592,7 @@ const WORKSPACE_ACTIONS: &[&str] = &[
 
 pub fn scope_of(name: &str) -> Scope {
     let short = name.rsplit("::").next().unwrap_or(name);
-    if APP_ACTIONS.contains(&short) {
+    if APP_ACTIONS.contains(&short) || input_action_names().any(|n| n == short) {
         Scope::App
     } else if WORKSPACE_ACTIONS.contains(&short) {
         Scope::Workspace
@@ -536,8 +740,7 @@ pub fn resolve_keymap(
         .filter_map(|(_, i)| i.map(|i| i.name))
         .collect();
     let mut out: Vec<(KeyBindingSpec, &'static ActionInfo)> = Vec::new();
-    for a in ACTIONS {
-        let Some(keys) = a.binding else { continue };
+    for (a, keys) in default_bindings() {
         if rebound.contains(&a.name) {
             continue;
         }
@@ -623,13 +826,25 @@ pub fn apply_keymap(cx: &mut App, user: &fluxwire_format::Keymap) {
 }
 
 pub fn key_bindings() -> Vec<KeyBinding> {
-    ACTIONS
-        .iter()
-        .filter_map(|a| {
-            let keys = a.binding?;
-            Some((a.bind)(keys, a.context))
-        })
+    default_bindings()
+        .map(|(a, keys)| (a.bind)(keys, a.context))
         .collect()
+}
+
+/// Every default (action, keystroke) pair: the table's single bindings plus the platform text
+/// input keymap, which binds several keystrokes per action.
+fn default_bindings() -> impl Iterator<Item = (&'static ActionInfo, &'static str)> {
+    default_bindings_for(cfg!(target_os = "macos"))
+}
+
+fn default_bindings_for(macos: bool) -> impl Iterator<Item = (&'static ActionInfo, &'static str)> {
+    let table = ACTIONS
+        .iter()
+        .filter_map(|a| a.binding.map(|keys| (a, keys)));
+    let input = input_keymap(macos)
+        .into_iter()
+        .filter_map(|(keys, name)| Some((find_action(name)?, keys)));
+    table.chain(input)
 }
 
 /// Registers the default bindings with GPUI (the user keymap is applied by the workspace).
@@ -696,6 +911,7 @@ mod tests {
             assert_eq!(find_action(old).unwrap().label, label, "{old}");
         }
         assert_eq!(scope_of("fluxwire::OpenWorkspace"), Scope::App);
+        assert_eq!(scope_of("fluxwire::InputCopy"), Scope::App);
         assert_eq!(scope_of("fluxwire::CloseWorkspace"), Scope::Workspace);
         assert_eq!(scope_of("fluxwire::Send"), Scope::Collection);
     }

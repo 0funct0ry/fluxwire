@@ -47,9 +47,8 @@ pub struct OpenWorkspace {
     /// Surface that receives editor key presses.
     pub target: Target,
     pub watcher: Option<fluxwire_format::WatchHandle>,
-    /// Selection in the URL bar (char indices, anchor then head) and whether a drag is active.
-    pub url_sel: Option<(usize, usize)>,
-    pub url_drag: bool,
+    /// URL bar input of each request, by key; created when its tab is first drawn.
+    pub url_inputs: std::cell::RefCell<HashMap<String, gpui::Entity<crate::text_input::TextInput>>>,
     pub method_menu: bool,
     /// WebSocket composers by tab id.
     pub composers: HashMap<u64, crate::session::Composer>,
@@ -88,8 +87,7 @@ impl Default for OpenWorkspace {
             cell: None,
             target: Target::Body,
             watcher: None,
-            url_sel: None,
-            url_drag: false,
+            url_inputs: Default::default(),
             method_menu: false,
             composers: HashMap::new(),
             composer_active: false,

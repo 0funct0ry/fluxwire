@@ -8,7 +8,7 @@ use fluxwire_protocol::ProtocolRegistry;
 use fluxwire_vars::{Inherited, Layer, Source, Var, VarScope, parse_dotenv};
 
 use crate::collection::load_config;
-use crate::environments::{env_path, local_env_path};
+use crate::environments::{Environment, env_path, is_valid_var_name, local_env_path};
 use crate::parse::parse_with;
 
 pub struct ScopeInputs<'a> {
@@ -18,6 +18,10 @@ pub struct ScopeInputs<'a> {
     /// The request as currently edited; its front matter `vars` etc. win over disk.
     pub doc: &'a FluxDoc,
     pub env: Option<&'a str>,
+    /// Directory holding `environments/` (the Workspace root). `None`: the collection root.
+    pub env_root: Option<&'a Path>,
+    /// The environment as currently edited (unsaved); its rows replace the files' values.
+    pub env_overlay: Option<&'a Environment>,
     /// Runtime variables (highest precedence): name → (value, secret).
     pub runtime: &'a BTreeMap<String, (String, bool)>,
     /// `[globals]` from settings.toml.
@@ -137,6 +141,7 @@ pub fn build_scope(i: &ScopeInputs) -> VarScope {
     let secret_names = load_config(i.collection_root)
         .map(|c| c.secrets.names)
         .unwrap_or_default();
+    let env_dir = i.env_root.unwrap_or(i.collection_root);
     let mut scope = VarScope::default();
     scope.base_dir = i.file.parent().map(Path::to_path_buf);
     scope.inherited = Inherited::default();
@@ -169,14 +174,36 @@ pub fn build_scope(i: &ScopeInputs) -> VarScope {
         );
     }
 
-    if let Some(env) = i.env {
+    if let (Some(env), Some(ov)) = (
+        i.env,
+        i.env_overlay.filter(|o| Some(o.name.as_str()) == i.env),
+    ) {
+        for local in [false, true] {
+            for r in ov.rows.iter().filter(|r| r.local == local) {
+                let name = r.name.trim();
+                if !is_valid_var_name(name) {
+                    continue;
+                }
+                let file = if local {
+                    format!("{env}.local.env")
+                } else {
+                    format!("{env}.env")
+                };
+                scope.set(
+                    if local { Layer::LocalEnv } else { Layer::Env },
+                    name.to_string(),
+                    Var {
+                        secret: local || r.secret || secret_names.iter().any(|n| n == name),
+                        value: r.value.clone(),
+                        source: Source::new(file, (r.line > 0).then_some(r.line)),
+                    },
+                );
+            }
+        }
+    } else if let Some(env) = i.env {
         for (path, layer, label_local) in [
-            (env_path(i.collection_root, env), Layer::Env, false),
-            (
-                local_env_path(i.collection_root, env),
-                Layer::LocalEnv,
-                true,
-            ),
+            (env_path(env_dir, env), Layer::Env, false),
+            (local_env_path(env_dir, env), Layer::LocalEnv, true),
         ] {
             let Ok(text) = std::fs::read_to_string(&path) else {
                 continue;
@@ -281,6 +308,8 @@ mod tests {
             file: &file,
             doc: &doc,
             env,
+            env_root: None,
+            env_overlay: None,
             runtime: &BTreeMap::new(),
             globals: &[("g".into(), "glob".into())],
             allow_process_env: false,
@@ -368,5 +397,33 @@ mod tests {
             s.inherited.settings,
             vec![("timeout_ms".into(), "1".into())]
         );
+    }
+
+    #[test]
+    fn environment_files_come_from_env_root_when_given() {
+        let d = tree("envroot");
+        let ws = d.join("ws");
+        std::fs::create_dir_all(ws.join("environments")).unwrap();
+        std::fs::write(ws.join("environments/shared.env"), "a=from-workspace\n").unwrap();
+        let file = d.join("req.flux.md");
+        let doc = parse_with("", FileKind::Request, &ProtocolRegistry::builtin());
+        let mk = |env_root: Option<&Path>| {
+            build_scope(&ScopeInputs {
+                collection_root: &d,
+                file: &file,
+                doc: &doc,
+                env: Some("shared"),
+                env_root,
+                env_overlay: None,
+                runtime: &BTreeMap::new(),
+                globals: &[],
+                allow_process_env: false,
+            })
+        };
+        assert_eq!(
+            mk(Some(&ws)).var("a").map(|v| v.value.clone()).as_deref(),
+            Some("from-workspace")
+        );
+        assert!(mk(None).var("a").is_none());
     }
 }

@@ -25,7 +25,7 @@ use crate::{
     history::blocking,
     tabs::Tab,
     theme::Theme,
-    ui::{TextEdit, row},
+    ui::row,
     workspace::{Panel, WorkspaceView},
 };
 
@@ -59,7 +59,8 @@ pub struct RunTab {
     pub iterations: u32,
     pub bail: bool,
     pub data_file: Option<PathBuf>,
-    pub filter: TextEdit,
+    pub filter: String,
+    pub filter_input: gpui::Entity<crate::text_input::TextInput>,
     pub focus: gpui::FocusHandle,
     /// Run only these keys (set by "Re-run failed", cleared by Run).
     pub only: Option<Vec<String>>,
@@ -78,7 +79,17 @@ pub struct RunTab {
 }
 
 impl RunTab {
-    fn new(folder: String, cx: &mut Context<WorkspaceView>) -> Self {
+    fn new(id: u64, folder: String, cx: &mut Context<WorkspaceView>) -> Self {
+        let filter_input = crate::text_input::bound_input(
+            "tag:smoke, name:*refund*",
+            cx,
+            move |this: &mut WorkspaceView, text, cx| {
+                if let Some(r) = this.scope.runs.get_mut(&id) {
+                    r.filter = text;
+                }
+                cx.notify();
+            },
+        );
         Self {
             folder,
             sequential: false,
@@ -86,7 +97,8 @@ impl RunTab {
             iterations: 1,
             bail: false,
             data_file: None,
-            filter: TextEdit::default(),
+            filter: String::new(),
+            filter_input,
             focus: cx.focus_handle(),
             only: None,
             seq: 0,
@@ -243,7 +255,9 @@ impl WorkspaceView {
                 .get(tab_id)
                 .and_then(|t| t.key.strip_prefix("run/").map(String::from))
                 .unwrap_or_default();
-            self.scope.runs.insert(tab_id, RunTab::new(folder, cx));
+            self.scope
+                .runs
+                .insert(tab_id, RunTab::new(tab_id, folder, cx));
         }
         self.scope.runs.get_mut(&tab_id).expect("just inserted")
     }
@@ -307,7 +321,9 @@ impl WorkspaceView {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
         let runtime = self.scope.envs.runtime.clone();
-        let env = self.scope.envs.active.clone();
+        let env = self.active_env_name();
+        let env_overlay = self.dirty_env_overlay();
+        let env_root = self.env_root();
         let allow_process_env = self.scope.envs.settings.allow_process_env;
         let dirty = self.scope.workspace.as_ref().map_or(0, |p| {
             let prefix = format!("{folder}/");
@@ -344,7 +360,7 @@ impl WorkspaceView {
             }),
             iterations: r.iterations.max(1),
             data,
-            filter: Some(r.filter.text().to_string()).filter(|s| !s.trim().is_empty()),
+            filter: Some(r.filter.clone()).filter(|s| !s.trim().is_empty()),
             only: r.only.take(),
             bail: r.bail,
             delay_ms: 0,
@@ -360,6 +376,8 @@ impl WorkspaceView {
                 file: None,
                 globals,
                 allow_process_env,
+                env_overlay,
+                env_root,
             },
             runtime,
         };
@@ -555,7 +573,7 @@ impl WorkspaceView {
                 .unwrap_or_else(|| res.label.clone()),
             status: x.map(|x| i64::from(x.status)),
             total_ms: res.outcome.as_ref().map_or(0.0, |o| o.total_ms),
-            env: self.scope.envs.active.clone(),
+            env: self.active_env_name(),
             dirty: false,
             run_id: Some(run_id.to_string()),
             summary: rec.summary.clone(),
@@ -630,7 +648,7 @@ impl WorkspaceView {
             r.folder.clone()
         };
         parts.push(shell_quote(&path));
-        if let Some(e) = &self.scope.envs.active {
+        if let Some(e) = &self.active_env_name() {
             parts.push("--env".into());
             parts.push(shell_quote(e));
         }
@@ -651,9 +669,9 @@ impl WorkspaceView {
         } else if r.iterations > 1 {
             parts.push(format!("--iterations {}", r.iterations));
         }
-        if !r.filter.text().trim().is_empty() {
+        if !r.filter.trim().is_empty() {
             parts.push("--filter".into());
-            parts.push(shell_quote(r.filter.text().trim()));
+            parts.push(shell_quote(r.filter.trim()));
         }
         if r.bail {
             parts.push("--bail".into());
@@ -712,10 +730,12 @@ impl WorkspaceView {
         let r = self.run_entry(tab_id, cx);
         if ev.keystroke.key == "escape" {
             r.filter.clear();
+            let input = r.filter_input.clone();
+            input.update(cx, |i, cx| i.set_text("", cx));
         } else if ev.keystroke.key == "enter" {
             self.start_run(tab_id, cx);
             return;
-        } else if !r.filter.handle_key(ev) {
+        } else {
             return;
         }
         cx.notify();
@@ -824,10 +844,6 @@ impl WorkspaceView {
             .id("run-filter")
             .track_focus(&r.focus)
             .on_key_down(cx.listener(move |this, ev, _, cx| this.on_run_filter_key(id, ev, cx)))
-            .on_click({
-                let fh = r.focus.clone();
-                move |_, w, _| w.focus(&fh)
-            })
             .h(px(22.))
             .w(px(180.))
             .px_2()
@@ -841,12 +857,7 @@ impl WorkspaceView {
             .font_family(BUFFER_FONT)
             .text_size(px(12.))
             .overflow_hidden()
-            .child(crate::ui::field_text(
-                &r.filter,
-                "tag:smoke, name:*refund*",
-                t,
-                self.is_focused(&r.focus),
-            ));
+            .child(r.filter_input.clone());
 
         let data_label = r
             .data_file

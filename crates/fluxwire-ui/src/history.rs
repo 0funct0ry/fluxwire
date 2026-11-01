@@ -27,7 +27,7 @@ use crate::{
     editor::{Lang, code_view},
     tabs::{Tab, TabKind},
     theme::Theme,
-    ui::{TextEdit, row},
+    ui::row,
     workspace::WorkspaceView,
 };
 
@@ -72,7 +72,8 @@ pub struct HistoryState {
     pub all_loaded: bool,
     pub method: Option<&'static str>,
     pub class: Option<u8>,
-    pub text: TextEdit,
+    pub text: String,
+    pub input: Option<gpui::Entity<crate::text_input::TextInput>>,
     /// Show only the sends of this folder run.
     pub run: Option<String>,
     pub cache: HashMap<i64, Arc<Entry>>,
@@ -112,7 +113,8 @@ impl HistoryState {
             all_loaded: true,
             method: None,
             class: None,
-            text: TextEdit::default(),
+            text: String::new(),
+            input: None,
             run: None,
             cache: HashMap::new(),
             diffs: HashMap::new(),
@@ -128,7 +130,7 @@ impl HistoryState {
         Filter {
             method: self.method.map(String::from),
             status_class: self.class,
-            text: Some(self.text.text().to_string()).filter(|s| !s.is_empty()),
+            text: Some(self.text.clone()).filter(|s| !s.is_empty()),
             run_id: self.run.clone(),
             limit: Some(PAGE),
             ..Default::default()
@@ -411,7 +413,7 @@ impl WorkspaceView {
                 || res.phases.iter().map(|p| p.duration_ms).sum(),
                 |o| o.total_ms,
             ),
-            env: self.scope.envs.active.clone(),
+            env: self.active_env_name(),
             dirty: doc.dirty(),
             run_id: None,
             summary: rec.summary.clone(),
@@ -671,8 +673,9 @@ impl WorkspaceView {
         let ks = &ev.keystroke;
         if ks.key == "escape" {
             self.history.text.clear();
-            self.history_reload(cx);
-        } else if self.history.text.handle_key(ev) {
+            if let Some(i) = &self.history.input {
+                i.update(cx, |i, cx| i.set_text("", cx));
+            }
             self.history_reload(cx);
         }
     }
@@ -739,10 +742,6 @@ impl WorkspaceView {
             .id("history-search")
             .track_focus(&self.history_focus)
             .on_key_down(cx.listener(|this, ev, _, cx| this.on_history_key(ev, cx)))
-            .on_click({
-                let f = self.history_focus.clone();
-                move |_, w, _| w.focus(&f)
-            })
             .h(px(22.))
             .px_2()
             .rounded(px(4.))
@@ -755,12 +754,7 @@ impl WorkspaceView {
             .font_family(BUFFER_FONT)
             .text_size(px(12.))
             .overflow_hidden()
-            .child(crate::ui::field_text(
-                &self.history.text,
-                "Filter by name or URL",
-                t,
-                self.is_focused(&self.history_focus),
-            ));
+            .children(self.history.input.clone());
         let rows = self.history.rows.clone();
         let list = if self.history.ws_key.is_none() {
             div()

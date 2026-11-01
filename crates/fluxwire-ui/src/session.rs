@@ -265,6 +265,10 @@ impl WorkspaceView {
         let mut text = std::mem::take(&mut c.text);
         let out = c.state.handle_key(&mut text, ev, clip.as_deref());
         c.text = text;
+        let copied = c.state.take_clipboard();
+        if let Some(t) = copied {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(t));
+        }
         if !matches!(out, KeyOutcome::Ignored) {
             cx.notify();
         }
@@ -307,40 +311,26 @@ impl WorkspaceView {
         }
     }
 
-    /// Key presses in the log's text filter.
+    /// Key presses in the log's text filter (typing is handled by the input itself).
     pub fn on_log_filter_key(
         &mut self,
         which: LogRef,
         ev: &gpui::KeyDownEvent,
         cx: &mut Context<Self>,
     ) {
-        let ks = &ev.keystroke;
-        let clip = if ks.modifiers.secondary() && ks.key == "v" {
-            cx.read_from_clipboard().and_then(|c| c.text())
-        } else {
-            None
-        };
+        if ev.keystroke.key != "escape" {
+            return;
+        }
         let Some(log) = self.log_mut(which) else {
             return;
         };
-        let changed = match ks.key.as_str() {
-            "escape" => {
-                log.filter.clear();
-                true
-            }
-            "enter" => false,
-            _ => match clip {
-                Some(t) => {
-                    log.filter.insert(&t);
-                    true
-                }
-                None => log.filter.handle_key(ev),
-            },
-        };
-        if changed {
-            log.refilter();
-            cx.notify();
+        log.filter.clear();
+        log.refilter();
+        let input = log.filter_input.borrow().clone();
+        if let Some(i) = input {
+            i.update(cx, |i, cx| i.set_text("", cx));
         }
+        cx.notify();
     }
 
     // ---- rendering ----------------------------------------------------------------------------
@@ -435,15 +425,17 @@ impl WorkspaceView {
         };
 
         let composer = self.scope.composers.get(&tab_id);
-        let (text, cursor, lang) = composer.map_or((String::new(), 0, "json"), |c| {
-            (c.text.clone(), c.state.cursor, c.lang)
-        });
+        let (text, cursor, selection, lang) = composer
+            .map_or((String::new(), 0, (0, 0), "json"), |c| {
+                (c.text.clone(), c.state.cursor, c.state.selection(), c.lang)
+            });
         let spans = highlight(&text, lang_of(lang));
         let focused = self.scope.composer_active;
         let editor = editor_content(
             &text,
             &spans,
             focused.then_some(cursor),
+            selection,
             Some(self.composer_bounds.clone()),
             t,
         );
@@ -520,12 +512,29 @@ impl WorkspaceView {
                             if let Some(id) = this.scope.tabs.active_id() {
                                 let bounds = this.composer_bounds.get();
                                 let c = this.scope.composers.entry(id).or_default();
-                                c.state.cursor =
+                                let off =
                                     EditorState::offset_for_click(&c.text, bounds, ev.position);
+                                c.state.mouse_down(
+                                    &c.text,
+                                    off,
+                                    ev.click_count,
+                                    ev.modifiers.shift,
+                                );
                             }
                             cx.notify();
                         }),
                     )
+                    .on_mouse_move(cx.listener(|this, ev: &gpui::MouseMoveEvent, _, cx| {
+                        if ev.pressed_button == Some(MouseButton::Left)
+                            && let Some(id) = this.scope.tabs.active_id()
+                        {
+                            let bounds = this.composer_bounds.get();
+                            let c = this.scope.composers.entry(id).or_default();
+                            let off = EditorState::offset_for_click(&c.text, bounds, ev.position);
+                            c.state.drag_to(&c.text, off);
+                            cx.notify();
+                        }
+                    }))
                     .child(editor),
             )
             .into_any_element()
@@ -543,6 +552,18 @@ impl WorkspaceView {
             return div().into_any_element();
         };
         let (sent, received) = log.counts();
+        let filter_field = crate::text_input::lazy_input(
+            &log.filter_input,
+            "Filter text",
+            cx,
+            move |this: &mut WorkspaceView, text, cx| {
+                if let Some(l) = this.log_mut(which) {
+                    l.filter = text;
+                    l.refilter();
+                }
+                cx.notify();
+            },
+        );
         let dir_chip = |id: &'static str, text: String, f: DirFilter| {
             div()
                 .id(id)
@@ -574,12 +595,7 @@ impl WorkspaceView {
                     LogRef::History(i) => i as usize,
                 },
             ))
-            .track_focus(&self.log_focus)
             .on_key_down(cx.listener(move |this, ev, _, cx| this.on_log_filter_key(which, ev, cx)))
-            .on_click({
-                let f = self.log_focus.clone();
-                move |_, w, _| w.focus(&f)
-            })
             .w(px(170.))
             .h(px(22.))
             .px_2()
@@ -593,12 +609,7 @@ impl WorkspaceView {
             .font_family(BUFFER_FONT)
             .text_size(px(12.))
             .overflow_hidden()
-            .child(crate::ui::field_text(
-                &log.filter,
-                "Filter text",
-                t,
-                self.is_focused(&self.log_focus),
-            ));
+            .child(filter_field);
         let toolbar = row()
             .flex_none()
             .h(px(30.))

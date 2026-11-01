@@ -977,33 +977,148 @@ fn switching_environment_changes_the_resolved_url_and_the_request_sent(cx: &mut 
 }
 
 #[gpui::test]
-fn environment_picker_lists_real_environments_and_switches(cx: &mut TestAppContext) {
+fn environment_switcher_lists_rows_in_order_and_activates(cx: &mut TestAppContext) {
     let (view, cx, _root) = setup_with(cx, "payments-api", "env-picker");
     cx.simulate_keystrokes("secondary-e");
     assert_eq!(
         picker_labels(&view, cx),
-        ["local", "staging", "No environment"]
+        [
+            "New environment…",
+            "✓ devel",
+            "local",
+            "staging",
+            "test",
+            "No environment",
+            "Manage environments…"
+        ]
     );
+    let title = view.read_with(cx, |w, _| w.env_modal_title());
+    assert_eq!(title.as_deref(), Some("Switch environment"));
     cx.simulate_input("stag");
     cx.simulate_keystrokes("enter");
-    view.read_with(cx, |w, _| {
-        assert_eq!(w.scope.envs.active.as_deref(), Some("staging"))
-    });
+    assert_eq!(
+        view.read_with(cx, |w, _| w.active_env_name()).as_deref(),
+        Some("staging")
+    );
     assert_eq!(view.read_with(cx, |w, _| w.env_label()), "staging");
 }
 
 #[gpui::test]
-fn environment_files_can_be_created_renamed_duplicated_and_deleted(cx: &mut TestAppContext) {
-    let (view, cx, root) = setup_with(cx, "payments-api", "env-ops");
-    view.update_in(cx, |w, window, cx| w.start_new_env(window, cx));
+fn typing_a_new_name_offers_create_and_enter_creates_activates_and_opens_the_editor(
+    cx: &mut TestAppContext,
+) {
+    let (view, cx, root) = setup_with(cx, "payments-api", "env-create");
+    cx.simulate_keystrokes("secondary-e");
     cx.simulate_input("qa");
+    assert_eq!(picker_labels(&view, cx)[0], "Create environment “qa”");
     cx.simulate_keystrokes("enter");
     assert!(root.join("environments/qa.env").exists());
     assert_eq!(
-        view.read_with(cx, |w, _| w.scope.envs.active.clone())
-            .as_deref(),
+        view.read_with(cx, |w, _| w.active_env_name()).as_deref(),
         Some("qa")
     );
+    let k = env_key(&view, cx, "qa");
+    assert!(view.read_with(cx, |w, _| w.env_doc(&k).is_some()));
+    assert!(
+        !view.read_with(cx, |w, _| w.env_doc_dirty(&k)),
+        "a fresh environment is clean"
+    );
+    // An invalid name offers no Create row.
+    cx.simulate_keystrokes("secondary-e");
+    cx.simulate_input("a/b");
+    assert!(
+        !picker_labels(&view, cx)
+            .iter()
+            .any(|l| l.starts_with("Create"))
+    );
+}
+
+#[gpui::test]
+fn secondary_enter_opens_the_editor_without_activating_and_manage_opens_the_panel(
+    cx: &mut TestAppContext,
+) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "env-open");
+    cx.simulate_keystrokes("secondary-e");
+    cx.simulate_input("stag");
+    cx.simulate_keystrokes("secondary-enter");
+    assert_eq!(
+        view.read_with(cx, |w, _| w.active_env_name()).as_deref(),
+        Some("devel")
+    );
+    let tab = view.read_with(cx, |w, _| w.scope.tabs.active().map(|t| t.key.clone()));
+    assert_eq!(tab.as_deref(), Some("env/staging"));
+    cx.simulate_keystrokes("secondary-e");
+    cx.simulate_input("Manage");
+    view.update(cx, |w, _| {
+        let m = w.modal.as_mut().unwrap();
+        m.selected = m
+            .results
+            .iter()
+            .position(|i| i.label.starts_with("Manage"))
+            .unwrap();
+    });
+    cx.simulate_keystrokes("enter");
+    view.read_with(cx, |w, _| {
+        assert!(w.scope.left_open);
+        assert_eq!(w.scope.panel, crate::workspace::Panel::Environments);
+    });
+}
+
+fn new_env_dialog(view: &Entity<WorkspaceView>, cx: &mut VisualTestContext, name: &str) {
+    view.update_in(cx, |w, window, cx| w.start_new_env(window, cx));
+    view.update(cx, |w, cx| {
+        let Some(crate::dialogs::Dialog::NewEnvironment(f)) = &w.dialog else {
+            panic!("dialog")
+        };
+        f.name.update(cx, |i, cx| i.replace_text(name, cx));
+    });
+}
+
+#[gpui::test]
+fn new_environment_dialog_validates_duplicates_and_activates(cx: &mut TestAppContext) {
+    let (view, cx, root) = setup_with(cx, "payments-api", "env-dialog");
+    for bad in ["", "a/b", ".x", "foo.local", "NUL", "staging"] {
+        new_env_dialog(&view, cx, bad);
+        cx.simulate_keystrokes("enter");
+        assert!(
+            view.read_with(cx, |w, _| w.dialog.is_some()),
+            "{bad:?} must not submit"
+        );
+        view.update_in(cx, |w, window, cx| w.close_dialog(window, cx));
+    }
+    assert!(!root.join("environments/a/b.env").exists());
+    // Start from a duplicate; do not activate.
+    new_env_dialog(&view, cx, "staging2");
+    view.update(cx, |w, _| {
+        let Some(crate::dialogs::Dialog::NewEnvironment(f)) = &mut w.dialog else {
+            panic!()
+        };
+        f.start_from = Some("staging".into());
+        f.activate = false;
+    });
+    cx.simulate_keystrokes("enter");
+    assert_eq!(
+        std::fs::read_to_string(root.join("environments/staging2.env")).unwrap(),
+        std::fs::read_to_string(root.join("environments/staging.env")).unwrap()
+    );
+    assert_eq!(
+        view.read_with(cx, |w, _| w.active_env_name()).as_deref(),
+        Some("devel")
+    );
+    assert!(view.read_with(cx, |w, _| {
+        w.scope
+            .tabs
+            .active()
+            .is_some_and(|t| t.key == "env/staging2")
+    }));
+}
+
+#[gpui::test]
+fn environment_files_can_be_renamed_duplicated_and_deleted(cx: &mut TestAppContext) {
+    let (view, cx, root) = setup_with(cx, "payments-api", "env-ops");
+    new_env_dialog(&view, cx, "qa");
+    cx.simulate_keystrokes("enter");
+    assert!(root.join("environments/qa.env").exists());
     view.update_in(cx, |w, window, cx| w.start_rename_env("qa", window, cx));
     cx.simulate_keystrokes("backspace backspace");
     cx.simulate_input("uat");
@@ -1011,16 +1126,35 @@ fn environment_files_can_be_created_renamed_duplicated_and_deleted(cx: &mut Test
     assert!(
         root.join("environments/uat.env").exists() && !root.join("environments/qa.env").exists()
     );
+    assert_eq!(
+        view.read_with(cx, |w, _| w.active_env_name()).as_deref(),
+        Some("uat")
+    );
     view.update(cx, |w, cx| w.duplicate_env("uat", cx));
     assert!(root.join("environments/uat-copy.env").exists());
-    // Invalid names are refused with a message.
-    view.update_in(cx, |w, window, cx| w.start_new_env(window, cx));
-    cx.simulate_input("a.b");
+    // Renaming to an invalid name is refused with a message.
+    view.update_in(cx, |w, window, cx| w.start_rename_env("uat", window, cx));
+    cx.simulate_input("/");
     cx.simulate_keystrokes("enter");
-    assert!(!root.join("environments/a.b.env").exists());
-    view.read_with(cx, |w, _| {
-        assert!(w.notice.as_deref().unwrap_or("").contains("one word"))
+    assert!(root.join("environments/uat.env").exists());
+    assert!(
+        view.read_with(cx, |w, _| w.notice.clone())
+            .unwrap_or_default()
+            .contains("cannot contain")
+    );
+    // Delete asks first and names the files.
+    let rt = root.clone();
+    view.update_in(cx, |w, window, cx| {
+        w.confirm_delete_env(&rt, "uat-copy", window, cx)
     });
+    view.read_with(cx, |w, _| {
+        let Some(crate::dialogs::Dialog::Confirm(c)) = &w.dialog else {
+            panic!()
+        };
+        assert!(c.lines[0].contains("uat-copy.env"), "{:?}", c.lines);
+    });
+    view.update_in(cx, |w, window, cx| w.close_dialog(window, cx));
+    assert!(root.join("environments/uat-copy.env").exists());
 }
 
 #[gpui::test]
@@ -1088,8 +1222,50 @@ fn secrets_are_masked_revealed_for_a_while_and_never_leak(cx: &mut TestAppContex
     });
 }
 
+fn env_key(
+    view: &Entity<WorkspaceView>,
+    cx: &mut VisualTestContext,
+    name: &str,
+) -> crate::env_editor::DocKey {
+    view.read_with(cx, |w, _| (w.env_root().unwrap(), name.to_string()))
+}
+
+fn env_doc_rows(
+    view: &Entity<WorkspaceView>,
+    cx: &mut VisualTestContext,
+    k: &crate::env_editor::DocKey,
+) -> Vec<(String, String)> {
+    view.read_with(cx, |w, _| {
+        w.env_doc(k)
+            .unwrap()
+            .env
+            .rows
+            .iter()
+            .map(|r| (r.name.clone(), r.value.clone()))
+            .collect()
+    })
+}
+
+fn set_cell_text(
+    view: &Entity<WorkspaceView>,
+    cx: &mut VisualTestContext,
+    k: &crate::env_editor::DocKey,
+    row: usize,
+    value: bool,
+    text: &str,
+) {
+    let id = view.read_with(cx, |w, _| w.env_doc(k).unwrap().ids[row]);
+    let cell = if value {
+        crate::env_doc::Cell::Value
+    } else {
+        crate::env_doc::Cell::Name
+    };
+    let input = view.update(cx, |w, cx| w.env_cell(k, id, cell, cx));
+    input.update(cx, |i, cx| i.replace_text(text, cx));
+}
+
 #[gpui::test]
-fn environment_tab_edits_write_the_right_files(cx: &mut TestAppContext) {
+fn environment_edits_stay_in_memory_until_saved(cx: &mut TestAppContext) {
     let (view, cx, root) = setup_with(cx, "payments-api", "env-tab");
     write_env(
         &view,
@@ -1100,39 +1276,112 @@ fn environment_tab_edits_write_the_right_files(cx: &mut TestAppContext) {
     );
     view.update(cx, |w, _| w.open_env_tab("local"));
     cx.run_until_parked();
-    view.update_in(cx, |w, window, cx| {
-        w.start_env_edit("local", 0, crate::envs::EnvCol::Value, window, cx)
-    });
-    cx.run_until_parked();
-    cx.simulate_input("x");
+    let k = env_key(&view, cx, "local");
+    let path = root.join("environments/local.env");
+    set_cell_text(&view, cx, &k, 0, true, "http://ax");
+    assert!(view.read_with(cx, |w, _| w.env_doc_dirty(&k)));
+    let tab_dirty = view.read_with(cx, |w, _| w.scope.tabs.active().unwrap().dirty);
+    assert!(tab_dirty, "the tab shows the dirty dot");
     assert_eq!(
-        std::fs::read_to_string(root.join("environments/local.env")).unwrap(),
-        "# keep me\nbaseUrl=http://ax\n",
-        "comments survive, only the value changes"
+        std::fs::read_to_string(&path).unwrap(),
+        "# keep me\nbaseUrl=http://a\n"
     );
-    // A new row goes to the file as soon as it has a name; marking it secret moves it.
-    view.update_in(cx, |w, window, cx| {
-        w.start_env_edit("local", 1, crate::envs::EnvCol::Name, window, cx)
-    });
-    cx.run_until_parked();
-    cx.simulate_input("pw");
-    view.update_in(cx, |w, window, cx| {
-        w.start_env_edit("local", 1, crate::envs::EnvCol::Value, window, cx)
-    });
-    cx.run_until_parked();
-    cx.simulate_input("s3");
-    let on_disk = std::fs::read_to_string(root.join("environments/local.env")).unwrap();
-    assert!(on_disk.contains("pw=s3"), "{on_disk:?}");
-    view.update(cx, |w, cx| w.toggle_env_secret("local", 1, cx));
-    assert!(
-        !std::fs::read_to_string(root.join("environments/local.env"))
-            .unwrap()
-            .contains("pw=")
+    // Add a secret row, then save: comments survive, the secret goes to the local file.
+    view.update_in(cx, |w, window, cx| w.env_add_row(&k, window, cx));
+    set_cell_text(&view, cx, &k, 1, false, "pw");
+    set_cell_text(&view, cx, &k, 1, true, "s3");
+    let id = view.read_with(cx, |w, _| w.env_doc(&k).unwrap().ids[1]);
+    view.update(cx, |w, cx| w.env_toggle_secret(&k, id, cx));
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "# keep me\nbaseUrl=http://a\n"
+    );
+    cx.simulate_keystrokes("secondary-s");
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "# keep me\nbaseUrl=http://ax\n"
     );
     assert_eq!(
         std::fs::read_to_string(root.join("environments/local.local.env")).unwrap(),
         "pw=s3\n"
     );
+    assert!(!view.read_with(cx, |w, _| w.env_doc_dirty(&k)));
+    assert!(!view.read_with(cx, |w, _| w.scope.tabs.active().unwrap().dirty));
+}
+
+#[gpui::test]
+fn a_send_uses_the_unsaved_environment_value(cx: &mut TestAppContext) {
+    let (view, cx, root) = setup_with(cx, "payments-api", "env-unsaved");
+    write_env(&view, cx, &root, "local.env", "baseUrl=http://a.test\n");
+    view.update(cx, |w, cx| w.set_active_env(Some("local".into()), cx));
+    view.update(cx, |w, _| w.open_env_tab("local"));
+    let k = env_key(&view, cx, "local");
+    set_cell_text(&view, cx, &k, 0, true, "http://unsaved.test");
+    let tip = view.read_with(cx, |w, _| w.var_look(CREATE)("baseUrl"));
+    assert!(tip.tip.contains("http://unsaved.test"), "{tip:?}");
+    assert_eq!(
+        std::fs::read_to_string(root.join("environments/local.env")).unwrap(),
+        "baseUrl=http://a.test\n"
+    );
+}
+
+#[gpui::test]
+fn environment_document_undo_validation_and_close_prompt(cx: &mut TestAppContext) {
+    let (view, cx, root) = setup_with(cx, "payments-api", "env-doc");
+    write_env(&view, cx, &root, "local.env", "A=1\n");
+    view.update(cx, |w, _| w.open_env_tab("local"));
+    let k = env_key(&view, cx, "local");
+    view.update_in(cx, |w, window, cx| w.env_add_row(&k, window, cx));
+    set_cell_text(&view, cx, &k, 1, false, "1bad");
+    let problems = view.read_with(cx, |w, _| w.all_problems());
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.code == "E101" && p.key.starts_with("env/")),
+        "{problems:?}"
+    );
+    view.update(cx, |w, cx| w.env_undo(&k, false, cx));
+    view.update(cx, |w, cx| w.env_undo(&k, false, cx));
+    assert_eq!(
+        env_doc_rows(&view, cx, &k),
+        vec![("A".to_string(), "1".to_string())]
+    );
+    assert!(!view.read_with(cx, |w, _| w.env_doc_dirty(&k)));
+    // Dirty close asks first; Discard drops the edits.
+    set_cell_text(&view, cx, &k, 0, true, "9");
+    let id = view.read_with(cx, |w, _| w.scope.tabs.active_id().unwrap());
+    view.update_in(cx, |w, window, cx| w.close_env_tab(id, window, cx));
+    assert!(view.read_with(cx, |w, _| w.dialog.is_some()));
+    view.update_in(cx, |w, window, cx| {
+        w.run_confirm_action(
+            crate::dialogs::ConfirmAction::CloseEnvTab(id, false),
+            window,
+            cx,
+        )
+    });
+    assert!(view.read_with(cx, |w, _| w.env_doc(&k).is_none()));
+    assert_eq!(
+        std::fs::read_to_string(root.join("environments/local.env")).unwrap(),
+        "A=1\n"
+    );
+}
+
+#[gpui::test]
+fn external_change_reloads_a_clean_environment_and_flags_a_dirty_one(cx: &mut TestAppContext) {
+    let (view, cx, root) = setup_with(cx, "payments-api", "env-ext");
+    write_env(&view, cx, &root, "local.env", "A=1\n");
+    view.update(cx, |w, _| w.open_env_tab("local"));
+    let k = env_key(&view, cx, "local");
+    std::fs::write(root.join("environments/local.env"), "A=2\n").unwrap();
+    view.update(cx, |w, _| w.refresh_env_docs());
+    assert_eq!(env_doc_rows(&view, cx, &k)[0].1, "2");
+    set_cell_text(&view, cx, &k, 0, true, "mine");
+    std::fs::write(root.join("environments/local.env"), "A=3\n").unwrap();
+    view.update(cx, |w, _| w.refresh_env_docs());
+    assert!(view.read_with(cx, |w, _| w.env_doc(&k).unwrap().changed_on_disk));
+    assert_eq!(env_doc_rows(&view, cx, &k)[0].1, "mine");
+    view.update(cx, |w, cx| w.env_resolve_conflict(&k, true, cx));
+    assert_eq!(env_doc_rows(&view, cx, &k)[0].1, "3");
 }
 
 #[gpui::test]
@@ -1165,6 +1414,7 @@ fn typing_open_braces_offers_variables_and_tab_completes(cx: &mut TestAppContext
 #[gpui::test]
 fn unresolved_variables_are_listed_in_problems(cx: &mut TestAppContext) {
     let (view, cx, _root) = setup_with(cx, "payments-api", "problems");
+    view.update(cx, |w, cx| w.set_active_env(Some("local".into()), cx));
     set_doc_text(
         &view,
         cx,
@@ -1225,19 +1475,53 @@ fn active_environment_is_part_of_the_session(cx: &mut TestAppContext) {
     view.update(cx, |w, cx| w.set_active_env(Some("staging".into()), cx));
     let s = view.read_with(cx, |w, _| w.session());
     assert_eq!(s.active_env.as_deref(), Some("staging"));
+    assert!(!s.no_environment);
     // An environment that no longer exists falls back to the first one.
-    view.update(cx, |w, _| w.init_active_env(Some("gone".into())));
+    view.update(cx, |w, _| w.init_active_env(Some("gone"), false));
     assert_eq!(
-        view.read_with(cx, |w, _| w.scope.envs.active.clone())
-            .as_deref(),
-        Some("local")
+        view.read_with(cx, |w, _| w.active_env_name()).as_deref(),
+        Some("devel")
     );
-    view.update(cx, |w, _| w.init_active_env(Some("staging".into())));
+    view.update(cx, |w, _| w.init_active_env(Some("staging"), false));
     assert_eq!(
-        view.read_with(cx, |w, _| w.scope.envs.active.clone())
-            .as_deref(),
+        view.read_with(cx, |w, _| w.active_env_name()).as_deref(),
         Some("staging")
     );
+    // An explicit "No environment" is remembered too.
+    view.update(cx, |w, cx| w.set_active_env(None, cx));
+    let s = view.read_with(cx, |w, _| w.session());
+    assert!(s.no_environment && s.active_env.is_none());
+    view.update(cx, |w, _| w.init_active_env(None, true));
+    assert_eq!(view.read_with(cx, |w, _| w.active_env_name()), None);
+}
+
+#[gpui::test]
+fn environments_are_workspace_level_and_shared_by_every_collection(cx: &mut TestAppContext) {
+    let (view, cx) = bare(cx);
+    let root = two_collections("env-ws");
+    fluxwire_format::create_environment(&root, "prod").unwrap();
+    fluxwire_format::create_environment(&root.join("a"), "ignored").unwrap();
+    view.update_in(cx, |w, window, cx| w.open_workspace(&root, window, cx));
+    // Files live in the workspace root's environments/, not in a collection's.
+    assert_eq!(view.read_with(cx, |w, _| w.env_names()), ["prod"]);
+    assert_eq!(view.read_with(cx, |w, _| w.env_root()), Some(root.clone()));
+    assert_eq!(
+        view.read_with(cx, |w, _| w.active_env_name()).as_deref(),
+        Some("prod")
+    );
+    // The pill is just the environment name, whatever collection is current.
+    assert_eq!(view.read_with(cx, |w, _| w.env_label()), "prod");
+    // Creating one writes to the workspace root.
+    view.update_in(cx, |w, window, cx| w.start_new_env(window, cx));
+    view.update(cx, |w, cx| {
+        let Some(crate::dialogs::Dialog::NewEnvironment(f)) = &w.dialog else {
+            panic!()
+        };
+        f.name.update(cx, |i, cx| i.replace_text("qa", cx));
+    });
+    cx.simulate_keystrokes("enter");
+    assert!(root.join("environments/qa.env").exists());
+    assert!(!root.join("a/environments/qa.env").exists());
 }
 
 fn doc_for(port: u16, path: &str) -> String {
@@ -1316,7 +1600,7 @@ fn filters_restore_and_response_dropdown(cx: &mut TestAppContext) {
     wait_until(&view, cx, "POST filter", |w| w.history.entries.is_empty());
     view.update(cx, |w, cx| {
         w.history.method = None;
-        w.history.text.insert("/v1/one");
+        w.history.text = "/v1/one".to_string();
         w.history_reload(cx);
     });
     wait_until(&view, cx, "text filter", |w| w.history.entries.len() == 1);
@@ -1950,7 +2234,7 @@ fn new_workspace_creates_only_the_directory_and_lands_on_the_empty_state(cx: &mu
             panic!("dialog");
         };
         f.location = parent.clone();
-        f.name = crate::ui::TextEdit::new("demo");
+        f.name.update(cx, |i, cx| i.set_text("demo", cx));
     });
     cx.simulate_keystrokes("enter");
     cx.run_until_parked();
@@ -1974,7 +2258,7 @@ fn new_workspace_dialog_rejects_bad_names(cx: &mut TestAppContext) {
             panic!("dialog");
         };
         f.location = parent.clone();
-        f.name = crate::ui::TextEdit::new("a/b");
+        f.name.update(cx, |i, cx| i.set_text("a/b", cx));
     });
     cx.simulate_keystrokes("enter");
     view.read_with(cx, |w, _| {
@@ -1998,7 +2282,7 @@ fn new_collection_creates_files_selects_and_opens_it(cx: &mut TestAppContext) {
         let Some(crate::dialogs::Dialog::NewCollection(f)) = &mut w.dialog else {
             panic!("dialog");
         };
-        f.name = crate::ui::TextEdit::new("Payments");
+        f.name.update(cx, |i, cx| i.set_text("Payments", cx));
     });
     cx.simulate_keystrokes("enter");
     cx.run_until_parked();
@@ -2231,7 +2515,7 @@ fn url_of(view: &Entity<WorkspaceView>, cx: &mut VisualTestContext) -> String {
 #[gpui::test]
 fn url_bar_has_a_movable_caret_and_selection(cx: &mut TestAppContext) {
     let (view, cx) = setup(cx);
-    view.update_in(cx, |w, window, _| window.focus(&w.url_focus));
+    view.update_in(cx, |w, window, cx| w.focus_url(window, cx));
     let base = url_of(&view, cx);
     // typing appends at the caret (end by default)
     cx.simulate_keystrokes("x");
@@ -2261,11 +2545,17 @@ fn url_bar_has_a_movable_caret_and_selection(cx: &mut TestAppContext) {
     assert_eq!(url_of(&view, cx), expect);
     // a click places the caret (no selection) and select-all selects everything
     cx.simulate_keystrokes("secondary-a");
-    view.read_with(cx, |w, _| {
-        assert_eq!(w.scope.url_sel, Some((0, expect.chars().count())));
-    });
+    #[allow(clippy::let_and_return)]
+    let url_sel = |cx: &mut VisualTestContext| {
+        view.read_with(cx, |w, cx| {
+            let key = w.active_key().unwrap();
+            let sel = w.scope.url_inputs.borrow()[&key].read(cx).selection();
+            sel
+        })
+    };
+    assert_eq!(url_sel(cx), (0, expect.len()));
     cx.simulate_keystrokes("left");
-    view.read_with(cx, |w, _| assert_eq!(w.scope.url_sel, Some((0, 0))));
+    assert_eq!(url_sel(cx), (0, 0));
 }
 
 fn new_request_text(root: &std::path::Path, env_file: Option<&str>) -> String {
@@ -2296,7 +2586,12 @@ fn new_request_url_uses_base_url_only_when_the_active_environment_defines_it(
         view.update_in(cx, |w, window, cx| {
             w.open_workspace(&root, window, cx);
             w.start_new(false, false, window, cx);
-            w.scope.inline.as_mut().unwrap().text = crate::ui::TextEdit::new("Thing");
+            w.scope
+                .inline
+                .as_ref()
+                .unwrap()
+                .text
+                .update(cx, |i, cx| i.set_text("Thing", cx));
             w.confirm_inline(window, cx);
         });
         let text = std::fs::read_to_string(root.join("thing.flux.md")).unwrap();
@@ -2336,9 +2631,10 @@ fn dialog_name_field_has_a_movable_caret(cx: &mut TestAppContext) {
     view.update_in(cx, |w, window, cx| w.start_new_workspace(window, cx));
     cx.simulate_keystrokes("a c left b");
     let name = |view: &Entity<WorkspaceView>, cx: &mut VisualTestContext| {
-        view.read_with(cx, |w, _| match &w.dialog {
+        view.read_with(cx, |w, cx| match &w.dialog {
             Some(crate::dialogs::Dialog::NewWorkspace(f)) => {
-                (f.name.text().to_string(), f.name.cursor())
+                let i = f.name.read(cx);
+                (i.text().to_string(), i.buffer().head())
             }
             _ => panic!("dialog"),
         })
@@ -2381,7 +2677,11 @@ fn rename_collection_updates_its_name_on_disk_and_in_the_tree(cx: &mut TestAppCo
     view.update_in(cx, |w, window, cx| {
         w.open_workspace(&root, window, cx);
         w.start_rename_collection("a", window, cx);
-        w.modal.as_mut().unwrap().query = crate::ui::TextEdit::new("Alpha");
+        w.modal
+            .as_ref()
+            .unwrap()
+            .query
+            .update(cx, |i, cx| i.set_text("Alpha", cx));
     });
     cx.simulate_keystrokes("enter");
     assert_eq!(collection_names(&view, cx), ["Alpha", "B"]);
@@ -2494,4 +2794,222 @@ fn workspace_switcher_lists_recents_and_offers_new_workspace(cx: &mut TestAppCon
     view.read_with(cx, |w, _| {
         assert_eq!(w.scope.workspace.as_ref().unwrap().root, other);
     });
+}
+
+/// Typed characters must reach text through `TextInput` (IME, dead keys). The only other places
+/// that read `key_char` are listed here, each with the reason it is still allowed.
+#[test]
+fn only_allow_listed_modules_read_key_char() {
+    const ALLOWED: &[&str] = &[
+        "input.rs",
+        "text_input.rs",
+        // Code editors and the WebSocket composer (known gap: no IME yet, see editor.rs docs).
+        "editor.rs",
+        // Test helpers build keystrokes.
+        "tests.rs",
+    ];
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut offenders = Vec::new();
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        if path.extension().is_none_or(|e| e != "rs") || ALLOWED.contains(&name.as_str()) {
+            continue;
+        }
+        if std::fs::read_to_string(&path).unwrap().contains("key_char") {
+            offenders.push(name);
+        }
+    }
+    assert!(offenders.is_empty(), "key_char used in {offenders:?}");
+}
+
+#[gpui::test]
+fn panel_opens_a_preview_without_activating_and_follows_the_file_system(cx: &mut TestAppContext) {
+    let (view, cx, root) = setup_with(cx, "payments-api", "env-panel");
+    let r = root.clone();
+    view.update(cx, |w, _| w.open_env_doc(&r, "staging", false));
+    view.read_with(cx, |w, _| {
+        assert_eq!(
+            w.active_env_name().as_deref(),
+            Some("devel"),
+            "opening never activates"
+        );
+        let t = w.scope.tabs.active().unwrap();
+        assert!(t.key == "env/staging" && !t.pinned, "{t:?}");
+    });
+    // A file added outside the app shows up; a removed one disappears and the active falls back.
+    std::fs::write(root.join("environments/zeta.env"), "A=1\n").unwrap();
+    view.update(cx, |w, _| {
+        w.on_env_fs_change(&[root.join("environments/zeta.env")])
+    });
+    assert!(
+        view.read_with(cx, |w, _| w.env_names())
+            .contains(&"zeta".to_string())
+    );
+    view.update(cx, |w, cx| w.set_active_env(Some("zeta".into()), cx));
+    std::fs::remove_file(root.join("environments/zeta.env")).unwrap();
+    view.update(cx, |w, _| {
+        w.on_env_fs_change(&[root.join("environments/zeta.env")])
+    });
+    assert!(
+        !view
+            .read_with(cx, |w, _| w.env_names())
+            .contains(&"zeta".to_string())
+    );
+    assert_ne!(
+        view.read_with(cx, |w, _| w.active_env_name()).as_deref(),
+        Some("zeta")
+    );
+}
+
+#[gpui::test]
+fn at_prefix_lists_environments_and_environment_actions_target_the_current_one(
+    cx: &mut TestAppContext,
+) {
+    let (view, cx, root) = setup_with(cx, "payments-api", "env-at");
+    cx.simulate_keystrokes("secondary-k");
+    cx.simulate_input("@stag");
+    assert_eq!(picker_labels(&view, cx), ["staging"]);
+    cx.simulate_keystrokes("enter");
+    assert_eq!(
+        view.read_with(cx, |w, _| w.active_env_name()).as_deref(),
+        Some("staging")
+    );
+    view.update_in(cx, |w, window, cx| {
+        window.dispatch_action(Box::new(crate::actions::ManageEnvironments), cx);
+        let _ = w;
+    });
+    view.read_with(cx, |w, _| {
+        assert_eq!(w.scope.panel, crate::workspace::Panel::Environments);
+        assert_eq!(w.scope.tabs.active().unwrap().key, "env/staging");
+    });
+    // Duplicate acts on the open Environment tab.
+    view.update_in(cx, |_, window, cx| {
+        window.dispatch_action(Box::new(crate::actions::DuplicateEnvironment), cx)
+    });
+    assert!(root.join("environments/staging-copy.env").exists());
+}
+
+fn cell_focused(
+    view: &Entity<WorkspaceView>,
+    cx: &mut VisualTestContext,
+    k: &crate::env_editor::DocKey,
+    row: usize,
+    value: bool,
+) -> bool {
+    let id = view.read_with(cx, |w, _| w.env_doc(k).unwrap().ids[row]);
+    let cell = if value {
+        crate::env_doc::Cell::Value
+    } else {
+        crate::env_doc::Cell::Name
+    };
+    let input = view.update(cx, |w, cx| w.env_cell(k, id, cell, cx));
+    cx.update(|window, app| input.read(app).is_focused(window))
+}
+
+#[gpui::test]
+fn tab_moves_from_name_to_value_to_the_next_row(cx: &mut TestAppContext) {
+    let (view, cx, root) = setup_with(cx, "payments-api", "env-tab-key");
+    write_env(&view, cx, &root, "local.env", "A=1\nB=2\n");
+    view.update(cx, |w, _| w.open_env_tab("local"));
+    let k = env_key(&view, cx, "local");
+    cx.run_until_parked();
+    let id0 = view.read_with(cx, |w, _| w.env_doc(&k).unwrap().ids[0]);
+    view.update_in(cx, |w, window, cx| {
+        let i = w.env_cell(&k, id0, crate::env_doc::Cell::Name, cx);
+        window.focus(&gpui::Focusable::focus_handle(i.read(cx), cx));
+    });
+    cx.run_until_parked();
+    assert!(cell_focused(&view, cx, &k, 0, false));
+    cx.simulate_keystrokes("tab");
+    assert!(cell_focused(&view, cx, &k, 0, true), "Tab: Name -> Value");
+    cx.simulate_keystrokes("tab");
+    assert!(
+        cell_focused(&view, cx, &k, 1, false),
+        "Tab: Value -> next Name"
+    );
+    cx.simulate_keystrokes("shift-tab");
+    assert!(cell_focused(&view, cx, &k, 0, true), "Shift+Tab goes back");
+}
+
+#[gpui::test]
+fn e106_clears_by_itself_when_the_gitignore_covers_local_env_files(cx: &mut TestAppContext) {
+    let (view, cx, root) = setup_with(cx, "payments-api", "env-e106");
+    std::fs::write(root.join(".gitignore"), "target\n").unwrap();
+    view.update(cx, |w, _| w.on_env_fs_change(&[root.join(".gitignore")]));
+    assert!(!view.read_with(cx, |w, _| w.ignores_local_env_files()));
+    std::fs::write(root.join(".gitignore"), "target\n*.env\n").unwrap();
+    view.update(cx, |w, _| w.on_env_fs_change(&[root.join(".gitignore")]));
+    assert!(view.read_with(cx, |w, _| w.ignores_local_env_files()));
+}
+
+#[gpui::test]
+fn environment_copy_formats_leave_secrets_out(cx: &mut TestAppContext) {
+    let (view, cx, root) = setup_with(cx, "payments-api", "env-copy");
+    write_env(&view, cx, &root, "local.env", "A=1\n");
+    write_env(&view, cx, &root, "local.local.env", "tok=hunter2\n");
+    let (dotenv, json) = view.read_with(cx, |w, _| {
+        (w.env_as_dotenv("local"), w.env_as_postman_json("local"))
+    });
+    assert_eq!(dotenv, "A=1\n");
+    assert!(
+        !json.contains("hunter2")
+            && json.contains("\"type\": \"secret\"")
+            && json.contains("\"key\": \"A\""),
+        "{json}"
+    );
+}
+
+#[gpui::test]
+fn secret_checkbox_masks_and_eye_reveals_then_hides(cx: &mut TestAppContext) {
+    let (view, cx, root) = setup_with(cx, "payments-api", "env-eye");
+    write_env(&view, cx, &root, "local.env", "A=1\n");
+    view.update(cx, |w, _| w.open_env_tab("local"));
+    let k = env_key(&view, cx, "local");
+    let id = view.read_with(cx, |w, _| w.env_doc(&k).unwrap().ids[0]);
+    view.update(cx, |w, cx| w.env_toggle_secret(&k, id, cx));
+    assert!(view.read_with(cx, |w, _| w.env_doc(&k).unwrap().rows()[0].secret));
+    assert!(!view.read_with(cx, |w, _| w.scope.envs.is_revealed("A")));
+    view.update(cx, |w, cx| w.env_toggle_reveal(&k, "A", cx));
+    assert!(view.read_with(cx, |w, _| w.scope.envs.is_revealed("A")));
+    view.update(cx, |w, cx| w.env_toggle_reveal(&k, "A", cx));
+    assert!(!view.read_with(cx, |w, _| w.scope.envs.is_revealed("A")));
+}
+
+/// Icons are embedded from an explicit list, and a missing one draws nothing. Every literal
+/// passed to `icon(…)` must be in that list.
+#[test]
+fn every_icon_used_in_views_is_embedded() {
+    use gpui::AssetSource;
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut missing = std::collections::BTreeSet::new();
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let text = std::fs::read_to_string(entry.unwrap().path()).unwrap_or_default();
+        let mut rest = text.as_str();
+        while let Some(i) = rest.find("icon(") {
+            rest = &rest[i + 5..];
+            let after = rest.trim_start();
+            if let Some(lit) = after.strip_prefix('"')
+                && let Some(end) = lit.find('"')
+            {
+                let name = &lit[..end];
+                let ok = !name.is_empty()
+                    && name
+                        .chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+                if ok
+                    && crate::assets::Assets
+                        .load(&format!("icons/{name}.svg"))
+                        .unwrap()
+                        .is_none()
+                {
+                    missing.insert(name.to_string());
+                }
+            }
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "icons used but not embedded: {missing:?}"
+    );
 }

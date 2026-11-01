@@ -3,7 +3,7 @@
 use std::{cell::Cell, path::PathBuf, rc::Rc};
 
 use gpui::{
-    Bounds, Context, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent,
+    Bounds, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent,
     MouseButton, MouseMoveEvent, ParentElement, Pixels, Point, Render, ScrollHandle, SharedString,
     StatefulInteractiveElement, Styled, Window, WindowAppearance, div, prelude::*, px,
 };
@@ -13,8 +13,9 @@ use crate::{
     assets::{BUFFER_FONT, UI_FONT},
     mock::{self, Mock},
     tabs::TabKind,
+    text_input::{TextInput, TextInputEvent},
     theme::{Appearance, Theme, theme},
-    ui::{TextEdit, icon, kbd_label, row},
+    ui::{icon, kbd_label, row},
     workspace_model::Recent,
 };
 
@@ -52,8 +53,7 @@ pub enum ModalKind {
 pub enum PromptPurpose {
     Rename { key: String },
     RenameCollection { key: String },
-    NewEnvironment,
-    RenameEnvironment { name: String },
+    RenameEnvironment { root: PathBuf, name: String },
 }
 
 /// A request or folder being named in place, as a row in the tree.
@@ -64,7 +64,7 @@ pub struct InlineNew {
     pub dir: PathBuf,
     pub websocket: bool,
     pub folder: bool,
-    pub text: TextEdit,
+    pub text: Entity<TextInput>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,6 +75,8 @@ pub enum MenuKind {
     Doc,
     /// The Workspace node itself (header row of the Workspace panel).
     Workspace,
+    /// An environment row of the Environments panel; the menu key is its name.
+    Environment,
 }
 
 #[derive(Clone, Debug)]
@@ -103,7 +105,9 @@ pub struct CellEdit {
     pub table: Table,
     pub row: usize,
     pub col: Col,
+    /// Mirror of the input's text.
     pub text: String,
+    pub input: Entity<TextInput>,
 }
 
 #[derive(Clone, Debug)]
@@ -114,7 +118,20 @@ pub enum ItemRun {
         title: String,
         kind: TabKind,
     },
-    Environment(Option<String>),
+    /// Activate (or with `None` clear) the active environment of a collection.
+    EnvActivate {
+        root: PathBuf,
+        name: Option<String>,
+    },
+    /// "New environment…" row.
+    EnvNew(PathBuf),
+    /// "Create environment “q”" row: create with defaults.
+    EnvCreate {
+        root: PathBuf,
+        name: String,
+    },
+    /// "Manage environments…" row.
+    EnvManage(PathBuf),
     Folder(String),
     History(i64),
     Workspace(String),
@@ -135,7 +152,8 @@ pub struct ModalItem {
 
 pub struct Modal {
     pub kind: ModalKind,
-    pub query: TextEdit,
+    pub query: Entity<TextInput>,
+    _sub: gpui::Subscription,
     pub selected: usize,
     pub results: Vec<ModalItem>,
 }
@@ -197,9 +215,6 @@ pub struct WorkspaceView {
     pub modal: Option<Modal>,
     /// The focused element, refreshed on every render, so fields know whether to draw a caret.
     pub focused: Option<FocusHandle>,
-    /// Text origin of the dialog/modal field under the pointer (set while painting).
-    pub field_bounds: Rc<Cell<Bounds<Pixels>>>,
-    pub field_drag: bool,
     /// Workspace/Collection lifecycle dialogs (New workspace, New collection, confirms).
     pub dialog: Option<crate::dialogs::Dialog>,
     pub dialog_focus: FocusHandle,
@@ -208,7 +223,8 @@ pub struct WorkspaceView {
     pub keymap_watcher: Option<fluxwire_format::WatchHandle>,
     pub keymap_issues: Vec<crate::actions::KeymapIssue>,
     pub resizing_bottom: bool,
-    pub keybind_query: TextEdit,
+    pub keybind_query: String,
+    pub keybind_input: crate::text_input::LazyInput,
     pub keybind_focus: FocusHandle,
     /// Most recently run palette/quick-search item ids, newest first.
     pub recent_ids: Vec<String>,
@@ -222,13 +238,13 @@ pub struct WorkspaceView {
     pub watch_enabled: bool,
     pub session_dirty: bool,
     pub editor_bounds: Rc<Cell<Bounds<Pixels>>>,
-    pub url_bounds: Rc<Cell<Bounds<Pixels>>>,
+    /// Focus handles and active pane of the Environment bulk-edit editors.
+    pub env_bulk_focus: [FocusHandle; 2],
+    pub env_bulk_active: Cell<usize>,
     pub editor_scroll: ScrollHandle,
     pub resizing: bool,
     pub root_focus: FocusHandle,
     pub modal_focus: FocusHandle,
-    pub url_focus: FocusHandle,
-    pub cell_focus: FocusHandle,
     pub env_focus: FocusHandle,
     pub editor_focus: FocusHandle,
     pub filter_focus: FocusHandle,
@@ -269,8 +285,6 @@ impl WorkspaceView {
             history_focus: cx.focus_handle(),
             modal: None,
             focused: None,
-            field_bounds: Rc::new(Cell::new(Bounds::default())),
-            field_drag: false,
             dialog: None,
             dialog_focus: cx.focus_handle(),
             modal_scroll: ScrollHandle::new(),
@@ -278,7 +292,8 @@ impl WorkspaceView {
             keymap_watcher: None,
             keymap_issues: Vec::new(),
             resizing_bottom: false,
-            keybind_query: TextEdit::default(),
+            keybind_query: String::new(),
+            keybind_input: Default::default(),
             keybind_focus: cx.focus_handle(),
             recent_ids: Vec::new(),
             prompt: None,
@@ -290,13 +305,12 @@ impl WorkspaceView {
             state_dir,
             session_dirty: false,
             editor_bounds: Rc::new(Cell::new(Bounds::default())),
-            url_bounds: Rc::new(Cell::new(Bounds::default())),
+            env_bulk_focus: [cx.focus_handle(), cx.focus_handle()],
+            env_bulk_active: Cell::new(0),
             editor_scroll: ScrollHandle::new(),
             resizing: false,
             root_focus,
             modal_focus: cx.focus_handle(),
-            url_focus: cx.focus_handle(),
-            cell_focus: cx.focus_handle(),
             env_focus: cx.focus_handle(),
             editor_focus: cx.focus_handle(),
             filter_focus: cx.focus_handle(),
@@ -311,6 +325,14 @@ impl WorkspaceView {
             .as_deref()
             .map(crate::workspace_model::load_recent_ids)
             .unwrap_or_default();
+        this.history.input = Some(crate::text_input::bound_input(
+            "Filter by name or URL",
+            cx,
+            |this: &mut Self, text, cx| {
+                this.history.text = text;
+                this.history_reload(cx);
+            },
+        ));
         this.start_session_timer(cx);
         this.reload_keymap(cx);
         if this.watch_enabled {
@@ -354,15 +376,58 @@ impl WorkspaceView {
     // ---- modals ---------------------------------------------------------------------------
 
     pub fn open_modal(&mut self, kind: ModalKind, window: &mut Window, cx: &mut Context<Self>) {
+        let placeholder = match kind {
+            ModalKind::Palette => "Type a command…",
+            ModalKind::QuickSearch => "Search requests, folders, environments…",
+            ModalKind::Environment => "Switch environment…",
+            ModalKind::Workspaces => "Switch workspace…",
+            ModalKind::Prompt => "Name",
+        };
+        let query = cx.new(|cx| {
+            let mut i = TextInput::new(placeholder, cx);
+            // The result list owns Up/Down.
+            i.set_consume_vertical(false);
+            // Keep the `Modal` key context, so its bindings apply while the field has focus.
+            i.set_owner_context("Modal");
+            i
+        });
+        let sub = cx.subscribe(&query, |this, _, ev: &TextInputEvent, cx| {
+            if *ev == TextInputEvent::Changed {
+                if let Some(m) = &mut this.modal {
+                    m.selected = 0;
+                }
+                this.modal_scroll.scroll_to_item(0);
+                this.recompute_modal(cx);
+                cx.notify();
+            }
+        });
+        let focus = query.read(cx).focus_handle(cx);
         self.modal = Some(Modal {
             kind,
-            query: TextEdit::default(),
+            query,
+            _sub: sub,
             selected: 0,
             results: Vec::new(),
         });
         self.recompute_modal(cx);
-        window.focus(&self.modal_focus);
+        window.focus(&focus);
         cx.notify();
+    }
+
+    /// Pre-fill the open modal's field, caret at the end (rename prompts).
+    pub fn prefill_modal(&mut self, text: &str, cx: &mut Context<Self>) {
+        if let Some(m) = &self.modal {
+            m.query.update(cx, |i, cx| {
+                i.set_text(text, cx);
+            });
+        }
+    }
+
+    pub fn modal_text(&self, cx: &gpui::App) -> String {
+        self.modal
+            .as_ref()
+            .map(|m| m.query.read(cx).text().to_string())
+            .unwrap_or_default()
     }
 
     pub fn close_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -380,11 +445,13 @@ impl WorkspaceView {
         if let Some(p) = &self.scope.workspace {
             want.extend(p.search_items());
         }
-        want.extend(
-            self.env_names()
-                .into_iter()
-                .map(|e| Item::new(format!("env:{e}"), Kind::Environment, e).detail("environment")),
-        );
+        if let Some(root) = self.env_root() {
+            for e in fluxwire_format::list_environments(&root) {
+                want.push(
+                    Item::new(format!("env:{e}"), Kind::Environment, e).detail("environment"),
+                );
+            }
+        }
         want.extend(self.history.entries.iter().map(|e| {
             let status = e.status.map_or("—".to_string(), |s| s.to_string());
             Item::new(
@@ -441,7 +508,16 @@ impl WorkspaceView {
         hits.into_iter()
             .filter_map(|h| {
                 let item = self.scope.search.item(h.pos)?;
-                Some(modal_item(item, h.label_indices))
+                let mut mi = modal_item(item, h.label_indices);
+                if let Some(name) = mi.id.strip_prefix("env:")
+                    && let Some(root) = self.env_root()
+                {
+                    mi.run = ItemRun::EnvActivate {
+                        root,
+                        name: Some(name.to_string()),
+                    };
+                }
+                Some(mi)
             })
             .collect()
     }
@@ -451,7 +527,7 @@ impl WorkspaceView {
         let Some(m) = &self.modal else {
             return;
         };
-        let (kind, q) = (m.kind, m.query.text().to_string());
+        let (kind, q) = (m.kind, m.query.read(cx).text().to_string());
         let results = match kind {
             ModalKind::Palette => self.search_results(&format!(">{q}"), cx),
             ModalKind::QuickSearch => self.search_results(&q, cx),
@@ -488,40 +564,27 @@ impl WorkspaceView {
                 v.retain(|i| fuzzy(&q, &i.label) || fuzzy(&q, &i.detail));
                 v
             }
-            ModalKind::Environment => {
-                let active = self.scope.envs.active.clone();
-                let mut v: Vec<ModalItem> = self
-                    .env_names()
-                    .into_iter()
-                    .map(|e| ModalItem {
-                        id: String::new(),
-                        detail: if active.as_deref() == Some(e.as_str()) {
-                            "active".into()
-                        } else {
-                            String::new()
-                        },
-                        label: e.clone(),
-                        indices: Vec::new(),
-                        run: ItemRun::Environment(Some(e)),
-                    })
-                    .collect();
-                v.push(ModalItem {
-                    id: String::new(),
-                    label: "No environment".into(),
-                    detail: if active.is_none() {
-                        "active".into()
-                    } else {
-                        String::new()
-                    },
-                    indices: Vec::new(),
-                    run: ItemRun::Environment(None),
-                });
-                v.retain(|i| fuzzy(&q, &i.label));
-                v
-            }
+            ModalKind::Environment => self.env_switcher_items(&q),
         };
         if let Some(m) = &mut self.modal {
             m.selected = m.selected.min(results.len().saturating_sub(1));
+            if kind == ModalKind::Environment && !q.is_empty() {
+                // With a query, Enter should pick a match, not "New environment…".
+                m.selected = results
+                    .iter()
+                    .position(|i| {
+                        matches!(
+                            i.run,
+                            ItemRun::EnvCreate { .. } | ItemRun::EnvActivate { .. }
+                        )
+                    })
+                    .or_else(|| {
+                        results
+                            .iter()
+                            .position(|i| !matches!(i.run, ItemRun::EnvNew(_)))
+                    })
+                    .unwrap_or(0);
+            }
             m.results = results;
         }
     }
@@ -569,7 +632,31 @@ impl WorkspaceView {
                     self.open_tab(&key, &title, kind, true);
                 }
             }
-            ItemRun::Environment(name) => self.set_active_env(name, cx),
+            ItemRun::EnvActivate { root, name } => match (beside, name) {
+                // Cmd/Ctrl+Enter opens the editor without activating.
+                (true, Some(n)) => self.open_env_doc(&root, &n, true),
+                (_, name) => self.set_active_env(name, cx),
+            },
+            ItemRun::EnvNew(root) => self.start_new_env_in(&root, "", window, cx),
+            ItemRun::EnvCreate { root, name } => {
+                if let Some(e) = self.env_name_error(&root, &name, None) {
+                    self.notice = Some(e);
+                } else if let Err(e) = fluxwire_format::create_environment(&root, &name) {
+                    self.notice = Some(format!("Could not create {name}: {e}"));
+                } else {
+                    self.scope.envs.invalidate();
+                    self.set_active_env(Some(name.clone()), cx);
+                    self.open_env_doc(&root, &name, true);
+                    self.env_focus_first_cell(&(root, name), window, cx);
+                }
+            }
+            ItemRun::EnvManage(root) => {
+                self.scope.left_open = true;
+                self.scope.panel = Panel::Environments;
+                if let Some(n) = self.active_env_name() {
+                    self.open_env_doc(&root, &n, true);
+                }
+            }
             ItemRun::Folder(key) => {
                 self.scope.left_open = true;
                 self.scope.panel = Panel::Workspace;
@@ -649,16 +736,7 @@ impl WorkspaceView {
                     self.run_modal_item(item, beside, window, cx);
                 }
             }
-            _ => {
-                let changed = self.modal.as_mut().is_some_and(|m| m.query.handle_key(ev));
-                if changed {
-                    if let Some(m) = &mut self.modal {
-                        m.selected = 0;
-                    }
-                    self.modal_scroll.scroll_to_item(0);
-                    self.recompute_modal(cx);
-                }
-            }
+            _ => {}
         }
         cx.notify();
     }
@@ -667,6 +745,8 @@ impl WorkspaceView {
 
     fn render_title_bar(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let env = self.env_label();
+        let has_collection = self.scope.workspace.is_some();
+        let has_active = self.active_env_name().is_some();
         let t = t.clone();
         row()
             .id("title-bar")
@@ -710,28 +790,39 @@ impl WorkspaceView {
                     .child(icon("git-branch", 12., t.text_muted))
                     .child(b)
             }))
-            .child(
-                row()
-                    .id("env-pill")
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .gap_2()
-                    .px_2()
-                    .h(px(22.))
-                    .rounded(px(4.))
-                    .border_1()
-                    .border_color(t.border)
-                    .text_color(t.text)
-                    .cursor_pointer()
-                    .hover(|s| s.bg(t.element_hover))
-                    .on_click(
-                        cx.listener(|this, _, w, cx| {
+            .when(has_collection, |d| {
+                d.child(
+                    row()
+                        .id("env-pill")
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .gap_2()
+                        .px_2()
+                        .h(px(22.))
+                        .rounded(px(4.))
+                        .border_1()
+                        .border_color(t.border)
+                        .text_color(t.text)
+                        .cursor_pointer()
+                        .hover(|s| s.bg(t.element_hover))
+                        .on_click(cx.listener(|this, _, w, cx| {
                             this.open_modal(ModalKind::Environment, w, cx)
-                        }),
-                    )
-                    .child(div().size(px(7.)).rounded_full().bg(t.modified))
-                    .child(env)
-                    .child(icon("chevron-down", 12., t.text_muted)),
-            )
+                        }))
+                        .tooltip({
+                            let tip = format!(
+                                "Switch environment ({})",
+                                crate::ui::kbd_label("secondary-e")
+                            );
+                            move |_, cx| cx.new(|_| crate::ui::VarTip { text: tip.clone() }).into()
+                        })
+                        .child(div().size(px(7.)).rounded_full().bg(if has_active {
+                            t.modified
+                        } else {
+                            t.border
+                        }))
+                        .child(env)
+                        .child(icon("chevron-down", 12., t.text_muted)),
+                )
+            })
             .child(div().flex_1())
             .child(
                 row()
@@ -913,14 +1004,7 @@ impl WorkspaceView {
         let m = self.modal.as_ref()?;
         let t = t.clone();
         let items = m.results.clone();
-        let placeholder = match m.kind {
-            ModalKind::Palette => "Type a command…",
-            ModalKind::QuickSearch => "Search requests, folders, environments…",
-            ModalKind::Environment => "Switch environment…",
-            ModalKind::Workspaces => "Switch workspace…",
-            ModalKind::Prompt => "Name",
-        };
-        let title = self.prompt_title();
+        let title = self.prompt_title().or_else(|| self.env_modal_title());
         let selected = m.selected;
         Some(
             div()
@@ -966,44 +1050,7 @@ impl WorkspaceView {
                                 .border_b_1()
                                 .border_color(t.border_variant)
                                 .text_size(px(14.))
-                                .cursor_text()
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(|this, ev: &gpui::MouseDownEvent, w, cx| {
-                                        this.field_down(crate::dialogs::FieldKind::Modal, ev, w, cx)
-                                    }),
-                                )
-                                .on_mouse_move(cx.listener(
-                                    |this, ev: &gpui::MouseMoveEvent, w, cx| {
-                                        this.field_move(crate::dialogs::FieldKind::Modal, ev, w, cx)
-                                    },
-                                ))
-                                .on_mouse_up(
-                                    MouseButton::Left,
-                                    cx.listener(|this, _: &gpui::MouseUpEvent, _, _| {
-                                        this.field_drag = false
-                                    }),
-                                )
-                                .child(
-                                    div()
-                                        .relative()
-                                        .flex_1()
-                                        .child(crate::ui::field_text(
-                                            &m.query,
-                                            placeholder,
-                                            &t,
-                                            self.is_focused(&self.modal_focus),
-                                        ))
-                                        .child({
-                                            let cell = self.field_bounds.clone();
-                                            gpui::canvas(
-                                                move |b, _, _| cell.set(b),
-                                                |_, _, _, _| {},
-                                            )
-                                            .absolute()
-                                            .size_full()
-                                        }),
-                                ),
+                                .child(div().flex_1().child(m.query.clone())),
                         )
                         .child(
                             div()
@@ -1016,6 +1063,13 @@ impl WorkspaceView {
                                 .py_1()
                                 .children(items.into_iter().enumerate().map(|(i, item)| {
                                     let click_item = item.clone();
+                                    let edit_target = match &item.run {
+                                        ItemRun::EnvActivate {
+                                            root,
+                                            name: Some(n),
+                                        } => Some((root.clone(), n.clone())),
+                                        _ => None,
+                                    };
                                     row()
                                         .id(("modal-item", i))
                                         .h(px(28.))
@@ -1039,11 +1093,34 @@ impl WorkspaceView {
                                         ))
                                         .child(highlighted(&item.label, &item.indices, &t))
                                         .child(
-                                            div()
-                                                .font_family(BUFFER_FONT)
-                                                .text_size(px(11.))
-                                                .text_color(t.text_placeholder)
-                                                .child(item.detail),
+                                            row()
+                                                .gap_2()
+                                                .child(
+                                                    div()
+                                                        .font_family(BUFFER_FONT)
+                                                        .text_size(px(11.))
+                                                        .text_color(t.text_placeholder)
+                                                        .child(item.detail.clone()),
+                                                )
+                                                .children(edit_target.map(|(root, name)| {
+                                                    div()
+                                                        .id(("modal-edit", i))
+                                                        .on_click(cx.listener(
+                                                            move |this, _, w, cx| {
+                                                                cx.stop_propagation();
+                                                                this.close_modal(w, cx);
+                                                                this.open_env_doc(
+                                                                    &root, &name, true,
+                                                                );
+                                                                cx.notify();
+                                                            },
+                                                        ))
+                                                        .child(icon(
+                                                            "pencil",
+                                                            12.,
+                                                            t.text_placeholder,
+                                                        ))
+                                                })),
                                         )
                                 })),
                         ),
@@ -1298,7 +1375,7 @@ impl Render for WorkspaceView {
                 set_theme(Theme::for_appearance(next), c);
             },
             ToggleSplitOrientation => |this, _w, _c| { this.scope.split_vertical = !this.scope.split_vertical; this.session_dirty = true },
-            CloseTab => |this, _w, _c| if let Some(id) = this.scope.tabs.active_id() { this.scope.tabs.close(id); this.session_dirty = true },
+            CloseTab => |this, w, c| if let Some(id) = this.scope.tabs.active_id() { if this.is_env_tab(id) { this.close_env_tab(id, w, c) } else { this.scope.tabs.close(id); this.session_dirty = true } },
             PinTab => |this, _w, _c| if let Some(id) = this.scope.tabs.active_id() { this.scope.tabs.toggle_pin(id); this.session_dirty = true },
             NextTab => |this, _w, _c| this.switch_tab(1),
             PrevTab => |this, _w, _c| this.switch_tab(-1),
@@ -1325,9 +1402,9 @@ impl Render for WorkspaceView {
             ShowResponseConsole => |this, _w, _c| this.show_response_tab(5),
             ToggleMethodMenu => |this, _w, _c| this.scope.method_menu = !this.scope.method_menu,
             NewEnvironment => |this, w, c| this.start_new_env(w, c),
-            RenameEnvironment => |this, w, c| if let Some(n) = this.scope.envs.active.clone() { this.start_rename_env(&n, w, c) },
-            DuplicateEnvironment => |this, _w, c| if let Some(n) = this.scope.envs.active.clone() { this.duplicate_env(&n, c) },
-            DeleteEnvironment => |this, _w, c| if let Some(n) = this.scope.envs.active.clone() { this.delete_env(&n, c) },
+            RenameEnvironment => |this, w, c| if let Some((r, n)) = this.env_target() { this.start_rename_env_in(&r, &n, w, c) },
+            DuplicateEnvironment => |this, _w, c| if let Some((r, n)) = this.env_target() { this.duplicate_env_in(&r, &n, c) },
+            DeleteEnvironment => |this, w, c| if let Some((r, n)) = this.env_target() { this.confirm_delete_env(&r, &n, w, c) },
             NewWindow => |_this, _w, c| open_window_at(c, None),
             OpenResultBeside => |this, w, c| this.run_selected(true, w, c),
             OpenKeybindings => |this, _w, _c| this.open_tab("keybindings", "Keybindings", TabKind::Keybindings, true),
@@ -1342,10 +1419,18 @@ impl Render for WorkspaceView {
                 let folder = this.selected_folder_name();
                 this.open_tab(&format!("docs/{folder}"), &format!("Docs: {folder}"), TabKind::Docs, true)
             },
-            OpenEnvironment => |this, _w, _c| {
-                if let Some(name) = this.scope.envs.active.clone() {
-                    this.load_env(&name);
-                    this.open_tab(&format!("env/{name}"), &name, TabKind::Environment, true)
+            EditActiveEnvironment => |this, _w, _c| {
+                match this.active_env_name() {
+                    Some(name) => this.open_env_tab(&name),
+                    None => this.notice = Some("No active environment to edit.".into()),
+                }
+            },
+            ManageEnvironments => |this, _w, _c| {
+                this.scope.left_open = true;
+                this.scope.panel = Panel::Environments;
+                this.session_dirty = true;
+                if let Some(name) = this.active_env_name() {
+                    this.open_env_tab(&name)
                 }
             },
             OpenSync => |this, _w, _c| this.open_tab("sync", "Sync", TabKind::Sync, true),
@@ -1363,7 +1448,7 @@ impl Render for WorkspaceView {
             RevealInFileManager => |this, _w, c| this.reveal_selected(c),
             ReloadFromDisk => |this, _w, c| this.resolve_conflict(true, c),
             KeepMine => |this, _w, c| this.resolve_conflict(false, c),
-            FocusUrlBar => |this, w, _c| w.focus(&this.url_focus),
+            FocusUrlBar => |this, w, c| this.focus_url(w, c),
             Save => |this, _w, c| this.save_active(c),
             Import => |this, _w, _c| this.notice = Some("Import arrives in a later milestone (M11).".into()),
             OpenAsText => |this, _w, c| this.toggle_text_mode(c),
@@ -1372,7 +1457,13 @@ impl Render for WorkspaceView {
             CancelRequest => |this, _w, c| if !this.cancel_request(c) { this.scope.method_menu = false },
             CopyAsCurl => |this, _w, c| this.copy_curl(false, c),
             CopyAsCurlWithSecrets => |this, _w, c| this.copy_curl(true, c),
-            FindInResponse => |this, w, _c| w.focus(&this.find_focus),
+            FindInResponse => |this, w, c| {
+                if let Some(id) = this.scope.tabs.active_id()
+                    && let Some(i) = this.viewer_input(id, crate::response::ViewerInput::Find, c)
+                {
+                    w.focus(&i.focus_handle(c));
+                }
+            },
             CopyResponseBody => |this, _w, c| this.copy_response_body(c),
             SaveResponseBody => |this, _w, c| this.save_response_body(c),
             Connect => |this, _w, c| this.ws_toggle(c),

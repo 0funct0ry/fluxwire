@@ -23,7 +23,7 @@ use crate::{
     editor::tok_color,
     highlight::Tok,
     theme::Theme,
-    ui::{TextEdit, icon, row},
+    ui::{icon, row},
     viewer::{
         BodyKind, BodyView, ImageFormat, LineText, filter_json, lex_json_line, visible_lines,
     },
@@ -73,10 +73,12 @@ pub struct TabResponse {
     pub mode: BodyMode,
     pub wrap: bool,
     pub collapsed: BTreeSet<usize>,
-    pub filter: TextEdit,
+    pub filter: String,
+    pub filter_input: crate::text_input::LazyInput,
     pub filter_error: Option<String>,
     pub filtered: Option<Arc<LineText>>,
-    pub find: TextEdit,
+    pub find: String,
+    pub find_input: crate::text_input::LazyInput,
     pub matches: Vec<u32>,
     pub match_cursor: usize,
     /// What the list shows right now (mode, filter and wrap applied).
@@ -100,10 +102,12 @@ impl TabResponse {
             mode: BodyMode::Pretty,
             wrap: false,
             collapsed: BTreeSet::new(),
-            filter: TextEdit::default(),
+            filter: String::new(),
+            filter_input: Default::default(),
             filter_error: None,
             filtered: None,
-            find: TextEdit::default(),
+            find: String::new(),
+            find_input: Default::default(),
             matches: Vec::new(),
             match_cursor: 0,
             shown: None,
@@ -215,7 +219,7 @@ impl WorkspaceView {
         let jar = (|| {
             let key = self.active_key()?;
             let root = self.collection_root_of(&key)?;
-            let env = self.scope.envs.active.clone()?;
+            let env = self.active_env_name()?;
             Some(self.scope.envs.states.get(&(root, env))?.cookies.list())
         })()
         .unwrap_or_default();
@@ -357,6 +361,8 @@ impl WorkspaceView {
                         .map(|(k, v)| (k.clone(), v.clone()))
                         .collect(),
                     allow_process_env: self.scope.envs.settings.allow_process_env,
+                    env_overlay: self.dirty_env_overlay(),
+                    env_root: self.env_root(),
                 },
             },
         );
@@ -525,7 +531,7 @@ impl WorkspaceView {
             }
             self.scope.envs.invalidate();
         }
-        if let (Some(root), Some(env)) = (&root, self.scope.envs.active.clone()) {
+        if let (Some(root), Some(env)) = (&root, self.active_env_name()) {
             for (name, value) in &res.env_persist {
                 if let Err(e) = persist_env_value(root, &env, name, value) {
                     self.notice = Some(format!("Could not write {name} to {env}.local.env: {e}"));
@@ -811,7 +817,7 @@ impl WorkspaceView {
         };
         r.matches.clear();
         r.match_cursor = 0;
-        let q = r.find.text().to_lowercase();
+        let q = r.find.to_lowercase();
         let Some(shown) = r.shown.clone().filter(|_| q.len() >= 2) else {
             return;
         };
@@ -880,7 +886,53 @@ impl WorkspaceView {
         cx.notify();
     }
 
-    /// Key presses in the filter or find box.
+    /// What a change in the filter or find box does (typing is handled by the input itself).
+    pub(crate) fn viewer_on_change(
+        id: u64,
+        which: ViewerInput,
+    ) -> impl Fn(&mut Self, String, &mut Context<Self>) + 'static {
+        move |this, text, cx| {
+            let Some(r) = this.scope.responses.get_mut(&id) else {
+                return;
+            };
+            match which {
+                ViewerInput::Find => {
+                    r.find = text;
+                    this.refresh_find(id);
+                }
+                ViewerInput::Filter => {
+                    let empty = text.is_empty();
+                    r.filter = text;
+                    if empty {
+                        this.apply_filter(id, cx);
+                    }
+                }
+            }
+            cx.notify();
+        }
+    }
+
+    /// The tab's filter or find input, created on first use.
+    pub fn viewer_input(
+        &mut self,
+        id: u64,
+        which: ViewerInput,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::Entity<crate::text_input::TextInput>> {
+        let r = self.scope.responses.get(&id)?;
+        let (slot, placeholder) = match which {
+            ViewerInput::Filter => (&r.filter_input, "JSONPath  $.items[*].id"),
+            ViewerInput::Find => (&r.find_input, "Find"),
+        };
+        Some(crate::text_input::lazy_input(
+            slot,
+            placeholder,
+            cx,
+            Self::viewer_on_change(id, which),
+        ))
+    }
+
+    /// Enter and Escape in the filter or find box.
     pub fn on_viewer_key(
         &mut self,
         which: ViewerInput,
@@ -890,55 +942,34 @@ impl WorkspaceView {
         let Some(id) = self.scope.tabs.active_id() else {
             return;
         };
-        let ks = &ev.keystroke;
-        let clip = if ks.modifiers.secondary() && ks.key == "v" {
-            cx.read_from_clipboard().and_then(|c| c.text())
-        } else {
-            None
-        };
-        let Some(r) = self.scope.responses.get_mut(&id) else {
-            return;
-        };
-        let edit = match which {
-            ViewerInput::Filter => &mut r.filter,
-            ViewerInput::Find => &mut r.find,
-        };
-        match ks.key.as_str() {
+        match ev.keystroke.key.as_str() {
             "enter" => match which {
                 ViewerInput::Find => self.jump_to_match(cx),
                 ViewerInput::Filter => self.apply_filter(id, cx),
             },
             "escape" => {
-                edit.clear();
-                if which == ViewerInput::Filter {
-                    r.filtered = None;
-                    r.filter_error = None;
+                let Some(r) = self.scope.responses.get_mut(&id) else {
+                    return;
+                };
+                let input = match which {
+                    ViewerInput::Filter => {
+                        r.filter.clear();
+                        r.filtered = None;
+                        r.filter_error = None;
+                        r.filter_input.borrow().clone()
+                    }
+                    ViewerInput::Find => {
+                        r.find.clear();
+                        r.find_input.borrow().clone()
+                    }
+                };
+                if let Some(i) = input {
+                    i.update(cx, |i, cx| i.set_text("", cx));
                 }
                 self.refresh_shown(id);
                 cx.notify();
             }
-            _ => {
-                let changed = match clip {
-                    Some(t) => {
-                        edit.insert(&t);
-                        true
-                    }
-                    None => edit.handle_key(ev),
-                };
-                if changed {
-                    if which == ViewerInput::Find {
-                        self.refresh_find(id);
-                    } else if self
-                        .scope
-                        .responses
-                        .get(&id)
-                        .is_some_and(|r| r.filter.text().is_empty())
-                    {
-                        self.apply_filter(id, cx);
-                    }
-                    cx.notify();
-                }
-            }
+            _ => {}
         }
     }
 
@@ -946,7 +977,7 @@ impl WorkspaceView {
         let Some(r) = self.scope.responses.get_mut(&tab_id) else {
             return;
         };
-        let path = r.filter.text().trim().to_string();
+        let path = r.filter.trim().to_string();
         r.filter_error = None;
         if path.is_empty() {
             r.filtered = None;
@@ -1424,19 +1455,20 @@ impl WorkspaceView {
                 .child(label)
         };
         let input = |id: &'static str,
-                     focus: &gpui::FocusHandle,
+                     slot: &crate::text_input::LazyInput,
                      placeholder: &'static str,
-                     edit: &TextEdit,
                      which: ViewerInput,
-                     w: f32| {
+                     w: f32,
+                     cx: &mut Context<Self>| {
+            let field = crate::text_input::lazy_input(
+                slot,
+                placeholder,
+                cx,
+                Self::viewer_on_change(tab_id, which),
+            );
             row()
                 .id(id)
-                .track_focus(focus)
                 .on_key_down(cx.listener(move |this, ev, _, cx| this.on_viewer_key(which, ev, cx)))
-                .on_click({
-                    let focus = focus.clone();
-                    move |_, window, _| window.focus(&focus)
-                })
                 .w(px(w))
                 .h(px(22.))
                 .px_2()
@@ -1450,12 +1482,7 @@ impl WorkspaceView {
                 .font_family(BUFFER_FONT)
                 .text_size(px(12.))
                 .overflow_hidden()
-                .child(crate::ui::field_text(
-                    edit,
-                    placeholder,
-                    t,
-                    self.is_focused(focus),
-                ))
+                .child(field)
         };
         let toolbar = row()
             .flex_none()
@@ -1498,27 +1525,27 @@ impl WorkspaceView {
             .when(view.kind == BodyKind::Json && has_text, |d| {
                 d.child(input(
                     "filter",
-                    &self.filter_focus,
+                    &r.filter_input,
                     "JSONPath  $.items[*].id",
-                    &r.filter,
                     ViewerInput::Filter,
                     190.,
+                    cx,
                 ))
             })
             .when(has_text || r.mode == BodyMode::Hex, |d| {
                 d.child(input(
                     "find",
-                    &self.find_focus,
+                    &r.find_input,
                     "Find",
-                    &r.find,
                     ViewerInput::Find,
                     120.,
+                    cx,
                 ))
                 .child(
                     div()
                         .text_size(px(11.))
                         .text_color(t.text_placeholder)
-                        .child(if r.find.text().len() >= 2 {
+                        .child(if r.find.len() >= 2 {
                             format!("{} found", r.matches.len())
                         } else {
                             String::new()

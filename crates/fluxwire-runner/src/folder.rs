@@ -432,6 +432,8 @@ async fn run_one(
         file: &it.file,
         doc: &it.doc,
         env: plan.env.as_deref(),
+        env_root: plan.scripts.env_root.as_deref(),
+        env_overlay: plan.scripts.env_overlay.as_ref(),
         runtime,
         globals: &plan.scripts.globals,
         allow_process_env: plan.scripts.allow_process_env,

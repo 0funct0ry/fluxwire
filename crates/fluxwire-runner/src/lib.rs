@@ -242,6 +242,10 @@ pub struct ScriptOptions {
     /// `[globals]` from settings.toml, for `fw.globals` and nested requests.
     pub globals: Vec<(String, String)>,
     pub allow_process_env: bool,
+    /// The active environment as edited in the app (unsaved values win over the files).
+    pub env_overlay: Option<fluxwire_format::Environment>,
+    /// Directory holding `environments/` (the Workspace root); `None` uses the collection root.
+    pub env_root: Option<PathBuf>,
 }
 
 pub struct Runner {
@@ -678,6 +682,8 @@ impl ScriptHost for NestedHost {
                     file,
                     doc: &doc,
                     env: self.scope.env_name.as_deref(),
+                    env_root: self.opts.env_root.as_deref(),
+                    env_overlay: self.opts.env_overlay.as_ref(),
                     runtime: &runtime,
                     globals: &self.opts.globals,
                     allow_process_env: self.opts.allow_process_env,

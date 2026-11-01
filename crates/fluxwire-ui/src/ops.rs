@@ -29,15 +29,6 @@ fn tab_kind(doc: &OpenDoc) -> TabKind {
     }
 }
 
-/// Width of one cell of the monospace URL bar.
-pub(crate) fn url_char_width(ts: &gpui::TextSystem) -> f32 {
-    let id = ts.resolve_font(&gpui::font(crate::assets::BUFFER_FONT));
-    ts.advance(id, gpui::px(14.), 'm')
-        .map(|s| f32::from(s.width))
-        .unwrap_or(8.4)
-        .max(1.0)
-}
-
 impl WorkspaceView {
     // ---- labels ---------------------------------------------------------------------------
 
@@ -56,7 +47,6 @@ impl WorkspaceView {
         match self.prompt.as_ref()? {
             PromptPurpose::Rename { .. } => Some("Rename to".to_string()),
             PromptPurpose::RenameCollection { .. } => Some("Rename collection to".to_string()),
-            PromptPurpose::NewEnvironment => Some("New environment name".to_string()),
             PromptPurpose::RenameEnvironment { .. } => Some("Rename environment to".to_string()),
         }
     }
@@ -86,11 +76,12 @@ impl WorkspaceView {
                 self.replace_scope();
                 self.scope.workspace = Some(p);
                 self.history_workspace_changed(cx);
-                let remembered = self
+                let saved = self
                     .state_dir
                     .as_ref()
-                    .and_then(|d| crate::workspace_model::load_session(d, path).active_env);
-                self.init_active_env(remembered);
+                    .map(|d| crate::workspace_model::load_session(d, path))
+                    .unwrap_or_default();
+                self.init_active_env(saved.active_env.as_deref(), saved.no_environment);
                 if let Some(dir) = &self.state_dir {
                     remember_workspace(&mut self.recent, path);
                     save_recent(dir, &self.recent);
@@ -297,218 +288,100 @@ impl WorkspaceView {
         cx.notify();
     }
 
-    /// Character index under a pointer position in the URL bar (monospace cells).
-    fn url_index(&self, window: &Window, pos: gpui::Point<gpui::Pixels>) -> usize {
-        let cw = url_char_width(window.text_system());
-        let x = f32::from(pos.x - self.url_bounds.get().origin.x);
-        let len = self
-            .active_key()
-            .and_then(|k| {
-                self.scope
-                    .workspace
-                    .as_ref()?
-                    .doc(&k)?
-                    .parsed
-                    .request()
-                    .map(|r| r.target.chars().count())
-            })
-            .unwrap_or(0);
-        ((x / cw).round().max(0.0) as usize).min(len)
-    }
-
-    pub(crate) fn url_mouse_down(
-        &mut self,
-        ev: &gpui::MouseDownEvent,
-        window: &mut Window,
+    /// The URL bar input of request `key`, created on first use. Typing edits the request
+    /// target through the span editor; a pasted `curl` command fills the whole request.
+    pub(crate) fn url_input(
+        &self,
+        key: &str,
         cx: &mut Context<Self>,
-    ) {
-        window.focus(&self.url_focus);
-        let idx = self.url_index(window, ev.position);
-        let text = self
-            .active_key()
-            .and_then(|k| {
-                self.scope
-                    .workspace
-                    .as_ref()?
-                    .doc(&k)?
-                    .parsed
-                    .request()
-                    .map(|r| r.target.clone())
-            })
-            .unwrap_or_default();
-        let len = text.chars().count();
-        self.scope.url_sel = match ev.click_count {
-            2 => Some(crate::ui::word_range(&text, idx)),
-            n if n >= 3 => Some((0, len)),
-            _ => Some((idx, idx)),
-        };
-        self.scope.url_drag = ev.click_count == 1;
-        cx.notify();
+    ) -> gpui::Entity<crate::text_input::TextInput> {
+        use crate::text_input::{TextInput, TextInputEvent};
+        if let Some(i) = self.scope.url_inputs.borrow().get(key) {
+            return i.clone();
+        }
+        let input = gpui::AppContext::new(cx, |cx| {
+            let mut i = TextInput::new("", cx);
+            i.set_strip_whitespace(true);
+            i.set_paste_intercept(|t| t.trim_start().starts_with("curl"));
+            // Up/Down go to the `{{` completion popup while it is open (set when drawn).
+            i.set_owner_context("RequestEditor");
+            i
+        });
+        let k = key.to_string();
+        cx.subscribe(
+            &input,
+            move |this, input, ev: &TextInputEvent, cx| match ev {
+                TextInputEvent::Changed => {
+                    let text = input.read(cx).text().to_string();
+                    this.url_changed(&k, &text, cx);
+                }
+                TextInputEvent::PasteIntercepted(text) => this.url_curl_paste(&k, text, cx),
+                _ => {}
+            },
+        )
+        .detach();
+        self.scope
+            .url_inputs
+            .borrow_mut()
+            .insert(key.to_string(), input.clone());
+        input
     }
 
-    pub(crate) fn url_mouse_move(
-        &mut self,
-        ev: &gpui::MouseMoveEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if !self.scope.url_drag || ev.pressed_button != Some(gpui::MouseButton::Left) {
-            return;
-        }
-        let idx = self.url_index(window, ev.position);
-        if let Some((a, _)) = self.scope.url_sel {
-            self.scope.url_sel = Some((a, idx));
-            cx.notify();
-        }
-    }
-
-    /// Typing in the URL bar edits the request target through the span editor. A selection is
-    /// replaced by typing or pasting and removed by Backspace; Cmd/Ctrl+A/C/X work on it.
-    pub(crate) fn on_url_key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) {
+    pub(crate) fn focus_url(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(key) = self.active_key() else { return };
-        if self.scope.envs.completion.is_some() {
-            let cur = self
-                .scope
-                .workspace
-                .as_ref()
-                .and_then(|p| p.doc(&key))
-                .and_then(|d| d.parsed.request().map(|r| r.target.clone()))
-                .unwrap_or_default();
-            match self.completion_key(ev, CompleteTarget::Url, &cur) {
-                CompleteKey::Consumed => {
-                    cx.notify();
-                    return;
-                }
-                CompleteKey::Accept(new) => {
-                    self.set_url_text(&key, &new, cx);
-                    return;
-                }
-                CompleteKey::Pass => {}
-            }
-        }
-        let Some(doc) = self.scope.workspace.as_mut().and_then(|p| p.doc_mut(&key)) else {
+        let input = self.url_input(&key, cx);
+        window.focus(&gpui::Focusable::focus_handle(input.read(cx), cx));
+    }
+
+    /// The URL input's text changed: write it to the request line.
+    fn url_changed(&mut self, key: &str, text: &str, cx: &mut Context<Self>) {
+        let Some(doc) = self.scope.workspace.as_mut().and_then(|p| p.doc_mut(key)) else {
             return;
         };
         let Some(req) = doc.parsed.request() else {
             return;
         };
-        let (method, target) = (req.method.clone(), req.target.clone());
-        let mut chars: Vec<char> = target.chars().collect();
-        let len = chars.len();
-        // `None` means the caret is at the end; `(a, a)` is a caret at `a`; otherwise a range
-        // whose head (second) is the end that moves.
-        let (anchor, head) = self
-            .scope
-            .url_sel
-            .map_or((len, len), |(a, b)| (a.min(len), b.min(len)));
-        let (lo, hi) = (anchor.min(head), anchor.max(head));
-        let sel = (lo != hi).then_some((lo, hi));
-        let ks = &ev.keystroke;
-        // Cursor movement: arrows, Home/End, Cmd/Ctrl+Left/Right; Shift extends the selection.
-        let moved = match ks.key.as_str() {
-            "left" if ks.modifiers.secondary() => Some(0),
-            "right" if ks.modifiers.secondary() => Some(len),
-            "left" if sel.is_some() && !ks.modifiers.shift => Some(lo),
-            "right" if sel.is_some() && !ks.modifiers.shift => Some(hi),
-            "left" => Some(head.saturating_sub(1)),
-            "right" => Some((head + 1).min(len)),
-            "home" => Some(0),
-            "end" => Some(len),
-            _ => None,
-        };
-        if let Some(to) = moved {
-            self.scope.url_sel = Some(if ks.modifiers.shift {
-                (anchor, to)
-            } else {
-                (to, to)
-            });
-            cx.notify();
+        if req.target == text {
             return;
         }
-        // Replace the selection (or insert at the caret) with `ins`; returns the new caret.
-        fn splice(chars: &mut Vec<char>, lo: usize, hi: usize, ins: &str) -> usize {
-            let ins: Vec<char> = ins
-                .chars()
-                .filter(|c| !c.is_whitespace() && !c.is_control())
-                .collect();
-            let n = ins.len();
-            chars.splice(lo..hi, ins);
-            lo + n
-        }
-        let caret;
-        if ks.modifiers.secondary() && matches!(ks.key.as_str(), "a" | "c" | "x") {
-            match ks.key.as_str() {
-                "a" => {
-                    self.scope.url_sel = Some((0, len));
-                    cx.notify();
-                    return;
-                }
-                k => {
-                    let Some((a, b)) = sel else { return };
-                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(
-                        chars[a..b].iter().collect(),
-                    ));
-                    if k == "c" {
-                        return;
-                    }
-                    chars.drain(a..b);
-                    caret = a;
-                }
-            }
-        } else if ks.modifiers.secondary() && ks.key == "v" {
-            // Paste: a `curl ...` command fills the whole request (SPEC §9.5); anything else
-            // replaces the selection or is inserted at the caret.
-            let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) else {
-                return;
-            };
-            if text.trim_start().starts_with("curl")
-                && let Some(edits) = fluxwire_runner::runner().edits_from_paste(&doc.parsed, &text)
-            {
-                if doc.apply(&edits) {
-                    self.scope.url_sel = None;
-                    self.after_edit(&key, cx);
-                    self.notice = Some("Filled the request from a cURL command.".into());
-                }
-                return;
-            }
-            caret = splice(&mut chars, lo, hi, &text);
-        } else if ks.modifiers.control || ks.modifiers.platform {
-            return;
-        } else if ks.key == "backspace" {
-            caret = match sel {
-                Some((a, b)) => {
-                    chars.drain(a..b);
-                    a
-                }
-                None if head > 0 => {
-                    chars.remove(head - 1);
-                    head - 1
-                }
-                None => return,
-            };
-        } else if ks.key == "delete" {
-            caret = match sel {
-                Some((a, b)) => {
-                    chars.drain(a..b);
-                    a
-                }
-                None if head < len => {
-                    chars.remove(head);
-                    head
-                }
-                None => return,
-            };
-        } else if let Some(s) = ks.key_char.as_deref().filter(|s| !s.is_empty()) {
-            caret = splice(&mut chars, lo, hi, s);
-        } else {
-            return;
-        }
-        self.scope.url_sel = Some((caret, caret));
-        let target: String = chars.into_iter().collect();
-        let edits = fmt::set_request_line(&doc.parsed, &method, &target);
+        let edits = fmt::set_request_line(&doc.parsed, &req.method.clone(), text);
         if doc.apply(&edits) {
-            self.after_edit(&key, cx);
-            self.refresh_completion(CompleteTarget::Url, &target);
+            self.after_edit(key, cx);
+            self.refresh_completion(CompleteTarget::Url, text);
+        }
+    }
+
+    /// A pasted `curl ...` command fills the whole request (SPEC §9.5).
+    fn url_curl_paste(&mut self, key: &str, text: &str, cx: &mut Context<Self>) {
+        let Some(doc) = self.scope.workspace.as_mut().and_then(|p| p.doc_mut(key)) else {
+            return;
+        };
+        if let Some(edits) = fluxwire_runner::runner().edits_from_paste(&doc.parsed, text)
+            && doc.apply(&edits)
+        {
+            self.after_edit(key, cx);
+            self.notice = Some("Filled the request from a cURL command.".into());
+            cx.notify();
+        }
+    }
+
+    /// Key presses that reach the URL bar's owner: the `{{` completion popup's keys.
+    pub(crate) fn on_url_key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) {
+        let Some(key) = self.active_key() else { return };
+        if self.scope.envs.completion.is_none() {
+            return;
+        }
+        let cur = self
+            .scope
+            .workspace
+            .as_ref()
+            .and_then(|p| p.doc(&key))
+            .and_then(|d| d.parsed.request().map(|r| r.target.clone()))
+            .unwrap_or_default();
+        match self.completion_key(ev, CompleteTarget::Url, &cur) {
+            CompleteKey::Consumed => cx.notify(),
+            CompleteKey::Accept(new) => self.set_url_text(&key, &new, cx),
+            CompleteKey::Pass => {}
         }
     }
 
@@ -522,7 +395,6 @@ impl WorkspaceView {
         };
         let edits = fmt::set_request_line(&doc.parsed, &method, target);
         if doc.apply(&edits) {
-            self.scope.url_sel = None;
             self.after_edit(key, cx);
         }
     }
@@ -570,7 +442,11 @@ impl WorkspaceView {
         let mut st = doc.editors.remove(&target).unwrap_or_default();
         let out = st.handle_key(&mut text, ev, clip.as_deref());
         let line = crate::editor::line_col(&text, st.cursor).0;
+        let copied = st.take_clipboard();
         doc.editors.insert(target, st);
+        if let Some(c) = copied {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(c));
+        }
         match out {
             crate::editor::KeyOutcome::Edited => {
                 if text != doc.target_text(target) {
@@ -602,7 +478,13 @@ impl WorkspaceView {
         }
     }
 
-    pub fn click_editor(&mut self, pos: gpui::Point<gpui::Pixels>, cx: &mut Context<Self>) {
+    pub fn click_editor(
+        &mut self,
+        pos: gpui::Point<gpui::Pixels>,
+        clicks: usize,
+        shift: bool,
+        cx: &mut Context<Self>,
+    ) {
         let Some(key) = self.active_key() else { return };
         let target = self.scope.target;
         let bounds = self.editor_bounds.get();
@@ -611,7 +493,24 @@ impl WorkspaceView {
         };
         let text = doc.target_text(target);
         let off = EditorState::offset_for_click(&text, bounds, pos);
-        doc.editors.entry(target).or_default().cursor = off;
+        doc.editors
+            .entry(target)
+            .or_default()
+            .mouse_down(&text, off, clicks, shift);
+        cx.notify();
+    }
+
+    /// Extend the selection while the left button is held over the editor.
+    pub fn drag_editor(&mut self, pos: gpui::Point<gpui::Pixels>, cx: &mut Context<Self>) {
+        let Some(key) = self.active_key() else { return };
+        let target = self.scope.target;
+        let bounds = self.editor_bounds.get();
+        let Some(doc) = self.scope.workspace.as_mut().and_then(|p| p.doc_mut(&key)) else {
+            return;
+        };
+        let text = doc.target_text(target);
+        let off = EditorState::offset_for_click(&text, bounds, pos);
+        doc.editors.entry(target).or_default().drag_to(&text, off);
         cx.notify();
     }
 
@@ -773,14 +672,22 @@ impl WorkspaceView {
                 }
             })
             .unwrap_or_default();
+        let input = crate::text_input::bound_input("", cx, |this: &mut Self, text, cx| {
+            if let Some(c) = this.scope.cell.as_mut() {
+                c.text = text;
+            }
+            this.apply_cell_text(cx);
+        });
+        input.update(cx, |i, cx| i.set_text(&text, cx));
+        window.focus(&gpui::Focusable::focus_handle(input.read(cx), cx));
         self.scope.cell = Some(CellEdit {
             key,
             table,
             row,
             col,
             text,
+            input,
         });
-        window.focus(&self.cell_focus);
         cx.notify();
     }
 
@@ -831,6 +738,7 @@ impl WorkspaceView {
                     return;
                 }
                 CompleteKey::Accept(new) => {
+                    cell.input.update(cx, |i, cx| i.set_text(&new, cx));
                     cell.text = new;
                     accepted = true;
                 }
@@ -857,20 +765,7 @@ impl WorkspaceView {
                 cx.notify();
                 return;
             }
-            "backspace" => {
-                cell.text.pop();
-            }
-            _ => {
-                if ks.modifiers.control || ks.modifiers.platform {
-                    return;
-                }
-                match ks.key_char.as_deref() {
-                    Some(s) if !s.is_empty() => {
-                        cell.text.extend(s.chars().filter(|c| !c.is_control()))
-                    }
-                    _ => return,
-                }
-            }
+            _ => return,
         }
         self.commit_cell(cell, cx);
     }
@@ -943,6 +838,9 @@ impl WorkspaceView {
     // ---- saving, conflicts ----------------------------------------------------------------
 
     pub fn save_active(&mut self, cx: &mut Context<Self>) {
+        if self.save_active_env(cx) {
+            return;
+        }
         let Some(key) = self.active_key() else { return };
         let Some(doc) = self.scope.workspace.as_mut().and_then(|p| p.doc_mut(&key)) else {
             return;
@@ -986,6 +884,13 @@ impl WorkspaceView {
             self.open_config_file("keymap.toml", "", cx);
             return;
         }
+        if p.key.starts_with("env/") {
+            if let Some((root, name)) = self.parse_env_tab_key(&p.key) {
+                self.open_env_doc(&root, &name, true);
+                cx.notify();
+            }
+            return;
+        }
         self.open_request(&p.key.clone(), true, window, cx);
         let Some(doc) = self
             .scope
@@ -997,7 +902,7 @@ impl WorkspaceView {
         };
         doc.text_mode = true;
         let off = p.span.start.min(doc.text.len());
-        doc.editors.entry(Target::Text).or_default().cursor = off;
+        doc.editors.entry(Target::Text).or_default().set_cursor(off);
         self.scope.target = Target::Text;
         let line = crate::editor::line_col(&doc.text, off).0;
         window.focus(&self.root_focus);
@@ -1045,14 +950,23 @@ impl WorkspaceView {
         self.scope.collapsed.remove(&parent);
         self.scope.left_open = true;
         self.scope.panel = crate::workspace::Panel::Workspace;
+        let placeholder = if folder {
+            "Folder name"
+        } else if websocket {
+            "WebSocket request name"
+        } else {
+            "Request name"
+        };
+        let text =
+            gpui::AppContext::new(cx, |cx| crate::text_input::TextInput::new(placeholder, cx));
+        window.focus(&gpui::Focusable::focus_handle(text.read(cx), cx));
         self.scope.inline = Some(crate::workspace::InlineNew {
             parent,
             dir,
             websocket,
             folder,
-            text: crate::ui::TextEdit::default(),
+            text,
         });
-        window.focus(&self.inline_focus);
         cx.notify();
     }
 
@@ -1069,16 +983,13 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(inline) = self.scope.inline.as_mut() else {
+        if self.scope.inline.is_none() {
             return;
-        };
+        }
         match ev.keystroke.key.as_str() {
             "escape" => self.cancel_inline(window, cx),
             "enter" => self.confirm_inline(window, cx),
-            _ => {
-                inline.text.handle_key(ev);
-                cx.notify();
-            }
+            _ => {}
         }
     }
 
@@ -1087,7 +998,7 @@ impl WorkspaceView {
             return;
         };
         window.focus(&self.root_focus);
-        let name = inline.text.text().trim().to_string();
+        let name = inline.text.read(cx).text().trim().to_string();
         if name.is_empty() {
             cx.notify();
             return;
@@ -1143,9 +1054,7 @@ impl WorkspaceView {
         self.open_modal_keep_prompt(window, cx);
         // Pre-fill with the current display name.
         let current = self.display_name(&key);
-        if let Some(m) = self.modal.as_mut() {
-            m.query.insert(&current);
-        }
+        self.prefill_modal(&current, cx);
     }
 
     fn collection_name(&self, key: &str) -> Option<String> {
@@ -1172,9 +1081,7 @@ impl WorkspaceView {
             key: key.to_string(),
         });
         self.open_modal_keep_prompt(window, cx);
-        if let Some(m) = self.modal.as_mut() {
-            m.query.insert(&current);
-        }
+        self.prefill_modal(&current, cx);
     }
 
     fn do_rename_collection(&mut self, key: &str, name: &str) -> std::io::Result<Option<String>> {
@@ -1318,11 +1225,7 @@ impl WorkspaceView {
     }
 
     pub fn confirm_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let name = self
-            .modal
-            .as_ref()
-            .map(|m| m.query.text().trim().to_string())
-            .unwrap_or_default();
+        let name = self.modal_text(cx).trim().to_string();
         let purpose = self.prompt.clone();
         self.close_modal(window, cx);
         let Some(purpose) = purpose else { return };
@@ -1332,7 +1235,7 @@ impl WorkspaceView {
         let result: std::io::Result<Option<String>> = match purpose {
             PromptPurpose::Rename { key } => self.do_rename(&key, &name),
             PromptPurpose::RenameCollection { key } => self.do_rename_collection(&key, &name),
-            p @ (PromptPurpose::NewEnvironment | PromptPurpose::RenameEnvironment { .. }) => {
+            p @ PromptPurpose::RenameEnvironment { .. } => {
                 self.finish_env_prompt(p, &name);
                 cx.notify();
                 return;
@@ -1502,7 +1405,7 @@ impl WorkspaceView {
         pos: gpui::Point<gpui::Pixels>,
         cx: &mut Context<Self>,
     ) {
-        if kind != MenuKind::Workspace {
+        if !matches!(kind, MenuKind::Workspace | MenuKind::Environment) {
             self.scope.selected = Some(key.to_string());
         }
         self.scope.tree_menu = Some(crate::workspace::TreeMenu {
@@ -1529,7 +1432,8 @@ impl WorkspaceView {
             .collect();
         s.active = self.scope.tabs.active().map(|t| t.key.clone());
         s.layout = self.layout();
-        s.active_env = self.scope.envs.active.clone();
+        s.active_env = self.active_env_name();
+        s.no_environment = s.active_env.is_none();
         s.hidden_collections = self
             .scope
             .workspace

@@ -52,19 +52,28 @@ impl WorkspaceView {
             .flex_row()
             .when(self.scope.left_open, |d| {
                 d.child(self.render_left_dock(&t, cx)).child(
+                    // A 5 px grab area with a 1 px line; the cursor signals it is draggable.
                     div()
                         .id("dock-resize")
-                        .w(px(4.))
+                        .relative()
+                        .w(px(5.))
                         .flex_none()
                         .cursor_col_resize()
-                        .bg(t.border)
-                        .hover(|s| s.bg(t.accent))
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(|this, _, _, cx| {
                                 this.resizing = true;
                                 cx.notify();
                             }),
+                        )
+                        .child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .bottom_0()
+                                .left(px(2.))
+                                .w(px(1.))
+                                .bg(t.border),
                         ),
                 )
             })
@@ -72,12 +81,6 @@ impl WorkspaceView {
     }
 
     fn render_left_dock(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let title = match self.scope.panel {
-            Panel::Workspace => "Workspace",
-            Panel::History => "History",
-            Panel::Environments => "Environments",
-            Panel::Sync => "Sync",
-        };
         let content = match self.scope.panel {
             Panel::Workspace => self.render_workspace_tree(t, cx).into_any_element(),
             Panel::History => self.render_history(t, cx).into_any_element(),
@@ -92,14 +95,52 @@ impl WorkspaceView {
             .bg(t.surface)
             .child(
                 row()
-                    .h(px(28.))
-                    .px_2()
-                    .justify_between()
-                    .text_size(px(12.))
-                    .text_color(t.text_muted)
+                    .h(px(30.))
+                    .px_1()
+                    .gap_1()
                     .border_b_1()
                     .border_color(t.border_variant)
-                    .child(title),
+                    .children(
+                        [
+                            (Panel::Workspace, "Workspace", "folder"),
+                            (Panel::Environments, "Environments", "layers"),
+                            (Panel::History, "History", "history"),
+                            (Panel::Sync, "Sync", "refresh-cw"),
+                        ]
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, (panel, label, glyph))| {
+                            let on = self.scope.panel == panel;
+                            div()
+                                .id(("dock-tab", i))
+                                .h_full()
+                                .px_3()
+                                .flex()
+                                .items_center()
+                                .cursor_pointer()
+                                .text_size(px(12.))
+                                .text_color(if on { t.text } else { t.text_muted })
+                                .border_b_2()
+                                .border_color(if on {
+                                    t.accent
+                                } else {
+                                    gpui::transparent_black()
+                                })
+                                .hover({
+                                    let c = t.text;
+                                    move |s| s.text_color(c)
+                                })
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.scope.panel = panel;
+                                    this.session_dirty = true;
+                                    cx.notify();
+                                }))
+                                .tooltip(move |_, cx| {
+                                    cx.new(|_| crate::ui::VarTip { text: label.into() }).into()
+                                })
+                                .child(icon(glyph, 16., if on { t.text } else { t.text_muted }))
+                        }),
+                    ),
             )
             .child(
                 div()
@@ -143,7 +184,7 @@ impl WorkspaceView {
     }
 
     /// Small icon-only button for tree rows. Stops mouse-down so the row's own click/drag does not fire.
-    fn row_icon_button(
+    pub(crate) fn row_icon_button(
         &self,
         t: &Theme,
         id: impl Into<gpui::ElementId>,
@@ -169,15 +210,14 @@ impl WorkspaceView {
         let Some(inline) = &self.scope.inline else {
             return div().into_any_element();
         };
-        let (glyph, placeholder) = if inline.folder {
-            ("folder", "Folder name")
+        let glyph = if inline.folder {
+            "folder"
         } else if inline.websocket {
-            ("globe", "WebSocket request name")
+            "globe"
         } else {
-            ("file-plus", "Request name")
+            "file-plus"
         };
         self.tree_row(t, "inline-new".into(), depth, false)
-            .track_focus(&self.inline_focus)
             .on_key_down(cx.listener(|this, ev, w, cx| this.on_inline_key(ev, w, cx)))
             .on_mouse_down_out(cx.listener(|this, _, w, cx| this.cancel_inline(w, cx)))
             .child(div().w(px(12.)).flex_none())
@@ -193,12 +233,7 @@ impl WorkspaceView {
                     .border_color(t.accent)
                     .bg(t.editor)
                     .overflow_hidden()
-                    .child(crate::ui::field_text(
-                        &inline.text,
-                        placeholder,
-                        t,
-                        self.is_focused(&self.inline_focus),
-                    )),
+                    .child(inline.text.clone()),
             )
             .into_any_element()
     }
@@ -211,7 +246,7 @@ impl WorkspaceView {
     }
 
     /// Vertical-dots button shown on row hover (or while that row's menu is open).
-    fn row_dots(
+    pub(crate) fn row_dots(
         &self,
         t: &Theme,
         group: &str,
@@ -572,6 +607,49 @@ impl WorkspaceView {
                 items.push(("Open", |w, k, win, cx| w.open_request(k, true, win, cx)))
             }
             MenuKind::Doc => {}
+            MenuKind::Environment => {
+                items.push(("Open", |w, k, _, cx| {
+                    if let Some(r) = w.env_root() {
+                        w.open_env_doc(&r, k, true);
+                    }
+                    cx.notify();
+                }));
+                if w_active_is(self, &key) {
+                    items.push(("Deactivate", |w, _, _, cx| w.set_active_env(None, cx)));
+                } else {
+                    items.push(("Set as active", |w, k, _, cx| {
+                        w.set_active_env(Some(k.to_string()), cx)
+                    }));
+                }
+                items.push(("Rename…", |w, k, win, cx| w.start_rename_env(k, win, cx)));
+                items.push(("Duplicate", |w, k, _, cx| w.duplicate_env(k, cx)));
+                items.push(("Delete…", |w, k, win, cx| {
+                    if let Some(r) = w.env_root() {
+                        w.confirm_delete_env(&r, k, win, cx)
+                    }
+                }));
+                items.push(("Copy name", |_, k, _, cx| {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(k.to_string()))
+                }));
+                items.push(("Copy path", |w, k, _, cx| {
+                    if let Some(r) = w.env_root() {
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                            fluxwire_format::env_path(&r, k).display().to_string(),
+                        ));
+                    }
+                }));
+                items.push(("Reveal in file manager", |w, k, _, cx| {
+                    if let Some(r) = w.env_root() {
+                        cx.reveal_path(&fluxwire_format::env_path(&r, k));
+                    }
+                }));
+                items.push(("Copy as .env (without secrets)", |w, k, _, cx| {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(w.env_as_dotenv(k)))
+                }));
+                items.push(("Copy as JSON (Postman format)", |w, k, _, cx| {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(w.env_as_postman_json(k)))
+                }));
+            }
             MenuKind::Workspace => {
                 items.push(("New collection…", |w, _, win, cx| {
                     w.start_new_collection(None, win, cx)
@@ -607,7 +685,10 @@ impl WorkspaceView {
                 w.confirm_delete_collection(k, win, cx)
             }));
         }
-        if !matches!(m.kind, MenuKind::Collection | MenuKind::Workspace) {
+        if !matches!(
+            m.kind,
+            MenuKind::Collection | MenuKind::Workspace | MenuKind::Environment
+        ) {
             items.push(("Rename", |w, k, win, cx| {
                 w.scope.selected = Some(k.to_string());
                 w.start_rename(win, cx)
@@ -621,7 +702,7 @@ impl WorkspaceView {
                 w.delete_selected(win, cx)
             }));
         }
-        if m.kind != MenuKind::Workspace {
+        if !matches!(m.kind, MenuKind::Workspace | MenuKind::Environment) {
             items.push(("Reveal in file manager", |w, k, _, cx| {
                 w.scope.selected = Some(k.to_string());
                 w.reveal_selected(cx)
@@ -859,4 +940,8 @@ pub(crate) fn middle_truncate(s: &str, max: usize) -> String {
         chars[..head].iter().collect::<String>(),
         chars[chars.len() - tail..].iter().collect::<String>()
     )
+}
+
+fn w_active_is(w: &WorkspaceView, name: &str) -> bool {
+    w.active_env_name().as_deref() == Some(name)
 }

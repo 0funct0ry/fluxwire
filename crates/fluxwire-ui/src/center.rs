@@ -13,7 +13,7 @@ use crate::{
     highlight::{Spans, highlight},
     tabs::{Tab, TabKind},
     theme::Theme,
-    ui::{icon, kbd_label, row, url_runs, with_variables},
+    ui::{icon, kbd_label, row, with_variables},
     workspace::{BottomTab, Col, METHODS, TabUi, Table, WorkspaceView},
     workspace_model::{OpenDoc, Target},
 };
@@ -307,16 +307,20 @@ impl WorkspaceView {
                                 let s = t.element_selected;
                                 move |st| st.bg(s)
                             })
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.scope.tabs.close(id);
+                            .on_click(cx.listener(move |this, _, w, cx| {
+                                if this.is_env_tab(id) {
+                                    this.close_env_tab(id, w, cx);
+                                } else {
+                                    this.scope.tabs.close(id);
+                                }
                                 cx.stop_propagation();
                                 cx.notify();
                             }))
                             .child(if tab.dirty {
                                 div()
-                                    .size(px(7.))
+                                    .size(px(8.))
                                     .rounded_full()
-                                    .bg(t.text_muted)
+                                    .bg(t.modified)
                                     .into_any_element()
                             } else if tab.pinned {
                                 icon("pin", 12., t.text_muted).into_any_element()
@@ -462,8 +466,20 @@ impl WorkspaceView {
     ) -> impl IntoElement {
         let method_label = method.to_string();
         let sending = self.is_sending();
-        let url_len = url.chars().count();
-        let look = self.var_look(&self.active_key().unwrap_or_default());
+        let key = self.active_key().unwrap_or_default();
+        let look = self.var_look(&key);
+        let url_input = self.url_input(&key, cx);
+        if url_input.read(cx).text() != url {
+            url_input.update(cx, |i, cx| i.set_text(url, cx));
+        }
+        let decorations = crate::ui::url_decorations(url, t, &look);
+        let url_focus = gpui::Focusable::focus_handle(url_input.read(cx), cx);
+        let url_focused = self.focused.as_ref() == Some(&url_focus);
+        let completing = self.scope.envs.completion.is_some();
+        url_input.update(cx, |i, cx| {
+            i.set_decorations(decorations, cx);
+            i.set_consume_vertical(!completing);
+        });
         row()
             .flex_none()
             .gap_2()
@@ -506,78 +522,18 @@ impl WorkspaceView {
             .child(
                 row()
                     .id("url")
-                    .track_focus(&self.url_focus)
                     .on_key_down(cx.listener(|this, ev, _, cx| this.on_url_key(ev, cx)))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, ev: &MouseDownEvent, window, cx| {
-                            this.url_mouse_down(ev, window, cx)
-                        }),
-                    )
-                    .on_mouse_move(cx.listener(|this, ev: &gpui::MouseMoveEvent, window, cx| {
-                        this.url_mouse_move(ev, window, cx)
-                    }))
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(|this, _: &gpui::MouseUpEvent, _, _| {
-                            this.scope.url_drag = false
-                        }),
-                    )
-                    .on_mouse_up_out(
-                        MouseButton::Left,
-                        cx.listener(|this, _: &gpui::MouseUpEvent, _, _| {
-                            this.scope.url_drag = false
-                        }),
-                    )
-                    .cursor_text()
                     .flex_1()
                     .h(px(30.))
                     .px_3()
                     .overflow_hidden()
                     .rounded(px(4.))
                     .border_1()
-                    .border_color(t.border)
-                    .focus({
-                        let a = t.accent;
-                        move |s| s.border_color(a)
-                    })
+                    .border_color(if url_focused { t.accent } else { t.border })
                     .bg(t.editor)
                     .font_family(BUFFER_FONT)
                     .text_size(px(14.))
-                    .child({
-                        let cell = self.url_bounds.clone();
-                        let sel = self
-                            .scope
-                            .url_sel
-                            .map(|(a, b)| (a.min(url_len), b.min(url_len)))
-                            .filter(|(a, b)| a != b);
-                        div()
-                            .relative()
-                            .min_h(px(18.))
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .children(url_runs(url, sel, t, Some(&look)))
-                            .when(sel.is_none(), |d| {
-                                let at =
-                                    self.scope.url_sel.map_or(url_len, |(a, _)| a.min(url_len));
-                                let cw = crate::ops::url_char_width(cx.text_system());
-                                d.child(
-                                    div()
-                                        .absolute()
-                                        .top_0()
-                                        .h_full()
-                                        .left(px(cw * at as f32))
-                                        .w(px(1.))
-                                        .bg(t.accent),
-                                )
-                            })
-                            .child(
-                                gpui::canvas(move |b, _, _| cell.set(b), |_, _, _, _| {})
-                                    .absolute()
-                                    .size_full(),
-                            )
-                    }),
+                    .child(div().flex_1().child(url_input)),
             )
             .child(
                 button(
@@ -711,13 +667,15 @@ impl WorkspaceView {
         text: String,
         spans: Spans,
         target: Target,
-        cursor: usize,
+        cursor: (usize, (usize, usize)),
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let (cursor, selection) = cursor;
         let content = editor_content(
             &text,
             &spans,
             (self.scope.target == target).then_some(cursor),
+            selection,
             Some(self.editor_bounds.clone()),
             t,
         );
@@ -735,15 +693,22 @@ impl WorkspaceView {
                 cx.listener(move |this, ev: &MouseDownEvent, w, cx| {
                     this.scope.target = target;
                     w.focus(&this.editor_focus);
-                    this.click_editor(ev.position, cx);
+                    this.click_editor(ev.position, ev.click_count, ev.modifiers.shift, cx);
                 }),
             )
+            .on_mouse_move(cx.listener(|this, ev: &gpui::MouseMoveEvent, _, cx| {
+                if ev.pressed_button == Some(MouseButton::Left) {
+                    this.drag_editor(ev.position, cx);
+                }
+            }))
             .child(content)
             .into_any_element()
     }
 
-    fn cursor_of(doc: &OpenDoc, target: Target) -> usize {
-        doc.editors.get(&target).map_or(0, |e| e.cursor)
+    fn cursor_of(doc: &OpenDoc, target: Target) -> (usize, (usize, usize)) {
+        doc.editors
+            .get(&target)
+            .map_or((0, (0, 0)), |e| (e.cursor, e.selection()))
     }
 
     fn render_request(
@@ -890,6 +855,7 @@ impl WorkspaceView {
             } else {
                 text.to_string()
             };
+            let completing = self.scope.envs.completion.is_some();
             let base = row()
                 .id((
                     if col == Col::Key { "cell-k" } else { "cell-v" },
@@ -910,10 +876,16 @@ impl WorkspaceView {
                 .when(col == Col::Key, |d| d.w(px(200.)).flex_none())
                 .when(col == Col::Value, |d| d.flex_1().min_w_0());
             if active {
-                base.track_focus(&self.cell_focus)
-                    .on_key_down(cx.listener(|this, ev, w, cx| this.on_cell_key(ev, w, cx)))
-                    .children(with_variables(&shown, t, Some(&look)))
-                    .child(div().w(px(1.)).h(px(14.)).bg(t.accent))
+                let input = editing.as_ref().map(|c| c.input.clone());
+                let decorations = crate::ui::url_decorations(&shown, t, &look);
+                if let Some(i) = &input {
+                    i.update(cx, |i, cx| {
+                        i.set_decorations(decorations, cx);
+                        i.set_consume_vertical(!completing);
+                    });
+                }
+                base.on_key_down(cx.listener(|this, ev, w, cx| this.on_cell_key(ev, w, cx)))
+                    .children(input)
             } else {
                 base.on_click(
                     cx.listener(move |this, _, w, cx| this.start_cell(table, idx, col, w, cx)),
@@ -1361,8 +1333,6 @@ impl WorkspaceView {
                     .child(
                         row()
                             .id("url")
-                            .track_focus(&self.url_focus)
-                            .on_key_down(cx.listener(|this, ev, _, cx| this.on_url_key(ev, cx)))
                             .flex_1()
                             .h(px(30.))
                             .px_3()
