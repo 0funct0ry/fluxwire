@@ -1,7 +1,7 @@
 //! The built-in tools, plus the `ui.*` tools a GUI host adds with [`ui_tools`].
 
 use crate::ToolClass;
-use crate::bridge::UiRequest;
+use crate::bridge::{UiCommand, UiRequest};
 use crate::registry::{Registry, ToolCtx, ToolDef};
 use rmcp::model::{JsonObject, Tool};
 use schemars::JsonSchema;
@@ -101,6 +101,123 @@ pub struct CaptureIn {
     pub path: String,
 }
 
+/// Flat input of `ui.command`: `command` selects the operation, the rest are its arguments.
+#[derive(Deserialize, JsonSchema)]
+pub struct CommandIn {
+    /// `open_file`, `set_url`, `select_tab` or `choose_environment`.
+    pub command: String,
+    /// `open_file`, `select_tab`: Workspace-relative key.
+    pub key: Option<String>,
+    /// `open_file`: open as a permanent tab.
+    #[serde(default)]
+    pub permanent: bool,
+    /// `set_url`: the new request target.
+    pub value: Option<String>,
+    /// `choose_environment`: environment name; omit to clear.
+    pub name: Option<String>,
+}
+
+impl CommandIn {
+    fn into_command(self) -> Result<UiCommand, String> {
+        let need =
+            |v: Option<String>, f: &str| v.ok_or(format!("`{f}` is required for {}", self.command));
+        Ok(match self.command.as_str() {
+            "open_file" => UiCommand::OpenFile {
+                key: need(self.key.clone(), "key")?,
+                permanent: self.permanent,
+            },
+            "set_url" => UiCommand::SetUrl {
+                value: need(self.value.clone(), "value")?,
+            },
+            "select_tab" => UiCommand::SelectTab {
+                key: need(self.key.clone(), "key")?,
+            },
+            "choose_environment" => UiCommand::ChooseEnvironment {
+                name: self.name.clone(),
+            },
+            other => return Err(format!("unknown command: {other}")),
+        })
+    }
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct InvokeActionIn {
+    /// Action name such as `fluxwire::Send`, or the bare `Send`.
+    pub name: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct KeyIn {
+    /// Keystroke string such as `cmd-enter` or `secondary-shift-p`.
+    pub keys: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct TypeTextIn {
+    pub text: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct ClickIn {
+    pub x: f32,
+    pub y: f32,
+    /// 1 = click, 2 = double click.
+    #[serde(default = "one")]
+    pub count: u32,
+}
+
+fn one() -> u32 {
+    1
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct ScrollIn {
+    pub x: f32,
+    pub y: f32,
+    #[serde(default)]
+    pub dx: f32,
+    #[serde(default)]
+    pub dy: f32,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct WaitIdleIn {
+    /// Default 5000.
+    pub timeout_ms: Option<u64>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct WaitForIn {
+    /// JSON pointer into `ui.state`, such as `/response/status`.
+    pub path: String,
+    /// Satisfied when the value equals this. Omit to wait for a non-null value.
+    pub equals: Option<serde_json::Value>,
+    /// Default 5000.
+    pub timeout_ms: Option<u64>,
+}
+
+/// Polls `check` every 25 ms until it returns `Some`, or errors at the timeout.
+fn poll(
+    ctx: &ToolCtx,
+    timeout_ms: Option<u64>,
+    what: &str,
+    check: impl Fn(&serde_json::Value) -> bool,
+    req: UiRequest,
+) -> Result<serde_json::Value, String> {
+    let end =
+        std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms.unwrap_or(5000));
+    loop {
+        let v = forward(ctx, req.clone())?;
+        if check(&v) {
+            return Ok(v);
+        }
+        if std::time::Instant::now() >= end {
+            return Err(format!("timed out waiting for {what}"));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
 /// Free-form JSON result of a `ui.*` tool.
 #[derive(Serialize, JsonSchema)]
 pub struct UiOut {}
@@ -156,6 +273,116 @@ pub fn ui_tools(r: &mut Registry) {
         |ctx, args| {
             let a: CaptureIn = parse(args)?;
             forward(ctx, UiRequest::CapturePrototype { path: a.path })
+        },
+    ));
+    r.register(def_in::<NoParams, UiOut>(
+        ToolClass::Ui,
+        "ui.list_actions",
+        "Every action: name, label, binding, context, palette flag and whether it is enabled now.",
+        |ctx, _| forward(ctx, UiRequest::ListActions),
+    ));
+    r.register(def_in::<InvokeActionIn, UiOut>(
+        ToolClass::Ui,
+        "ui.invoke_action",
+        "Invoke an action by name. Errors when the action is unknown or disabled. Returns the new generation and any notice.",
+        |ctx, args| {
+            let a: InvokeActionIn = parse(args)?;
+            forward(ctx, UiRequest::InvokeAction { name: a.name })
+        },
+    ));
+    r.register(def_in::<CommandIn, UiOut>(
+        ToolClass::Ui,
+        "ui.command",
+        "Typed operation with arguments: open_file, set_url, select_tab, choose_environment (field `command`).",
+        |ctx, args| {
+            let c = parse::<CommandIn>(args)?.into_command()?;
+            forward(ctx, UiRequest::Command { command: c })
+        },
+    ));
+    r.register(def_in::<KeyIn, UiOut>(
+        ToolClass::Ui,
+        "ui.key",
+        "Send a keystroke such as `cmd-enter`.",
+        |ctx, args| {
+            let a: KeyIn = parse(args)?;
+            forward(ctx, UiRequest::Key { keys: a.keys })
+        },
+    ));
+    r.register(def_in::<TypeTextIn, UiOut>(
+        ToolClass::Ui,
+        "ui.type_text",
+        "Type text into the focused input.",
+        |ctx, args| {
+            let a: TypeTextIn = parse(args)?;
+            forward(ctx, UiRequest::TypeText { text: a.text })
+        },
+    ));
+    r.register(def_in::<ClickIn, UiOut>(
+        ToolClass::Ui,
+        "ui.click",
+        "Click at window coordinates (device-independent pixels).",
+        |ctx, args| {
+            let a: ClickIn = parse(args)?;
+            forward(
+                ctx,
+                UiRequest::Click {
+                    x: a.x,
+                    y: a.y,
+                    count: a.count,
+                },
+            )
+        },
+    ));
+    r.register(def_in::<ScrollIn, UiOut>(
+        ToolClass::Ui,
+        "ui.scroll",
+        "Scroll the wheel at window coordinates.",
+        |ctx, args| {
+            let a: ScrollIn = parse(args)?;
+            forward(
+                ctx,
+                UiRequest::Scroll {
+                    x: a.x,
+                    y: a.y,
+                    dx: a.dx,
+                    dy: a.dy,
+                },
+            )
+        },
+    ));
+    r.register(def_in::<WaitIdleIn, UiOut>(
+        ToolClass::Ui,
+        "ui.wait_for_idle",
+        "Wait until no run is pending and the UI state has stopped changing; errors on timeout.",
+        |ctx, args| {
+            let a: WaitIdleIn = parse(args)?;
+            poll(
+                ctx,
+                a.timeout_ms,
+                "idle",
+                |v| v["idle"] == true,
+                UiRequest::Idle,
+            )
+        },
+    ));
+    r.register(def_in::<WaitForIn, UiOut>(
+        ToolClass::Ui,
+        "ui.wait_for",
+        "Wait until the JSON pointer `path` in ui.state equals `equals` (or is non-null); errors on timeout.",
+        |ctx, args| {
+            let a: WaitForIn = parse(args)?;
+            let (path, want) = (a.path.clone(), a.equals.clone());
+            poll(
+                ctx,
+                a.timeout_ms,
+                &format!("{} to match", a.path),
+                move |v| match (v.pointer(&path), &want) {
+                    (Some(got), Some(w)) => got == w,
+                    (Some(got), None) => !got.is_null(),
+                    _ => false,
+                },
+                UiRequest::State,
+            )
         },
     ));
 }

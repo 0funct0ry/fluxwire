@@ -67,3 +67,11 @@ The app brings its window to the front and waits for idle (no pending run events
 - **Bridge.** `UiBridge::call(UiRequest)` sends `(request, reply)` over an unbounded channel drained by a `cx.spawn` loop that runs `WindowHandle::update`; the caller waits 5 s and then reports "ui thread busy". Tool handlers are synchronous, so the Tokio worker blocks for that time.
 - **State.** `ui.state` is built by `WorkspaceView::ui_state` (`state_snapshot.rs`, always compiled, tested with `TestAppContext`). `generation` increments in `render` when the snapshot differs from the previous one, so it counts changes, not redraws.
 - **Capture.** gpui 0.2.2 exposes no render-to-image (no readback on `Window`/`App`; only the video-oriented `scap` feature), so offscreen tier 0 is not available. `capture.rs` implements tier 1: window bounds in screen coordinates and scale from `state.window`, then `screencapture -x -R x,y,w,h`. A failing or near-empty result is reported with the Screen Recording permission to grant. Linux and Windows capture remain M9.6.
+
+## M9.4 notes
+
+- **Actions.** `ui.list_actions` walks `ACTIONS` and asks `Window::is_action_available` for each; `ui.invoke_action` resolves with `find_action`, refuses disabled actions, and calls `Window::dispatch_action`, so key-context rules apply exactly as for a keystroke.
+- **Commands.** `ui.command` is a flat input (`command` plus `key`/`value`/`name`/`permanent`) because MCP input schemas need a root `object`. It calls `open_request`, `set_url_text`, `TabModel::activate` and `set_active_env`; there is no second code path.
+- **Input.** `ui.key` uses `Keystroke::parse` and `Window::dispatch_keystroke`; `ui.type_text` sends one keystroke per character with `key_char` set, so it goes through the focused input's platform input handler.
+- **Waiting.** The tool layer polls (25 ms) so the UI thread never blocks. `ui.wait_for_idle` polls `UiRequest::Idle`: idle means no send or folder run is pending and the last rendered snapshot equals the current one. `ui.wait_for` polls `ui.state`.
+- **Pointer input.** `Window::dispatch_event` returns a crate-private type in gpui 0.2.2, so clicks and scrolls cannot be injected from outside. `ui.click`/`ui.scroll` return an error; M9.5's element ids will trigger the matching action instead.

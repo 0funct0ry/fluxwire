@@ -3025,6 +3025,8 @@ fn only_allow_listed_modules_read_key_char() {
         "text_input.rs",
         // Test helpers build keystrokes.
         "tests.rs",
+        // `ui.type_text` builds one keystroke per character.
+        "ui_actions.rs",
     ];
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut offenders = Vec::new();
@@ -3955,4 +3957,90 @@ fn ui_requests_run_on_the_view(cx: &mut TestAppContext) {
         .unwrap();
     assert_eq!(state["active_tab"], GET);
     assert_eq!(state["tabs"][0]["pinned"], false);
+}
+
+#[cfg(feature = "dev-mcp")]
+#[gpui::test]
+fn input_requests_drive_actions_and_commands(cx: &mut TestAppContext) {
+    use fluxwire_agent::bridge::{UiCommand, UiRequest};
+    let (view, cx) = setup(cx);
+    let call = |req: UiRequest, cx: &mut VisualTestContext| {
+        view.update_in(cx, |w, window, cx| w.handle_ui_request(req, window, cx))
+    };
+    let listed = call(UiRequest::ListActions, cx).unwrap();
+    let rows = listed["actions"].as_array().unwrap();
+    assert_eq!(rows.len(), ACTIONS.len());
+    assert!(
+        call(
+            UiRequest::InvokeAction {
+                name: "NoSuchAction".into()
+            },
+            cx
+        )
+        .is_err()
+    );
+    let g0 = call(UiRequest::Idle, cx).unwrap()["generation"]
+        .as_u64()
+        .unwrap();
+    let opened = call(
+        UiRequest::Command {
+            command: UiCommand::OpenFile {
+                key: GET.into(),
+                permanent: true,
+            },
+        },
+        cx,
+    )
+    .unwrap();
+    assert!(opened["generation"].as_u64().unwrap() > g0);
+    assert!(
+        call(
+            UiRequest::Command {
+                command: UiCommand::SelectTab { key: "nope".into() }
+            },
+            cx
+        )
+        .is_err()
+    );
+    assert!(call(UiRequest::Key { keys: "".into() }, cx).is_err());
+    assert!(
+        call(
+            UiRequest::Click {
+                x: 1.0,
+                y: 1.0,
+                count: 1
+            },
+            cx
+        )
+        .is_err()
+    );
+    let set = call(
+        UiRequest::Command {
+            command: UiCommand::SetUrl {
+                value: "http://x.test/a".into(),
+            },
+        },
+        cx,
+    );
+    assert!(set.is_ok());
+    let state = call(UiRequest::State, cx).unwrap();
+    assert_eq!(state["active_tab"], GET);
+    let tab = state["tabs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["key"] == GET)
+        .unwrap();
+    assert_eq!(tab["dirty"], true);
+}
+
+#[test]
+fn char_keystrokes_carry_their_text() {
+    #[cfg(feature = "dev-mcp")]
+    {
+        let k = crate::ui_actions::char_keystroke('A');
+        assert_eq!(k.key_char.as_deref(), Some("A"));
+        assert!(k.modifiers.shift);
+        assert_eq!(crate::ui_actions::char_keystroke(' ').key, "space");
+    }
 }

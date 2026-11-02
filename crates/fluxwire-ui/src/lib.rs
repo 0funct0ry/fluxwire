@@ -57,6 +57,8 @@ pub mod text_input;
 pub mod theme;
 pub mod theme_picker;
 pub mod ui;
+#[cfg(feature = "dev-mcp")]
+pub mod ui_actions;
 pub mod viewer;
 pub mod workspace;
 pub mod workspace_model;

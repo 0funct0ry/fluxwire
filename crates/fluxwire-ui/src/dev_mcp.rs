@@ -67,6 +67,18 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<serde_json::Value, String> {
+        match self.handle_input_request(req.clone(), window, cx) {
+            Some(out) => out,
+            None => self.handle_core_request(req, window, cx),
+        }
+    }
+
+    fn handle_core_request(
+        &mut self,
+        req: UiRequest,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<serde_json::Value, String> {
         match req {
             UiRequest::State => {
                 serde_json::to_value(self.ui_state(window, cx)).map_err(|e| e.to_string())
@@ -111,6 +123,7 @@ impl WorkspaceView {
                         .unwrap_or_else(|| format!("could not open {key}")))
                 }
             }
+            _ => Err("unsupported request".into()),
         }
     }
 }
