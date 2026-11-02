@@ -13,7 +13,7 @@ mod folder;
 pub mod prepare;
 mod report;
 pub use folder::*;
-pub use report::{to_json, to_junit};
+pub use report::{error_text, to_json, to_junit, to_tap};
 
 use fluxwire_model::{BlockData, BlockKind, Diagnostic, Edit, FluxDoc, FmValue};
 pub use fluxwire_protocol::{

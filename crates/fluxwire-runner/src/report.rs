@@ -13,7 +13,8 @@ fn status_name(s: RequestStatus) -> &'static str {
     }
 }
 
-fn error_text(r: &RequestRun) -> Option<String> {
+/// Redacted error text of a request run (request error and failed scripts), if any.
+pub fn error_text(r: &RequestRun) -> Option<String> {
     let res = &r.result;
     let mut parts = Vec::new();
     if let Some(e) = &res.error {
@@ -230,4 +231,66 @@ pub fn to_junit(run: &FolderRunResult) -> String {
     }
     out.push_str("</testsuites>\n");
     out
+}
+
+/// TAP 14: one `ok`/`not ok` line per test, or per request when it has none.
+pub fn to_tap(run: &FolderRunResult) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    let mut n = 0usize;
+    let mut push = |ok: bool, name: &str, skip: Option<&str>, diag: Vec<String>| {
+        n += 1;
+        let mut l = format!(
+            "{} {n} - {}",
+            if ok { "ok" } else { "not ok" },
+            name.replace('#', "\\#")
+        );
+        if let Some(r) = skip {
+            l.push_str(&format!(" # SKIP {r}"));
+        }
+        lines.push(l);
+        if !diag.is_empty() {
+            lines.push("  ---".into());
+            for d in diag {
+                lines.push(format!(
+                    "  message: {}",
+                    serde_json::to_string(&d).unwrap_or_default()
+                ));
+            }
+            lines.push("  ...".into());
+        }
+    };
+    for r in &run.requests {
+        let res = &r.result;
+        let label = format!("{} {}", r.request.method, r.request.key);
+        if let Some(reason) = &res.skipped {
+            push(true, &label, Some(reason), vec![]);
+            continue;
+        }
+        let err = error_text(r);
+        if res.tests.is_empty() || err.is_some() {
+            push(err.is_none(), &label, None, err.into_iter().collect());
+        }
+        for t in &res.tests {
+            let mut d = Vec::new();
+            if !t.passed {
+                if let Some(m) = &t.message {
+                    d.push(res.redact(m));
+                }
+                if let (Some(e), Some(a)) = (&t.expected, &t.actual) {
+                    d.push(format!(
+                        "expected {} but got {}",
+                        res.redact(e),
+                        res.redact(a)
+                    ));
+                }
+            }
+            push(
+                t.passed,
+                &format!("{label} > {}", res.redact(&t.name)),
+                None,
+                d,
+            );
+        }
+    }
+    format!("TAP version 14\n1..{n}\n{}\n", lines.join("\n"))
 }

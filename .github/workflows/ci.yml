@@ -91,3 +91,26 @@ jobs:
         with:
           name: smoke-ui-macos
           path: target/smoke
+
+  # The static CLI alone, inside an alpine container with only that binary.
+  cli-static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: make cli-static
+      - name: Serve a health endpoint
+        run: |
+          mkdir -p /tmp/www && echo ok > /tmp/www/health
+          (cd /tmp/www && python3 -m http.server 8099 --bind 127.0.0.1 &) ; sleep 1
+      - name: Run the sample collection in alpine
+        run: |
+          docker run --rm --network host \
+            -v "$PWD/target/x86_64-unknown-linux-musl/release/fluxwire-cli:/usr/local/bin/fluxwire-cli:ro" \
+            -v "$PWD/fixtures:/fixtures" -w /fixtures alpine:3 \
+            fluxwire-cli run cli-smoke --env ci --reporter junit -o /fixtures/out.xml
+          grep -q "<testsuites" fixtures/out.xml

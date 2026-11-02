@@ -8,7 +8,7 @@ FEATURES := --features fluxwire/runtime-shaders
 endif
 endif
 
-.PHONY: build run test lint fmt smoke smoke-ui
+.PHONY: build run test lint fmt smoke smoke-ui cli cli-static
 
 build:
 	cargo build --workspace $(FEATURES)
@@ -35,3 +35,11 @@ smoke-ui:
 	SMOKE_FEATURES="dev-mcp$(if $(FEATURES),$(comma)runtime-shaders)" scripts/smoke-ui.sh $(SMOKE_ARGS) \
 		fixtures/scenarios/m02-collections.yaml fixtures/scenarios/m04-environments.yaml \
 		fixtures/scenarios/m07-scripts-trust.yaml fixtures/scenarios/m08-websocket.yaml
+
+# Headless CLI (no GPUI).
+cli:
+	cargo build --release -p fluxwire-cli
+
+# Static Linux binary (needs `rustup target add x86_64-unknown-linux-musl` and musl-tools).
+cli-static:
+	cargo build --release -p fluxwire-cli --target x86_64-unknown-linux-musl

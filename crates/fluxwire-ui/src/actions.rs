@@ -116,6 +116,8 @@ actions!(
         NewWorkspaceCollection,
         CopyWorkspacePath,
         EditKeymap,
+        InstallCliShim,
+        UninstallCliShim,
     ]
 );
 
@@ -356,6 +358,8 @@ pub static ACTIONS: &[ActionInfo] = &[
         None
     ),
     a!("workspace: copy path", CopyWorkspacePath, None, None),
+    a!("cli: install shell command", InstallCliShim, None, None),
+    a!("cli: uninstall shell command", UninstallCliShim, None, None),
     h!("keymap: reload", ReloadKeymap, None, None),
     h!("keymap: open keymap.toml", OpenKeymapFile, None, None),
     a!("settings: show", OpenSettingsFile, None, None),
@@ -691,6 +695,8 @@ const WORKSPACE_ACTIONS: &[&str] = &[
     "EditKeymap",
     "NewWorkspaceCollection",
     "CopyWorkspacePath",
+    "InstallCliShim",
+    "UninstallCliShim",
     "RevealInFileManager",
     "ToggleLeftDock",
     "ToggleBottomDock",
@@ -1067,6 +1073,8 @@ mod tests {
         "workspace: new collection",
         "workspace: copy path",
         "keymap: edit",
+        "cli: install shell command",
+        "cli: uninstall shell command",
     ];
 
     #[test]

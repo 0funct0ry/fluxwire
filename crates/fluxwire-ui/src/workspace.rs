@@ -1570,6 +1570,8 @@ impl Render for WorkspaceView {
             },
             NewWorkspaceCollection => |this, w, c| this.start_new_collection(None, w, c),
             CopyWorkspacePath => |this, _w, c| this.copy_workspace_path(c),
+            InstallCliShim => |this, _w, c| this.install_cli_shim(c),
+            UninstallCliShim => |this, _w, c| this.uninstall_cli_shim(c),
             EditKeymap => |this, _w, c| this.edit_keymap(c),
             SwitchEnvironment => |this, w, c| this.open_modal(ModalKind::Environment, w, c),
             SwitchWorkspace => |this, w, c| this.open_modal(ModalKind::Workspaces, w, c),
@@ -1770,10 +1772,20 @@ pub fn install_theme(configured: Option<String>, cx: &mut gpui::App) {
 
 /// Launches the application and blocks until the last window closes.
 pub fn run() {
-    let path = std::env::args()
-        .nth(1)
-        .map(PathBuf::from)
-        .filter(|p| p.is_dir());
+    let path = std::env::args().nth(1).and_then(|a| {
+        let p = PathBuf::from(&a);
+        match p.canonicalize() {
+            Ok(c) if c.is_dir() => Some(c),
+            Ok(_) => {
+                eprintln!("fluxwire: {a} is not a directory");
+                None
+            }
+            Err(e) => {
+                eprintln!("fluxwire: {a}: {e}");
+                None
+            }
+        }
+    });
     #[cfg(feature = "dev-mcp")]
     run_with(path, HostOpts::default());
     #[cfg(not(feature = "dev-mcp"))]
@@ -1811,7 +1823,7 @@ pub fn run_with(path: Option<PathBuf>, host: HostOpts) {
             })
             .detach();
             let handle = open_window(cx).expect("open main window");
-            // `fluxwire [PATH]` opens PATH; the full CLI arrives in M10.
+            // `fluxwire [PATH]` opens PATH as the Workspace.
             if let Some(path) = &path {
                 handle
                     .update(cx, |ws, window, cx| ws.open_workspace(path, window, cx))

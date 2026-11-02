@@ -5,6 +5,7 @@ pub mod assets;
 #[cfg(feature = "dev-mcp")]
 pub mod capture;
 pub mod center;
+pub mod cli_shim;
 pub mod code_editor;
 pub mod code_editor_element;
 pub mod code_editor_ops;
