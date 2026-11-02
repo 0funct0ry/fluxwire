@@ -92,19 +92,10 @@ impl WorkspaceView {
                     }
                 }
             }
-            UiRequest::CapturePrototype { path } => {
-                let b = window.bounds();
-                let region = crate::capture::Region {
-                    x: f32::from(b.origin.x),
-                    y: f32::from(b.origin.y),
-                    w: f32::from(b.size.width),
-                    h: f32::from(b.size.height),
-                    scale: window.scale_factor(),
-                };
-                window.activate_window();
-                let out = crate::capture::capture(region, Path::new(&path))?;
-                Ok(serde_json::json!({"path": out, "region": region}))
-            }
+            UiRequest::Activate => Ok(self.activate_for_capture(window)),
+            UiRequest::Capture { element } => self.capture_request(element, window, cx),
+            UiRequest::SetTheme { name } => self.set_theme_request(name, cx),
+            UiRequest::Resize { width, height } => self.resize_request(width, height, window),
             UiRequest::OpenRequest { key, permanent } => {
                 self.notice = None;
                 self.open_request(&key, permanent, window, cx);

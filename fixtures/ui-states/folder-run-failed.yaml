@@ -1,0 +1,10 @@
+# A folder run with failures. Needs the sample API stopped or its failing endpoint enabled.
+workspace: fixtures/payments-api
+size: default
+steps:
+  - step: command
+    command: choose_environment
+    name: local
+  - step: invoke
+    name: RunFolder
+  - step: wait_idle

@@ -1,0 +1,6 @@
+workspace: fixtures/format-edge
+size: default
+steps:
+  - step: invoke
+    name: ShowProblems
+  - step: wait_idle

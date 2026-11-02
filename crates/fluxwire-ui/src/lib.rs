@@ -11,6 +11,8 @@ pub mod code_editor_ops;
 pub mod completion;
 pub mod completion_providers;
 pub mod containment;
+#[cfg(feature = "dev-mcp")]
+pub mod dev_capture;
 pub mod dev_id;
 #[cfg(feature = "dev-mcp")]
 pub mod dev_mcp;

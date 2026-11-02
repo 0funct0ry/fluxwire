@@ -1,0 +1,17 @@
+# A 200 JSON response. Needs the sample API running for `baseUrl` of the `local` environment.
+workspace: fixtures/payments-api
+size: default
+steps:
+  - step: command
+    command: open_file
+    key: payments/get-payment.flux.md
+    permanent: true
+  - step: command
+    command: choose_environment
+    name: local
+  - step: invoke
+    name: Send
+  - step: wait_for
+    path: /response/status
+    equals: 200
+  - step: wait_idle

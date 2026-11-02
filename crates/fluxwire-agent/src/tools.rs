@@ -96,9 +96,42 @@ pub struct OpenRequestIn {
 }
 
 #[derive(Deserialize, JsonSchema)]
-pub struct CaptureIn {
-    /// Where to write the PNG.
-    pub path: String,
+pub struct ScreenshotIn {
+    /// A named state from `fixtures/ui-states` (such as `env-modal`) or a list of steps
+    /// (`open`, `invoke`, `key`, `type`, `command`, `set_theme`, `resize`, `wait_for`,
+    /// `wait_idle`) applied before the capture.
+    pub state: Option<crate::state::StateSpec>,
+    /// Crop to the visible bounds of this element id from `ui.tree`.
+    pub element: Option<String>,
+    /// Volatile text to mask: `clock`, `timings` or `{x,y,w,h}` in points. Defaults to
+    /// `["clock", "timings"]`; pass `[]` to mask nothing.
+    pub mask: Option<Vec<crate::state::Mask>>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct ScreenshotAllIn {
+    /// State names from `fixtures/ui-states`; empty keeps the current state.
+    #[serde(default)]
+    pub states: Vec<String>,
+    /// Theme names such as `one-dark`, `one-light`; empty keeps the current theme.
+    #[serde(default)]
+    pub themes: Vec<String>,
+    /// Sizes: `default` (1280x800), `compact` (900x600), `min` or `WxH`; empty keeps the size.
+    #[serde(default)]
+    pub sizes: Vec<String>,
+    pub mask: Option<Vec<crate::state::Mask>>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct SetThemeIn {
+    /// Theme name such as `one-dark` or `one-light`. Not saved to settings.
+    pub name: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct ResizeIn {
+    /// `default` (1280x800), `compact` (900x600), `min`, or `WxH` in points.
+    pub size: String,
 }
 
 /// Flat input of `ui.command`: `command` selects the operation, the rest are its arguments.
@@ -248,6 +281,33 @@ fn poll(
 #[derive(Serialize, JsonSchema)]
 pub struct UiOut {}
 
+/// Runs `f` with a screenshot environment over the UI bridge. State directories are searched
+/// in `FLUXWIRE_UI_STATES`, the working directory and the allowed roots.
+fn with_env<T>(
+    ctx: &ToolCtx,
+    f: impl FnOnce(&crate::screenshot::Env) -> Result<T, String>,
+) -> Result<T, String> {
+    let ui = ctx
+        .ui
+        .as_ref()
+        .ok_or_else(|| "no UI bridge in this host".to_string())?;
+    let mut search = vec![];
+    if let Some(d) = std::env::var_os("FLUXWIRE_UI_STATES") {
+        // The variable names the `ui-states` directory itself; its search root is two levels up.
+        let d = std::path::PathBuf::from(d);
+        if let Some(root) = d.parent().and_then(|p| p.parent()) {
+            search.push(root.to_path_buf());
+        }
+    }
+    search.extend(std::env::current_dir());
+    search.extend(ctx.roots.list().iter().cloned());
+    f(&crate::screenshot::Env {
+        ui: ui.as_ref(),
+        pace: crate::screenshot::Pace::normal(),
+        search,
+    })
+}
+
 fn forward(ctx: &ToolCtx, req: UiRequest) -> Result<serde_json::Value, String> {
     ctx.ui
         .as_ref()
@@ -292,13 +352,59 @@ pub fn ui_tools(r: &mut Registry) {
             )
         },
     ));
-    r.register(def_in::<CaptureIn, UiOut>(
+    r.register(def_in::<ScreenshotIn, UiOut>(
         ToolClass::Ui,
-        "ui.capture_prototype",
-        "Prototype: write a PNG of the app window with `screencapture` (macOS; needs Screen Recording permission). Superseded by `ui.screenshot`.",
+        "ui.screenshot",
+        "PNG of the app window, or of one element, optionally after applying a named or explicit `state`. Waits for the UI to settle, masks volatile text, and returns the image plus the `ui.state` JSON, size, theme, scale and capture tier. Needs a visible window; on macOS, Screen Recording permission.",
         |ctx, args| {
-            let a: CaptureIn = parse(args)?;
-            forward(ctx, UiRequest::CapturePrototype { path: a.path })
+            let a: ScreenshotIn = parse(args)?;
+            with_env(ctx, |env| {
+                crate::screenshot::screenshot(
+                    env,
+                    a.state.as_ref(),
+                    a.element.as_deref(),
+                    a.mask.as_deref(),
+                )
+            })
+        },
+    ));
+    r.register(def_in::<ScreenshotAllIn, UiOut>(
+        ToolClass::Ui,
+        "ui.screenshot_all",
+        "Capture every combination of `states` x `themes` x `sizes` and return a labelled image per cell (`state/theme/size`). The theme and window size are restored afterwards.",
+        |ctx, args| {
+            let a: ScreenshotAllIn = parse(args)?;
+            with_env(ctx, |env| {
+                crate::screenshot::screenshot_all(
+                    env,
+                    &a.states,
+                    &a.themes,
+                    &a.sizes,
+                    a.mask.as_deref(),
+                )
+            })
+        },
+    ));
+    r.register(def_in::<SetThemeIn, UiOut>(
+        ToolClass::Ui,
+        "ui.set_theme",
+        "Switch the theme (`one-dark`, `one-light` or any bundled theme name) without saving it to settings.",
+        |ctx, args| {
+            let a: SetThemeIn = parse(args)?;
+            forward(ctx, UiRequest::SetTheme { name: Some(a.name) })
+        },
+    ));
+    r.register(def_in::<ResizeIn, UiOut>(
+        ToolClass::Ui,
+        "ui.resize",
+        "Resize the window to a preset (`default` 1280x800, `compact` 900x600, `min`) or `WxH` points; waits until the window reports the size.",
+        |ctx, args| {
+            let a: ResizeIn = parse(args)?;
+            let size = crate::state::Size::parse(&a.size)?;
+            with_env(ctx, |env| {
+                crate::screenshot::resize(env, size)?;
+                Ok(serde_json::json!({"size": size.label()}))
+            })
         },
     ));
     r.register(def_in::<NoParams, UiOut>(

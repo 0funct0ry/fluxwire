@@ -14,8 +14,15 @@ pub enum UiRequest {
     OpenWorkspace { path: String },
     /// Open a Request by its Workspace-relative key.
     OpenRequest { key: String, permanent: bool },
-    /// Prototype of window capture (M9.6 replaces it): write a PNG of the window to `path`.
-    CapturePrototype { path: String },
+    /// Bring the window to the front (the tool layer then waits for it to settle).
+    Activate,
+    /// Capture the window, or the visible bounds of `element`, as a PNG. The answer carries the
+    /// base64 PNG, region, scale, tier, `ui.state` and the rectangles of volatile elements.
+    Capture { element: Option<String> },
+    /// Set the theme by name without saving it to settings; `None` restores the configured one.
+    SetTheme { name: Option<String> },
+    /// Resize the window to `width` x `height` points.
+    Resize { width: f32, height: f32 },
     /// Every registered action with its binding, context and whether it is enabled now.
     ListActions,
     /// Dispatch an action by name; errors when unknown or disabled.

@@ -1,7 +1,7 @@
 //! Sending a request and showing the response (SPEC §17.4): per-tab run state, the runner
 //! bridge, cURL copy, and the response pane with a virtualized body viewer.
 
-use crate::dev_id::{DevClick, Role};
+use crate::dev_id::{DevClick, DevTag, Role};
 use std::{
     collections::BTreeSet,
     ops::Range,
@@ -1248,7 +1248,11 @@ impl WorkspaceView {
                     .text_color(t.status_color(x.status))
                     .child(format!("{} {}", x.status, x.status_text)),
             )
-            .child(fmt_ms(o.total_ms))
+            .child(
+                div()
+                    .dev_tag("volatile.total-time", Role::Text, "timings", true)
+                    .child(fmt_ms(o.total_ms)),
+            )
             .child(size)
             .child(x.version.clone())
             .when(!o.redirects.is_empty(), |d| {
@@ -1325,7 +1329,11 @@ impl WorkspaceView {
                 .id("resp-scroll")
                 .flex_1()
                 .overflow_y_scroll()
-                .child(self.timeline(t, &o.timings, o.total_ms.max(1.0), &o.redirects))
+                .child(
+                    div()
+                        .dev_tag("volatile.timeline", Role::Text, "timings", true)
+                        .child(self.timeline(t, &o.timings, o.total_ms.max(1.0), &o.redirects)),
+                )
                 .into_any_element(),
             4 => div()
                 .id("resp-scroll")

@@ -1,0 +1,6 @@
+workspace: fixtures/payments-api
+size: default
+steps:
+  - step: invoke
+    name: CommandPalette
+  - step: wait_idle

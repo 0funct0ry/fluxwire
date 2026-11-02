@@ -4034,6 +4034,83 @@ fn input_requests_drive_actions_and_commands(cx: &mut TestAppContext) {
     assert_eq!(tab["dirty"], true);
 }
 
+#[cfg(feature = "dev-mcp")]
+#[gpui::test]
+fn screenshot_support_requests_change_theme_and_size(cx: &mut TestAppContext) {
+    use fluxwire_agent::bridge::UiRequest;
+    let (view, cx) = setup(cx);
+    let call = |req: UiRequest, cx: &mut VisualTestContext| {
+        view.update_in(cx, |w, window, cx| w.handle_ui_request(req, window, cx))
+    };
+    call(
+        UiRequest::SetTheme {
+            name: Some("one-light".into()),
+        },
+        cx,
+    )
+    .unwrap();
+    assert_eq!(
+        call(UiRequest::State, cx).unwrap()["theme"]["name"],
+        "One Light"
+    );
+    call(
+        UiRequest::SetTheme {
+            name: Some("one-dark".into()),
+        },
+        cx,
+    )
+    .unwrap();
+    assert_eq!(
+        call(UiRequest::State, cx).unwrap()["theme"]["name"],
+        "One Dark"
+    );
+    let err = call(
+        UiRequest::SetTheme {
+            name: Some("no such theme".into()),
+        },
+        cx,
+    )
+    .unwrap_err();
+    assert!(err.contains("unknown theme"), "{err}");
+    assert!(call(UiRequest::SetTheme { name: None }, cx).is_ok());
+
+    call(
+        UiRequest::Resize {
+            width: 900.0,
+            height: 600.0,
+        },
+        cx,
+    )
+    .unwrap();
+    cx.run_until_parked();
+    let w = call(UiRequest::State, cx).unwrap()["window"].clone();
+    assert_eq!(
+        (w["width"].as_f64(), w["height"].as_f64()),
+        (Some(900.0), Some(600.0))
+    );
+
+    assert_eq!(call(UiRequest::Activate, cx).unwrap()["activated"], true);
+}
+
+#[cfg(feature = "dev-mcp")]
+#[gpui::test]
+fn capturing_an_unknown_element_is_an_error_not_an_image(cx: &mut TestAppContext) {
+    use fluxwire_agent::bridge::UiRequest;
+    let (view, cx) = setup(cx);
+    let err = view
+        .update_in(cx, |w, window, cx| {
+            w.handle_ui_request(
+                UiRequest::Capture {
+                    element: Some("no.such.element".into()),
+                },
+                window,
+                cx,
+            )
+        })
+        .unwrap_err();
+    assert!(err.contains("no element"), "{err}");
+}
+
 #[test]
 fn char_keystrokes_carry_their_text() {
     #[cfg(feature = "dev-mcp")]

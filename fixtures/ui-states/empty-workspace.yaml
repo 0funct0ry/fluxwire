@@ -1,0 +1,5 @@
+size: default
+steps:
+  - step: invoke
+    name: CloseWorkspace
+  - step: wait_idle

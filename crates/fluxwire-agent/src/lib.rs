@@ -5,10 +5,13 @@ pub mod bridge;
 pub mod class;
 pub mod config;
 pub mod engine;
+pub mod image;
 pub mod paths;
 pub mod registry;
+pub mod screenshot;
 pub mod serve;
 pub mod server;
+pub mod state;
 pub mod tools;
 pub mod transport;
 

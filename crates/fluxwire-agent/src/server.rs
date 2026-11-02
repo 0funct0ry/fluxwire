@@ -87,9 +87,60 @@ impl ServerHandler for FluxwireServer {
             .await
             .map_err(|e| McpError::internal_error(format!("tool panicked: {e}"), None))?;
         let result = match out {
-            Ok(v) => CallToolResult::structured(v),
+            Ok(v) => into_result(v),
             Err(e) => CallToolResult::error(vec![ContentBlock::text(e)]),
         };
         Ok(result.into())
+    }
+}
+
+/// Key a handler uses to attach images: `[{"label"?, "mime", "data"}]`, `data` base64. The
+/// key is removed from the structured result and the images become image content blocks.
+pub const IMAGES_KEY: &str = "_images";
+
+/// Turns a handler's JSON into a tool result, lifting attached images into content blocks.
+pub fn into_result(mut v: serde_json::Value) -> CallToolResult {
+    let images = v
+        .as_object_mut()
+        .and_then(|o| o.remove(IMAGES_KEY))
+        .and_then(|i| i.as_array().cloned())
+        .unwrap_or_default();
+    let mut result = CallToolResult::structured(v);
+    for img in images {
+        let field = |k: &str| img.get(k).and_then(|x| x.as_str()).map(String::from);
+        if let Some(label) = field("label") {
+            result.content.push(ContentBlock::text(label));
+        }
+        if let Some(data) = field("data") {
+            let mime = field("mime").unwrap_or_else(|| "image/png".into());
+            result.content.push(ContentBlock::image(data, mime));
+        }
+    }
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plain_results_have_no_images() {
+        let r = into_result(serde_json::json!({"a": 1}));
+        assert_eq!(r.content.len(), 1);
+        assert_eq!(r.structured_content, Some(serde_json::json!({"a": 1})));
+    }
+
+    #[test]
+    fn attached_images_become_image_blocks_and_leave_the_structure() {
+        let r = into_result(serde_json::json!({
+            "tier": "macos",
+            "_images": [{"label": "env-modal/one-dark/1280x800", "mime": "image/png", "data": "AAAA"}],
+        }));
+        assert_eq!(
+            r.structured_content,
+            Some(serde_json::json!({"tier": "macos"}))
+        );
+        assert_eq!(r.content.len(), 3);
+        assert!(matches!(r.content[2], ContentBlock::Image(_)));
     }
 }
