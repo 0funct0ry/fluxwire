@@ -1,9 +1,10 @@
 //! History tab header, toolbar (search, chips, time range) and stats strip (SPEC §13.1).
 
+use crate::dev_id::{DevClick, Role};
 use fluxwire_store::{ExportFormat, Scope, Stats};
 use gpui::{
-    AnyElement, Context, InteractiveElement, IntoElement, ParentElement,
-    StatefulInteractiveElement, Styled, deferred, div, prelude::*, px,
+    AnyElement, Context, InteractiveElement, IntoElement, ParentElement, Styled, deferred, div,
+    prelude::*, px,
 };
 
 use crate::{
@@ -141,14 +142,24 @@ impl WorkspaceView {
                         let h = t.element_hover;
                         move |s| s.bg(h)
                     })
-                    .on_click(cx.listener(|this, _, _, cx| this.history_reload(cx)))
+                    .dev_click(
+                        "hist-refresh",
+                        Role::Button,
+                        "hist-refresh",
+                        true,
+                        cx.listener(|this, _, _, cx| this.history_reload(cx)),
+                    )
                     .child(icon("refresh-cw", 14., t.text_muted)),
             )
             .child(
                 div()
                     .relative()
                     .child(
-                        head_btn("hist-export", "Export ▾", self.history.export_menu).on_click(
+                        head_btn("hist-export", "Export ▾", self.history.export_menu).dev_click(
+                            "history_filters.render_history_header",
+                            Role::Button,
+                            "history_filters.render_history_header",
+                            true,
                             cx.listener(|this, _, _, cx| {
                                 this.history.export_menu = !this.history.export_menu;
                                 this.history.clear_menu = false;
@@ -160,12 +171,20 @@ impl WorkspaceView {
                         d.child(
                             deferred(
                                 dropdown("hist-export-menu")
-                                    .child(menu_item("hist-export-json", "JSON").on_click(
+                                    .child(menu_item("hist-export-json", "JSON").dev_click(
+                                        "history_filters.render_history_header",
+                                        Role::Button,
+                                        "history_filters.render_history_header",
+                                        true,
                                         cx.listener(|this, _, _, cx| {
                                             this.history_export(ExportFormat::Json, cx)
                                         }),
                                     ))
-                                    .child(menu_item("hist-export-csv", "CSV").on_click(
+                                    .child(menu_item("hist-export-csv", "CSV").dev_click(
+                                        "history_filters.render_history_header",
+                                        Role::Button,
+                                        "history_filters.render_history_header",
+                                        true,
                                         cx.listener(|this, _, _, cx| {
                                             this.history_export(ExportFormat::Csv, cx)
                                         }),
@@ -179,7 +198,11 @@ impl WorkspaceView {
                 div()
                     .relative()
                     .child(
-                        head_btn("hist-clear", "Clear ▾", self.history.clear_menu).on_click(
+                        head_btn("hist-clear", "Clear ▾", self.history.clear_menu).dev_click(
+                            "history_filters.render_history_header",
+                            Role::Button,
+                            "history_filters.render_history_header",
+                            true,
                             cx.listener(|this, _, _, cx| {
                                 this.history.clear_menu = !this.history.clear_menu;
                                 this.history.export_menu = false;
@@ -192,7 +215,11 @@ impl WorkspaceView {
                             deferred(
                                 dropdown("hist-clear-menu")
                                     .child(
-                                        menu_item("hist-clear-req", "Selected request").on_click(
+                                        menu_item("hist-clear-req", "Selected request").dev_click(
+                                            "history_filters.render_history_header",
+                                            Role::Button,
+                                            "history_filters.render_history_header",
+                                            true,
                                             cx.listener(|this, _, w, cx| {
                                                 this.history.clear_menu = false;
                                                 if let Some((c, p, name)) =
@@ -217,25 +244,35 @@ impl WorkspaceView {
                                     )
                                     .child(
                                         menu_item("hist-clear-coll", "Selected collection")
-                                            .on_click(cx.listener(|this, _, w, cx| {
-                                                this.history.clear_menu = false;
-                                                if let Some((c, _, _)) =
-                                                    this.history_selected_request()
-                                                {
-                                                    this.confirm_clear_history(
-                                                        Scope::Collection(c.clone()),
-                                                        format!("the collection “{c}”"),
-                                                        w,
-                                                        cx,
-                                                    );
-                                                } else {
-                                                    this.notice =
-                                                        Some("Select an entry first.".into());
-                                                    cx.notify();
-                                                }
-                                            })),
+                                            .dev_click(
+                                                "history_filters.render_history_header",
+                                                Role::Button,
+                                                "history_filters.render_history_header",
+                                                true,
+                                                cx.listener(|this, _, w, cx| {
+                                                    this.history.clear_menu = false;
+                                                    if let Some((c, _, _)) =
+                                                        this.history_selected_request()
+                                                    {
+                                                        this.confirm_clear_history(
+                                                            Scope::Collection(c.clone()),
+                                                            format!("the collection “{c}”"),
+                                                            w,
+                                                            cx,
+                                                        );
+                                                    } else {
+                                                        this.notice =
+                                                            Some("Select an entry first.".into());
+                                                        cx.notify();
+                                                    }
+                                                }),
+                                            ),
                                     )
-                                    .child(menu_item("hist-clear-all", "All history").on_click(
+                                    .child(menu_item("hist-clear-all", "All history").dev_click(
+                                        "history_filters.render_history_header",
+                                        Role::Button,
+                                        "history_filters.render_history_header",
+                                        true,
                                         cx.listener(|this, _, w, cx| {
                                             this.history.clear_menu = false;
                                             this.confirm_clear_history(
@@ -288,23 +325,35 @@ impl WorkspaceView {
             let m = *m;
             let on = q.method.as_deref() == Some(m);
             self.chip(t, format!("hm-{m}"), short_method(m), on)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    let cur = this.history.query.method.take();
-                    this.history.query.method = (cur.as_deref() != Some(m)).then(|| m.to_string());
-                    this.history.query.nav = None;
-                    this.history_reload(cx);
-                }))
+                .dev_click(
+                    "history-search",
+                    Role::Button,
+                    "history-search",
+                    true,
+                    cx.listener(move |this, _, _, cx| {
+                        let cur = this.history.query.method.take();
+                        this.history.query.method =
+                            (cur.as_deref() != Some(m)).then(|| m.to_string());
+                        this.history.query.nav = None;
+                        this.history_reload(cx);
+                    }),
+                )
         }));
         let classes = row().gap_1().children(CLASS_CHIPS.iter().map(|(c, label)| {
             let c = *c;
             let on = q.class == Some(c);
-            self.chip(t, format!("hc-{c}"), label, on)
-                .on_click(cx.listener(move |this, _, _, cx| {
+            self.chip(t, format!("hc-{c}"), label, on).dev_click(
+                "history_filters.render_history_toolbar",
+                Role::Button,
+                "history_filters.render_history_toolbar",
+                true,
+                cx.listener(move |this, _, _, cx| {
                     let q = &mut this.history.query;
                     q.class = (q.class != Some(c)).then_some(c);
                     q.nav = None;
                     this.history_reload(cx);
-                }))
+                }),
+            )
         }));
         let ranges = row().gap_1().children(TimeRange::ALL.iter().map(|r| {
             let r = *r;
@@ -314,32 +363,50 @@ impl WorkspaceView {
                 r.label(),
                 q.range == Some(r),
             )
-            .on_click(cx.listener(move |this, _, _, cx| {
-                let q = &mut this.history.query;
-                q.range = (q.range != Some(r)).then_some(r);
-                q.nav = None;
-                this.history_reload(cx);
-            }))
+            .dev_click(
+                "history_filters.render_history_toolbar",
+                Role::Button,
+                "history_filters.render_history_toolbar",
+                true,
+                cx.listener(move |this, _, _, cx| {
+                    let q = &mut this.history.query;
+                    q.range = (q.range != Some(r)).then_some(r);
+                    q.nav = None;
+                    this.history_reload(cx);
+                }),
+            )
         }));
         let toggles = row()
             .gap_1()
             .child(
                 self.chip(t, "hf-unsaved".into(), "unsaved", q.unsaved)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        let q = &mut this.history.query;
-                        q.unsaved = !q.unsaved;
-                        q.nav = None;
-                        this.history_reload(cx);
-                    })),
+                    .dev_click(
+                        "history_filters.render_history_toolbar",
+                        Role::Button,
+                        "history_filters.render_history_toolbar",
+                        true,
+                        cx.listener(|this, _, _, cx| {
+                            let q = &mut this.history.query;
+                            q.unsaved = !q.unsaved;
+                            q.nav = None;
+                            this.history_reload(cx);
+                        }),
+                    ),
             )
             .child(
                 self.chip(t, "hf-pinned".into(), "pinned", q.pinned)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        let q = &mut this.history.query;
-                        q.pinned = !q.pinned;
-                        q.nav = None;
-                        this.history_reload(cx);
-                    })),
+                    .dev_click(
+                        "history_filters.render_history_toolbar",
+                        Role::Button,
+                        "history_filters.render_history_toolbar",
+                        true,
+                        cx.listener(|this, _, _, cx| {
+                            let q = &mut this.history.query;
+                            q.pinned = !q.pinned;
+                            q.nav = None;
+                            this.history_reload(cx);
+                        }),
+                    ),
             );
         let active = q.chips();
         div()
@@ -368,14 +435,24 @@ impl WorkspaceView {
                         .flex_wrap()
                         .children(active.into_iter().enumerate().map(|(i, (kind, label))| {
                             self.chip(t, format!("hx-{i}"), &format!("{label} ×"), true)
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.history.query.remove(kind);
-                                    this.history_reload(cx);
-                                }))
+                                .dev_click(
+                                    "history_filters.render_history_toolbar",
+                                    Role::Button,
+                                    "history_filters.render_history_toolbar",
+                                    true,
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.history.query.remove(kind);
+                                        this.history_reload(cx);
+                                    }),
+                                )
                         }))
                         .child(
                             self.chip(t, "hx-clear".into(), "Clear filters", false)
-                                .on_click(
+                                .dev_click(
+                                    "history_filters.render_history_toolbar",
+                                    Role::Button,
+                                    "history_filters.render_history_toolbar",
+                                    true,
                                     cx.listener(|this, _, _, cx| this.history_clear_filters(cx)),
                                 ),
                         ),

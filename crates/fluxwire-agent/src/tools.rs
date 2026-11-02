@@ -181,6 +181,32 @@ pub struct ScrollIn {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct TreeIn {
+    /// Only the subtree rooted at this element id.
+    pub subtree: Option<String>,
+    /// Keep only nodes of this role (and their ancestors), such as `button` or `tab`.
+    pub role: Option<String>,
+    /// Drop elements that are fully clipped or off screen.
+    #[serde(default)]
+    pub visible_only: bool,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct FindIn {
+    /// Case-insensitive substring of the element label.
+    pub label: Option<String>,
+    pub role: Option<String>,
+    /// Case-insensitive substring of the label or the id.
+    pub text: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct ClickElementIn {
+    /// An element id from `ui.tree` or `ui.find`.
+    pub id: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct WaitIdleIn {
     /// Default 5000.
     pub timeout_ms: Option<u64>,
@@ -348,6 +374,47 @@ pub fn ui_tools(r: &mut Registry) {
                     dy: a.dy,
                 },
             )
+        },
+    ));
+    r.register(def_in::<TreeIn, UiOut>(
+        ToolClass::Ui,
+        "ui.tree",
+        "The semantic UI tree: stable ids, roles, labels, enabled, bounds, visible, clipped, focused and z-order, optionally filtered by subtree, role or visibility.",
+        |ctx, args| {
+            let a: TreeIn = parse(args)?;
+            forward(
+                ctx,
+                UiRequest::Tree {
+                    subtree: a.subtree,
+                    role: a.role,
+                    visible_only: a.visible_only,
+                },
+            )
+        },
+    ));
+    r.register(def_in::<FindIn, UiOut>(
+        ToolClass::Ui,
+        "ui.find",
+        "Find elements by label, role or text; returns ids with bounds and state.",
+        |ctx, args| {
+            let a: FindIn = parse(args)?;
+            forward(
+                ctx,
+                UiRequest::Find {
+                    label: a.label,
+                    role: a.role,
+                    text: a.text,
+                },
+            )
+        },
+    ));
+    r.register(def_in::<ClickElementIn, UiOut>(
+        ToolClass::Ui,
+        "ui.click_element",
+        "Click the centre of an element's visible bounds by id. Errors when it is unknown, disabled, hidden or covered.",
+        |ctx, args| {
+            let a: ClickElementIn = parse(args)?;
+            forward(ctx, UiRequest::ClickElement { id: a.id })
         },
     ));
     r.register(def_in::<WaitIdleIn, UiOut>(

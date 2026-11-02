@@ -11,6 +11,7 @@ use gpui::{
 use crate::{
     actions::*,
     assets::{BUFFER_FONT, UI_FONT},
+    dev_id::{DevClick, DevTag, Role},
     mock::{self, Mock},
     tabs::TabKind,
     text_input::{TextInput, TextInputEvent},
@@ -844,12 +845,18 @@ impl WorkspaceView {
         row()
             .id("title-bar")
             .window_control_area(gpui::WindowControlArea::Drag)
-            .on_click(|ev, window, _| {
-                // Native behaviour: zoom or minimize per the system setting on macOS.
-                if ev.click_count() == 2 {
-                    window.titlebar_double_click();
-                }
-            })
+            .dev_click(
+                "title-bar",
+                Role::Button,
+                "title-bar",
+                true,
+                |ev, window, _| {
+                    // Native behaviour: zoom or minimize per the system setting on macOS.
+                    if ev.click_count() == 2 {
+                        window.titlebar_double_click();
+                    }
+                },
+            )
             .h(px(32.))
             .flex_none()
             .gap_3()
@@ -870,11 +877,15 @@ impl WorkspaceView {
                     .cursor_pointer()
                     .hover(|s| s.bg(t.element_hover))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click(
-                        cx.listener(|this, _, w, cx| this.open_modal(ModalKind::Workspaces, w, cx)),
-                    )
                     .child(self.workspace_label())
-                    .child(icon("chevron-down", 12., t.text_muted)),
+                    .child(icon("chevron-down", 12., t.text_muted))
+                    .dev_click(
+                        "title.workspace-switcher",
+                        Role::Button,
+                        "Workspace",
+                        true,
+                        cx.listener(|this, _, w, cx| this.open_modal(ModalKind::Workspaces, w, cx)),
+                    ),
             )
             .children(self.branch_label().map(|b| {
                 row()
@@ -897,9 +908,6 @@ impl WorkspaceView {
                         .text_color(t.text)
                         .cursor_pointer()
                         .hover(|s| s.bg(t.element_hover))
-                        .on_click(cx.listener(|this, _, w, cx| {
-                            this.open_modal(ModalKind::Environment, w, cx)
-                        }))
                         .tooltip({
                             let tip = format!(
                                 "Switch environment ({})",
@@ -913,7 +921,16 @@ impl WorkspaceView {
                             t.border
                         }))
                         .child(env)
-                        .child(icon("chevron-down", 12., t.text_muted)),
+                        .child(icon("chevron-down", 12., t.text_muted))
+                        .dev_click(
+                            "title.env-pill",
+                            Role::Button,
+                            "Environment",
+                            true,
+                            cx.listener(|this, _, w, cx| {
+                                this.open_modal(ModalKind::Environment, w, cx)
+                            }),
+                        ),
                 )
             })
             .child(div().flex_1())
@@ -933,7 +950,11 @@ impl WorkspaceView {
                     .text_color(t.text_muted)
                     .cursor_pointer()
                     .hover(|s| s.bg(t.element_hover))
-                    .on_click(
+                    .dev_click(
+                        "search-pill",
+                        Role::Button,
+                        "search-pill",
+                        true,
                         cx.listener(|this, _, w, cx| {
                             this.open_modal(ModalKind::QuickSearch, w, cx)
                         }),
@@ -968,19 +989,25 @@ impl WorkspaceView {
                 .cursor_pointer()
                 .when(active, |d| d.bg(t.element_selected))
                 .hover(|s| s.bg(t.element_hover))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    if this.scope.panel == p && this.scope.left_open {
-                        this.scope.left_open = false;
-                    } else {
-                        this.scope.panel = p;
-                        this.scope.left_open = true;
-                        if p == Panel::History {
-                            this.history_open(cx);
-                        }
-                    }
-                    cx.notify();
-                }))
                 .child(icon(glyph, 14., if active { t.text } else { t.text_muted }))
+                .dev_click(
+                    id,
+                    Role::Button,
+                    id,
+                    true,
+                    cx.listener(move |this, _, _, cx| {
+                        if this.scope.panel == p && this.scope.left_open {
+                            this.scope.left_open = false;
+                        } else {
+                            this.scope.panel = p;
+                            this.scope.left_open = true;
+                            if p == Panel::History {
+                                this.history_open(cx);
+                            }
+                        }
+                        cx.notify();
+                    }),
+                )
         };
         let problems = self.problem_total();
         let notice = self.notice.clone();
@@ -1034,10 +1061,16 @@ impl WorkspaceView {
                             .cursor_pointer()
                             .when(self.scope.bottom_open, |d| d.bg(t.element_selected))
                             .hover(|s| s.bg(t.element_hover))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.scope.bottom_open = !this.scope.bottom_open;
-                                cx.notify();
-                            }))
+                            .dev_click(
+                                "p-bottom",
+                                Role::Button,
+                                "p-bottom",
+                                true,
+                                cx.listener(|this, _, _, cx| {
+                                    this.scope.bottom_open = !this.scope.bottom_open;
+                                    cx.notify();
+                                }),
+                            )
                             .child(icon(
                                 "terminal",
                                 14.,
@@ -1060,23 +1093,35 @@ impl WorkspaceView {
                     .id("problems-count")
                     .gap_1()
                     .cursor_pointer()
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.scope.bottom_open = true;
-                        this.scope.bottom_tab = BottomTab::Problems;
-                        cx.notify();
-                    }))
                     .child(icon("triangle-alert", 12., t.modified))
-                    .child(problems.to_string()),
+                    .child(problems.to_string())
+                    .dev_click(
+                        "status.problems",
+                        Role::Button,
+                        "Problems",
+                        true,
+                        cx.listener(|this, _, _, cx| {
+                            this.scope.bottom_open = true;
+                            this.scope.bottom_tab = BottomTab::Problems;
+                            cx.notify();
+                        }),
+                    ),
             )
             .child(
                 div()
                     .id("sync-status")
                     .cursor_pointer()
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.open_tab("sync", "Sync", TabKind::Sync, true);
-                        cx.notify();
-                    }))
-                    .child(format!("OpenAPI ↓{sync_down} ↑{sync_up}")),
+                    .child(format!("OpenAPI ↓{sync_down} ↑{sync_up}"))
+                    .dev_click(
+                        "status.sync",
+                        Role::Button,
+                        "Sync status",
+                        true,
+                        cx.listener(|this, _, _, cx| {
+                            this.open_tab("sync", "Sync", TabKind::Sync, true);
+                            cx.notify();
+                        }),
+                    ),
             )
             .child(div().flex_1())
             .children(notice.map(|n| {
@@ -1086,10 +1131,16 @@ impl WorkspaceView {
                     .text_color(t.modified)
                     .max_w(px(520.))
                     .truncate()
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.notice = None;
-                        cx.notify();
-                    }))
+                    .dev_click(
+                        "notice",
+                        Role::Button,
+                        "notice",
+                        true,
+                        cx.listener(|this, _, _, cx| {
+                            this.notice = None;
+                            cx.notify();
+                        }),
+                    )
                     .child(n)
             }))
             .child(div().font_family(BUFFER_FONT).child("QuickJS"))
@@ -1132,6 +1183,7 @@ impl WorkspaceView {
                         .rounded(px(6.))
                         .shadow_lg()
                         .overflow_hidden()
+                        .dev_tag("modal", Role::Modal, "Modal", true)
                         .children(title.map(|title| {
                             div()
                                 .px_3()
@@ -1177,17 +1229,23 @@ impl WorkspaceView {
                                         .when(i == selected, |d| d.bg(t.element_selected))
                                         .hover(|s| s.bg(t.element_hover))
                                         .cursor_pointer()
-                                        .on_click(cx.listener(
-                                            move |this, ev: &gpui::ClickEvent, w, cx| {
-                                                let beside = ev.modifiers().secondary();
-                                                this.run_modal_item(
-                                                    click_item.clone(),
-                                                    beside,
-                                                    w,
-                                                    cx,
-                                                )
-                                            },
-                                        ))
+                                        .dev_click(
+                                            "modal-results",
+                                            Role::Button,
+                                            "modal-results",
+                                            true,
+                                            cx.listener(
+                                                move |this, ev: &gpui::ClickEvent, w, cx| {
+                                                    let beside = ev.modifiers().secondary();
+                                                    this.run_modal_item(
+                                                        click_item.clone(),
+                                                        beside,
+                                                        w,
+                                                        cx,
+                                                    )
+                                                },
+                                            ),
+                                        )
                                         .child(
                                             row()
                                                 .gap_2()
@@ -1218,16 +1276,20 @@ impl WorkspaceView {
                                                 .children(edit_target.map(|(root, name)| {
                                                     div()
                                                         .id(("modal-edit", i))
-                                                        .on_click(cx.listener(
-                                                            move |this, _, w, cx| {
+                                                        .dev_click(
+                                                            "workspace.render_modal",
+                                                            Role::Button,
+                                                            "workspace.render_modal",
+                                                            true,
+                                                            cx.listener(move |this, _, w, cx| {
                                                                 cx.stop_propagation();
                                                                 this.close_modal(w, cx);
                                                                 this.open_env_doc(
                                                                     &root, &name, true,
                                                                 );
                                                                 cx.notify();
-                                                            },
-                                                        ))
+                                                            }),
+                                                        )
                                                         .child(icon(
                                                             "pencil",
                                                             12.,
@@ -1411,6 +1473,7 @@ macro_rules! handlers {
 
 impl Render for WorkspaceView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::dev_id::begin_frame(cx);
         self.focused = window.focused(cx);
         self.track_generation(window, cx);
         self.sync_scroll();

@@ -5,7 +5,7 @@
 use crate::workspace::WorkspaceView;
 use fluxwire_agent::bridge::UiRequest;
 use fluxwire_agent::{AllowSet, FluxwireServer, Roots, UiBridge, tools};
-use gpui::{App, Context, Window, WindowHandle};
+use gpui::{App, AppContext as _, Context, Window, WindowHandle};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc;
@@ -123,9 +123,85 @@ impl WorkspaceView {
                         .unwrap_or_else(|| format!("could not open {key}")))
                 }
             }
+            UiRequest::Tree {
+                subtree,
+                role,
+                visible_only,
+            } => {
+                let f = crate::dev_tree::TreeFilter {
+                    subtree,
+                    role: parse_role(role)?,
+                    visible_only,
+                };
+                let roots = crate::dev_tree::filter(&crate::dev_id::last_frame(cx).tree(), &f)?;
+                Ok(serde_json::json!({"tree": roots, "generation": self.generation}))
+            }
+            UiRequest::Find { label, role, text } => {
+                let q = crate::dev_tree::FindQuery {
+                    label,
+                    role: parse_role(role)?,
+                    text,
+                };
+                let found = crate::dev_tree::find(&crate::dev_id::last_frame(cx).tree(), &q);
+                Ok(serde_json::json!({"elements": found}))
+            }
+            UiRequest::ClickElement { id } => {
+                // Runs outside the entity lease in the drain loop (`click_element`); reaching
+                // this arm means the request skipped it.
+                Err(format!("click of {id:?} must go through the drain loop"))
+            }
             _ => Err("unsupported request".into()),
         }
     }
+}
+
+fn parse_role(role: Option<String>) -> Result<Option<crate::dev_tree::Role>, String> {
+    role.map(|r| {
+        serde_json::from_value(serde_json::Value::String(r.clone()))
+            .map_err(|_| format!("unknown role {r:?}"))
+    })
+    .transpose()
+}
+
+/// Runs the click handler a tagged element registered. It runs with the window but without the
+/// root view leased, because the handlers are entity listeners that update the view themselves.
+fn click_element(
+    cx: &mut gpui::AsyncApp,
+    handle: WindowHandle<WorkspaceView>,
+    id: &str,
+) -> Result<serde_json::Value, String> {
+    let (point, click) = cx
+        .update(|cx| {
+            let frame = crate::dev_id::last_frame(cx);
+            frame.click_point(id).and_then(|p| {
+                crate::dev_id::click_handler(cx, id)
+                    .map(|h| (p, h))
+                    .ok_or_else(|| {
+                        format!(
+                            "element {id:?} has no click handler; use ui.invoke_action or ui.key"
+                        )
+                    })
+            })
+        })
+        .map_err(|e| e.to_string())??;
+    handle
+        .update(cx, |ws, _, _| ws.notice = None)
+        .map_err(|e| e.to_string())?;
+    cx.update_window(handle.into(), |_, window, cx| {
+        click(&gpui::ClickEvent::default(), window, cx)
+    })
+    .map_err(|e| e.to_string())?;
+    handle
+        .update(cx, |ws, window, cx| {
+            ws.track_generation(window, cx);
+            serde_json::json!({
+                "clicked": id,
+                "at": [point.0, point.1],
+                "generation": ws.generation,
+                "notice": ws.notice,
+            })
+        })
+        .map_err(|e| e.to_string())
 }
 
 /// Starts the server thread and the UI-side drain loop. Does nothing when `opts` serves nothing.
@@ -152,6 +228,10 @@ pub fn start(
         .expect("spawn mcp host thread");
     cx.spawn(async move |cx| {
         while let Ok((req, reply)) = rx.recv().await {
+            if let UiRequest::ClickElement { id } = &req {
+                reply.send(click_element(cx, handle, id)).ok();
+                continue;
+            }
             let out = handle
                 .update(cx, |ws, window, cx| ws.handle_ui_request(req, window, cx))
                 .map_err(|e| e.to_string())

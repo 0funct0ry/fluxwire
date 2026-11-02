@@ -1,6 +1,7 @@
 //! WebSocket requests (SPEC §10): connect and disconnect, saved messages and the composer,
 //! and the session log shown under the request form and in History entries.
 
+use crate::dev_id::{DevClick, Role};
 use std::ops::Range;
 
 use fluxwire_model::{BlockKind, MessageBlock};
@@ -406,12 +407,18 @@ impl WorkspaceView {
                             let h = t.element_hover;
                             move |s| s.bg(h)
                         })
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if let Some(ui) = this.active_ui() {
-                                ui.msg_sel = i;
-                            }
-                            cx.notify();
-                        }))
+                        .dev_click(
+                            "session.render_ws_messages",
+                            Role::Button,
+                            "session.render_ws_messages",
+                            true,
+                            cx.listener(move |this, _, _, cx| {
+                                if let Some(ui) = this.active_ui() {
+                                    ui.msg_sel = i;
+                                }
+                                cx.notify();
+                            }),
+                        )
                         .child(
                             div()
                                 .font_weight(gpui::FontWeight::MEDIUM)
@@ -433,18 +440,30 @@ impl WorkspaceView {
                         .child(
                             button(t, "msg-edit", "Edit", false)
                                 .id(("msg-edit", i))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    cx.stop_propagation();
-                                    this.ws_edit_saved(i, cx)
-                                })),
+                                .dev_click(
+                                    "msg-edit",
+                                    Role::Button,
+                                    "msg-edit",
+                                    true,
+                                    cx.listener(move |this, _, _, cx| {
+                                        cx.stop_propagation();
+                                        this.ws_edit_saved(i, cx)
+                                    }),
+                                ),
                         )
                         .child(
                             button(t, "msg-send", "Send", connected)
                                 .id(("msg-send", i))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    cx.stop_propagation();
-                                    this.ws_send_saved(i, cx)
-                                })),
+                                .dev_click(
+                                    "msg-send",
+                                    Role::Button,
+                                    "msg-send",
+                                    true,
+                                    cx.listener(move |this, _, _, cx| {
+                                        cx.stop_propagation();
+                                        this.ws_send_saved(i, cx)
+                                    }),
+                                ),
                         )
                         .into_any_element()
                 })
@@ -491,22 +510,36 @@ impl WorkspaceView {
                                 move |s| s.bg(h)
                             })
                             .child(l)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                if let Some(id) = this.scope.tabs.active_id() {
-                                    this.scope.composers.entry(id).or_default().lang = l;
-                                }
-                                cx.notify();
-                            }))
+                            .dev_click(
+                                l,
+                                Role::Button,
+                                l,
+                                true,
+                                cx.listener(move |this, _, _, cx| {
+                                    if let Some(id) = this.scope.tabs.active_id() {
+                                        this.scope.composers.entry(id).or_default().lang = l;
+                                    }
+                                    cx.notify();
+                                }),
+                            )
                     }))
                     .child(div().flex_1())
                     .child(
-                        button(t, "composer-save", "Save as message", false)
-                            .on_click(cx.listener(|this, _, _, cx| this.ws_save_composer(cx))),
+                        button(t, "composer-save", "Save as message", false).dev_click(
+                            "composer-save",
+                            Role::Button,
+                            "composer-save",
+                            true,
+                            cx.listener(|this, _, _, cx| this.ws_save_composer(cx)),
+                        ),
                     )
-                    .child(
-                        button(t, "composer-send", "Send", connected)
-                            .on_click(cx.listener(|this, _, _, cx| this.ws_send_composer(cx))),
-                    ),
+                    .child(button(t, "composer-send", "Send", connected).dev_click(
+                        "composer-send",
+                        Role::Button,
+                        "composer-send",
+                        true,
+                        cx.listener(|this, _, _, cx| this.ws_send_composer(cx)),
+                    )),
             )
             .child(
                 div()
@@ -565,12 +598,18 @@ impl WorkspaceView {
                     move |s| s.bg(h)
                 })
                 .child(text)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    if let Some(l) = this.log_mut(which) {
-                        l.set_dir(f);
-                    }
-                    cx.notify();
-                }))
+                .dev_click(
+                    id,
+                    Role::Button,
+                    id,
+                    true,
+                    cx.listener(move |this, _, _, cx| {
+                        if let Some(l) = this.log_mut(which) {
+                            l.set_dir(f);
+                        }
+                        cx.notify();
+                    }),
+                )
         };
         let filter_box = row()
             .id((
@@ -644,12 +683,18 @@ impl WorkspaceView {
                             move |s| s.bg(h)
                         })
                         .child("Clear")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if let Some(l) = this.log_mut(which) {
-                                l.clear();
-                            }
-                            cx.notify();
-                        })),
+                        .dev_click(
+                            "log-clear",
+                            Role::Button,
+                            "log-clear",
+                            true,
+                            cx.listener(move |this, _, _, cx| {
+                                if let Some(l) = this.log_mut(which) {
+                                    l.clear();
+                                }
+                                cx.notify();
+                            }),
+                        ),
                 )
             });
 
@@ -685,16 +730,22 @@ impl WorkspaceView {
                                     let h = t.element_hover;
                                     move |s| s.bg(h)
                                 })
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    if let Some(l) = this.log_mut(which) {
-                                        l.selected = if l.selected == Some(id) {
-                                            None
-                                        } else {
-                                            Some(id)
-                                        };
-                                    }
-                                    cx.notify();
-                                }))
+                                .dev_click(
+                                    "session.render_session_log",
+                                    Role::Button,
+                                    "session.render_session_log",
+                                    true,
+                                    cx.listener(move |this, _, _, cx| {
+                                        if let Some(l) = this.log_mut(which) {
+                                            l.selected = if l.selected == Some(id) {
+                                                None
+                                            } else {
+                                                Some(id)
+                                            };
+                                        }
+                                        cx.notify();
+                                    }),
+                                )
                                 .child(
                                     div()
                                         .w(px(14.))

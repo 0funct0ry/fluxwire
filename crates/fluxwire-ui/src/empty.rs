@@ -1,6 +1,7 @@
 //! Workspace-level views: the panel header with its close button and menu, and the empty state
 //! of a Workspace with no Collections (SPEC §17.8).
 
+use crate::dev_id::{DevClick, Role};
 use gpui::{
     Context, InteractiveElement, IntoElement, MouseButton, ParentElement, SharedString,
     StatefulInteractiveElement, Styled, Window, div, prelude::*, px,
@@ -77,9 +78,15 @@ impl WorkspaceView {
                         .rounded(px(4.))
                         .cursor_pointer()
                         .hover(|s| s.bg(t.element_hover))
-                        .on_click(cx.listener(|this, ev: &gpui::ClickEvent, _, cx| {
-                            this.open_tree_menu("", MenuKind::Workspace, ev.position(), cx)
-                        }))
+                        .dev_click(
+                            "ws-menu-btn",
+                            Role::Button,
+                            "ws-menu-btn",
+                            true,
+                            cx.listener(|this, ev: &gpui::ClickEvent, _, cx| {
+                                this.open_tree_menu("", MenuKind::Workspace, ev.position(), cx)
+                            }),
+                        )
                         .child(icon("ellipsis-vertical", 14., t.text_muted)),
                 )
                 .into_any_element(),
@@ -146,7 +153,13 @@ impl WorkspaceView {
                 .when(!single, |d| {
                     d.when(!compact, |d| d.bg(t.accent).text_color(t.editor))
                 })
-                .on_click(cx.listener(|this, _, w, cx| this.start_new_collection(None, w, cx))),
+                .dev_click(
+                    "empty-new-collection",
+                    Role::Button,
+                    "New collection",
+                    true,
+                    cx.listener(|this, _, w, cx| this.start_new_collection(None, w, cx)),
+                ),
             )
             .child(
                 action(
@@ -156,15 +169,25 @@ impl WorkspaceView {
                     !single,
                 )
                 .when(single, |d| d.tooltip(tip(SINGLE_COLLECTION_TIP.into())))
-                .on_click(cx.listener(|this, _, w, cx| this.start_add_collection(w, cx))),
+                .dev_click(
+                    "empty.render_collection_actions",
+                    Role::Button,
+                    "empty.render_collection_actions",
+                    true,
+                    cx.listener(|this, _, w, cx| this.start_add_collection(w, cx)),
+                ),
             )
             .child(
-                action("ws-import", "arrow-down", "Import…", true).on_click(cx.listener(
-                    |this, _, _, cx| {
+                action("ws-import", "arrow-down", "Import…", true).dev_click(
+                    "empty.render_collection_actions",
+                    Role::Button,
+                    "empty.render_collection_actions",
+                    true,
+                    cx.listener(|this, _, _, cx| {
                         this.notice = Some("Import arrives in a later milestone (M11).".into());
                         cx.notify();
-                    },
-                )),
+                    }),
+                ),
             )
     }
 

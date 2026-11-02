@@ -1,12 +1,13 @@
 //! Dialogs for the Workspace and Collection lifecycle: New workspace, New collection and the
 //! confirm dialog (SPEC §17.8, §17.9). Validation lives in `containment.rs`.
 
+use crate::dev_id::{DevClick, Role};
 use std::path::{Path, PathBuf};
 
 use gpui::{
     Context, Entity, Focusable, InteractiveElement, IntoElement, KeyDownEvent, MouseButton,
-    ParentElement, PathPromptOptions, SharedString, StatefulInteractiveElement, Styled,
-    Subscription, Window, div, prelude::*, px,
+    ParentElement, PathPromptOptions, SharedString, Styled, Subscription, Window, div, prelude::*,
+    px,
 };
 
 use crate::{
@@ -910,12 +911,16 @@ impl WorkspaceView {
                     .children(preview.map(|p| muted_path(&t, format!("Will create {p}"))))
                     .children(error.map(|e| error_line(&t, e.to_string())))
                     .children(open_existing.map(|p| {
-                        link(&t, "dlg-open-existing", "Open workspace").on_click(cx.listener(
-                            move |this, _, w, cx| {
+                        link(&t, "dlg-open-existing", "Open workspace").dev_click(
+                            "dialog",
+                            Role::Button,
+                            "dialog",
+                            true,
+                            cx.listener(move |this, _, w, cx| {
                                 this.dialog = None;
                                 this.open_workspace(&p, w, cx);
-                            },
-                        ))
+                            }),
+                        )
                     }))
                     .child(buttons(&t, cx, "Create", plan.is_ok(), |this, w, cx| {
                         this.submit_new_workspace(w, cx)
@@ -955,7 +960,11 @@ impl WorkspaceView {
                     .children(preview.map(|p| muted_path(&t, p)))
                     .children(error.map(|e| error_line(&t, e.to_string())))
                     .children(make_folder.map(|p| {
-                        link(&t, "dlg-make-folder", "Make that folder a collection").on_click(
+                        link(&t, "dlg-make-folder", "Make that folder a collection").dev_click(
+                            "dialogs.render_dialog",
+                            Role::Button,
+                            "dialogs.render_dialog",
+                            true,
                             cx.listener(move |this, _, w, cx| {
                                 let name = this
                                     .dialog
@@ -1014,17 +1023,27 @@ impl WorkspaceView {
                                 "Empty".into(),
                                 f.start_from.is_none(),
                             )
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                if let Some(Dialog::NewEnvironment(f)) = &mut this.dialog {
-                                    f.start_from = None;
-                                }
-                                cx.notify();
-                            })),
+                            .dev_click(
+                                "env-from-empty",
+                                Role::Button,
+                                "Empty",
+                                true,
+                                cx.listener(|this, _, _, cx| {
+                                    if let Some(Dialog::NewEnvironment(f)) = &mut this.dialog {
+                                        f.start_from = None;
+                                    }
+                                    cx.notify();
+                                }),
+                            ),
                         )
                         .children(existing.into_iter().enumerate().map(|(i, n)| {
                             let on = f.start_from.as_deref() == Some(n.as_str());
                             let pick = n.clone();
-                            chip(("env-from", i).into(), format!("Duplicate of {n}"), on).on_click(
+                            chip(("env-from", i).into(), format!("Duplicate of {n}"), on).dev_click(
+                                "dialogs.render_dialog",
+                                Role::Button,
+                                "dialogs.render_dialog",
+                                true,
                                 cx.listener(move |this, _, _, cx| {
                                     if let Some(Dialog::NewEnvironment(f)) = &mut this.dialog {
                                         f.start_from = Some(pick.clone());
@@ -1042,12 +1061,18 @@ impl WorkspaceView {
                             format!("{} Set as active", if f.activate { "☑" } else { "☐" }),
                             false,
                         )
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            if let Some(Dialog::NewEnvironment(f)) = &mut this.dialog {
-                                f.activate = !f.activate;
-                            }
-                            cx.notify();
-                        })),
+                        .dev_click(
+                            "dialogs.render_dialog",
+                            Role::Button,
+                            "dialogs.render_dialog",
+                            true,
+                            cx.listener(|this, _, _, cx| {
+                                if let Some(Dialog::NewEnvironment(f)) = &mut this.dialog {
+                                    f.activate = !f.activate;
+                                }
+                                cx.notify();
+                            }),
+                        ),
                     )
                     .child(muted_path(
                         &t,
@@ -1074,9 +1099,15 @@ impl WorkspaceView {
                 for (i, (label, action)) in c.buttons.iter().cloned().enumerate() {
                     let primary = i == 0 && action != ConfirmAction::Cancel;
                     bar = bar.child(
-                        button(&t, ("dlg-confirm", i), label, primary, true).on_click(cx.listener(
-                            move |this, _, w, cx| this.run_confirm_action(action.clone(), w, cx),
-                        )),
+                        button(&t, ("dlg-confirm", i), label, primary, true).dev_click(
+                            "dialogs.render_dialog",
+                            Role::Button,
+                            "dialogs.render_dialog",
+                            true,
+                            cx.listener(move |this, _, w, cx| {
+                                this.run_confirm_action(action.clone(), w, cx)
+                            }),
+                        ),
                     );
                 }
                 panel = panel.child(bar);
@@ -1132,8 +1163,13 @@ fn location_row(t: &Theme, shown: &str, cx: &mut Context<WorkspaceView>) -> gpui
                         .child(crate::dock::middle_truncate(shown, 52)),
                 )
                 .child(
-                    button(t, "dlg-choose", "Choose…".to_string(), false, true)
-                        .on_click(cx.listener(|this, _, w, cx| this.choose_location(w, cx))),
+                    button(t, "dlg-choose", "Choose…".to_string(), false, true).dev_click(
+                        "dlg-choose",
+                        Role::Button,
+                        "dlg-choose",
+                        true,
+                        cx.listener(|this, _, w, cx| this.choose_location(w, cx)),
+                    ),
                 ),
         )
 }
@@ -1195,16 +1231,25 @@ fn buttons(
         .gap_2()
         .justify_end()
         .child(
-            button(t, "dlg-cancel", "Cancel".to_string(), false, true)
-                .on_click(cx.listener(|this, _, w, cx| this.close_dialog(w, cx))),
+            button(t, "dlg-cancel", "Cancel".to_string(), false, true).dev_click(
+                "dlg-cancel",
+                Role::Button,
+                "dlg-cancel",
+                true,
+                cx.listener(|this, _, w, cx| this.close_dialog(w, cx)),
+            ),
         )
         .child(
-            button(t, "dlg-create", create_label.to_string(), true, valid).on_click(cx.listener(
-                move |this, _, w, cx| {
+            button(t, "dlg-create", create_label.to_string(), true, valid).dev_click(
+                "dlg-create",
+                Role::Button,
+                "dlg-create",
+                true,
+                cx.listener(move |this, _, w, cx| {
                     if valid {
                         submit(this, w, cx)
                     }
-                },
-            )),
+                }),
+            ),
         )
 }

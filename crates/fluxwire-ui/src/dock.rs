@@ -1,5 +1,6 @@
 //! Body layout, left dock panels (Workspace, History, Environments, Sync) and the welcome view.
 
+use crate::dev_id::{DevClick, Role};
 use fluxwire_model::{RequestKind, TreeNode};
 use gpui::{
     Context, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, ParentElement, Render,
@@ -133,11 +134,17 @@ impl WorkspaceView {
                                     let c = t.text;
                                     move |s| s.text_color(c)
                                 })
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.scope.panel = panel;
-                                    this.session_dirty = true;
-                                    cx.notify();
-                                }))
+                                .dev_click(
+                                    "dock.render_left_dock",
+                                    Role::Button,
+                                    "dock.render_left_dock",
+                                    true,
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.scope.panel = panel;
+                                        this.session_dirty = true;
+                                        cx.notify();
+                                    }),
+                                )
                                 .tooltip(move |_, cx| {
                                     cx.new(|_| crate::ui::VarTip { text: label.into() }).into()
                                 })
@@ -265,9 +272,15 @@ impl WorkspaceView {
                 d.invisible()
                     .group_hover(group.to_string(), |s| s.visible())
             })
-            .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, _, cx| {
-                this.open_tree_menu(&key, kind, ev.position(), cx)
-            }))
+            .dev_click(
+                "dock.row_dots",
+                Role::Button,
+                "dock.row_dots",
+                true,
+                cx.listener(move |this, ev: &gpui::ClickEvent, _, cx| {
+                    this.open_tree_menu(&key, kind, ev.position(), cx)
+                }),
+            )
             .into_any_element()
     }
 
@@ -324,21 +337,44 @@ impl WorkspaceView {
                     .child(div().flex_1().truncate().child(cname))
                     .child(
                         self.row_icon_button(t, ("coll-new-req", idx), "file-plus")
-                            .on_click(cx.listener(move |this, _, w, cx| {
-                                this.start_new_request_in(&nk1, w, cx)
-                            })),
+                            .dev_click(
+                                "dock.render_workspace_tree",
+                                Role::Button,
+                                "dock.render_workspace_tree",
+                                true,
+                                cx.listener(move |this, _, w, cx| {
+                                    this.start_new_request_in(&nk1, w, cx)
+                                }),
+                            ),
                     )
                     .child(
                         self.row_icon_button(t, ("coll-new-folder", idx), "folder-plus")
-                            .on_click(cx.listener(move |this, _, w, cx| {
-                                this.start_new_in(&nk2, false, true, w, cx)
-                            })),
+                            .dev_click(
+                                "dock.render_workspace_tree",
+                                Role::Button,
+                                "dock.render_workspace_tree",
+                                true,
+                                cx.listener(move |this, _, w, cx| {
+                                    this.start_new_in(&nk2, false, true, w, cx)
+                                }),
+                            ),
                     )
                     .child(
                         self.row_icon_button(t, ("coll-more", idx), "ellipsis-vertical")
-                            .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, _, cx| {
-                                this.open_tree_menu(&nk3, MenuKind::Collection, ev.position(), cx)
-                            })),
+                            .dev_click(
+                                "dock.render_workspace_tree",
+                                Role::Button,
+                                "dock.render_workspace_tree",
+                                true,
+                                cx.listener(move |this, ev: &gpui::ClickEvent, _, cx| {
+                                    this.open_tree_menu(
+                                        &nk3,
+                                        MenuKind::Collection,
+                                        ev.position(),
+                                        cx,
+                                    )
+                                }),
+                            ),
                     )
                     .into_any_element(),
             );
@@ -381,17 +417,33 @@ impl WorkspaceView {
                                 .text_color(t.text_muted)
                                 .child("Start with a new request, or bring existing ones in."),
                         )
-                        .child(action("empty-new-request", "plus", "New request").on_click(
-                            cx.listener(move |this, _, w, cx| {
-                                this.start_new_request_in(&k1, w, cx)
-                            }),
-                        ))
-                        .child(action("empty-new-folder", "folder", "New folder").on_click(
-                            cx.listener(move |this, _, w, cx| {
-                                this.start_new_in(&k3, false, true, w, cx)
-                            }),
-                        ))
-                        .child(action("empty-import", "arrow-down", "Import…").on_click(
+                        .child(
+                            action("empty-new-request", "plus", "New request").dev_click(
+                                "empty-new-request",
+                                Role::Button,
+                                "New request",
+                                true,
+                                cx.listener(move |this, _, w, cx| {
+                                    this.start_new_request_in(&k1, w, cx)
+                                }),
+                            ),
+                        )
+                        .child(
+                            action("empty-new-folder", "folder", "New folder").dev_click(
+                                "dock.render_workspace_tree",
+                                Role::Button,
+                                "dock.render_workspace_tree",
+                                true,
+                                cx.listener(move |this, _, w, cx| {
+                                    this.start_new_in(&k3, false, true, w, cx)
+                                }),
+                            ),
+                        )
+                        .child(action("empty-import", "arrow-down", "Import…").dev_click(
+                            "dock.render_workspace_tree",
+                            Role::Button,
+                            "dock.render_workspace_tree",
+                            true,
                             cx.listener(|this, _, _, cx| {
                                 this.notice =
                                     Some("Import arrives in a later milestone (M11).".into());
@@ -449,13 +501,19 @@ impl WorkspaceView {
                         selected.as_deref() == Some(path.as_str()),
                     )
                     .group(group.clone())
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.scope.selected = Some(key.clone());
-                        if !this.scope.collapsed.remove(&key) {
-                            this.scope.collapsed.insert(key.clone());
-                        }
-                        cx.notify();
-                    }))
+                    .dev_click(
+                        "dock.push_node",
+                        Role::Button,
+                        "dock.push_node",
+                        true,
+                        cx.listener(move |this, _, _, cx| {
+                            this.scope.selected = Some(key.clone());
+                            if !this.scope.collapsed.remove(&key) {
+                                this.scope.collapsed.insert(key.clone());
+                            }
+                            cx.notify();
+                        }),
+                    )
                     .on_mouse_down(
                         MouseButton::Right,
                         cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
@@ -534,9 +592,15 @@ impl WorkspaceView {
                         active || selected.as_deref() == Some(path.as_str()),
                     )
                     .group(group.clone())
-                    .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, w, cx| {
-                        this.open_request(&key, ev.click_count() >= 2, w, cx);
-                    }))
+                    .dev_click(
+                        "dock.push_node",
+                        Role::Button,
+                        "dock.push_node",
+                        true,
+                        cx.listener(move |this, ev: &gpui::ClickEvent, w, cx| {
+                            this.open_request(&key, ev.click_count() >= 2, w, cx);
+                        }),
+                    )
                     .on_mouse_down(
                         MouseButton::Right,
                         cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
@@ -737,11 +801,17 @@ impl WorkspaceView {
                                 .text_size(px(13.))
                                 .text_color(t.text)
                                 .hover(move |s| s.bg(hover))
-                                .on_click(cx.listener(move |this, _, w, cx| {
-                                    this.scope.tree_menu = None;
-                                    act(this, &key, w, cx);
-                                    cx.notify();
-                                }))
+                                .dev_click(
+                                    "tree-menu",
+                                    Role::Button,
+                                    "tree-menu",
+                                    true,
+                                    cx.listener(move |this, _, w, cx| {
+                                        this.scope.tree_menu = None;
+                                        act(this, &key, w, cx);
+                                        cx.notify();
+                                    }),
+                                )
                                 .child(label)
                         })),
                 ),
@@ -764,10 +834,16 @@ impl WorkspaceView {
                     0,
                     self.scope.tabs.active().is_some_and(|a| a.key == "sync"),
                 )
-                .on_click(cx.listener(|this, ev: &gpui::ClickEvent, _, cx| {
-                    this.open_tab("sync", "Sync", TabKind::Sync, ev.click_count() >= 2);
-                    cx.notify();
-                }))
+                .dev_click(
+                    "dock.render_sync_panel",
+                    Role::Button,
+                    "dock.render_sync_panel",
+                    true,
+                    cx.listener(|this, ev: &gpui::ClickEvent, _, cx| {
+                        this.open_tab("sync", "Sync", TabKind::Sync, ev.click_count() >= 2);
+                        cx.notify();
+                    }),
+                )
                 .child(icon("refresh-cw", 14., t.text_muted))
                 .child(div().flex_1().truncate().child("openapi/payments.yaml"))
                 .child(
@@ -832,11 +908,20 @@ impl WorkspaceView {
                 row()
                     .gap_2()
                     .child(
-                        button("w-open", "Open workspace…", "secondary-o", true)
-                            .on_click(cx.listener(|this, _, w, cx| this.open_folder_dialog(w, cx))),
+                        button("w-open", "Open workspace…", "secondary-o", true).dev_click(
+                            "w-open",
+                            Role::Button,
+                            "Open workspace",
+                            true,
+                            cx.listener(|this, _, w, cx| this.open_folder_dialog(w, cx)),
+                        ),
                     )
                     .child(
-                        button("w-new", "New workspace…", "secondary-shift-n", false).on_click(
+                        button("w-new", "New workspace…", "secondary-shift-n", false).dev_click(
+                            "dock.render_welcome",
+                            Role::Button,
+                            "dock.render_welcome",
+                            true,
                             cx.listener(|this, _, w, cx| this.start_new_workspace(w, cx)),
                         ),
                     ),
@@ -882,9 +967,15 @@ impl WorkspaceView {
                                     .text_size(px(12.))
                                     .hover(|s| s.bg(t.element_hover))
                                     .when(missing, |d| d.text_color(t.text_placeholder))
-                                    .on_click(cx.listener(move |this, _, w, cx| {
-                                        this.open_workspace(&path, w, cx)
-                                    }))
+                                    .dev_click(
+                                        "dock.render_welcome",
+                                        Role::Button,
+                                        "dock.render_welcome",
+                                        true,
+                                        cx.listener(move |this, _, w, cx| {
+                                            this.open_workspace(&path, w, cx)
+                                        }),
+                                    )
                                     .child(
                                         div()
                                             .font_weight(gpui::FontWeight::SEMIBOLD)
@@ -908,11 +999,17 @@ impl WorkspaceView {
                                             .group_hover(group, |s| s.visible())
                                             .text_color(t.text_muted)
                                             .hover(|s| s.text_color(t.text))
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.forget_recent(&forget);
-                                                cx.stop_propagation();
-                                                cx.notify();
-                                            }))
+                                            .dev_click(
+                                                "dock.render_welcome",
+                                                Role::Button,
+                                                "dock.render_welcome",
+                                                true,
+                                                cx.listener(move |this, _, _, cx| {
+                                                    this.forget_recent(&forget);
+                                                    cx.stop_propagation();
+                                                    cx.notify();
+                                                }),
+                                            )
                                             .child("×"),
                                     )
                             },

@@ -14,6 +14,7 @@ use crate::code_editor_ops::{self as ops, Plan, Tabs};
 use crate::completion::{
     CompletionProvider, Ranked, Trigger, expand, is_ident_char, rank, word_start,
 };
+use crate::dev_id::{DevClick, Role};
 use crate::display_map::DisplayMap;
 use crate::highlight::{Highlighter, Lang, Spans, Tok, highlight};
 use crate::input::TextBuffer;
@@ -1241,7 +1242,11 @@ impl CodeEditor {
                             .whitespace_nowrap()
                             .child(r.item.detail.clone()),
                     )
-                    .on_click(
+                    .dev_click(
+                        "code_editor.render_menu",
+                        Role::Button,
+                        "code_editor.render_menu",
+                        true,
                         cx.listener(move |this, _, _, cx| this.accept_completion(Some(i), cx)),
                     ),
             );

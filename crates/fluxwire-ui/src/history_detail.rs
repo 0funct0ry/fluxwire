@@ -1,6 +1,7 @@
 //! The History tab's detail pane (SPEC §13.1): the request snapshot and its response for the
 //! selected row, a note field, and the entry actions. A failed send shows its error and phase.
 
+use crate::dev_id::{DevClick, Role};
 use fluxwire_store::Entry;
 use gpui::{
     AnyElement, Context, InteractiveElement, IntoElement, ParentElement,
@@ -150,39 +151,65 @@ impl WorkspaceView {
         let button_row = row()
             .gap_2()
             .flex_wrap()
-            .child(
-                button(t, "hd-restore", "Restore", true).on_click(cx.listener({
+            .child(button(t, "hd-restore", "Restore", true).dev_click(
+                "hd-restore",
+                Role::Button,
+                "hd-restore",
+                true,
+                cx.listener({
                     let key = key.clone();
                     move |this, _, w, cx| this.history_restore(id, key.clone(), w, cx)
-                })),
-            )
+                }),
+            ))
+            .child(button(t, "hd-curl", "Copy as cURL", false).dev_click(
+                "hd-curl",
+                Role::Button,
+                "hd-curl",
+                true,
+                cx.listener(move |this, _, _, cx| this.history_copy_curl(id, cx)),
+            ))
             .child(
-                button(t, "hd-curl", "Copy as cURL", false)
-                    .on_click(cx.listener(move |this, _, _, cx| this.history_copy_curl(id, cx))),
-            )
-            .child(
-                button(t, "hd-prev", "Compare to previous", false).on_click(
+                button(t, "hd-prev", "Compare to previous", false).dev_click(
+                    "hd-prev",
+                    Role::Button,
+                    "hd-prev",
+                    true,
                     cx.listener(move |this, _, _, cx| this.history_compare_previous(id, cx)),
                 ),
             )
+            .child(button(t, "hd-diff", "Diff ticked", false).dev_click(
+                "hd-diff",
+                Role::Button,
+                "hd-diff",
+                true,
+                cx.listener(|this, _, _, cx| this.history_diff_ticked(cx)),
+            ))
             .child(
-                button(t, "hd-diff", "Diff ticked", false)
-                    .on_click(cx.listener(|this, _, _, cx| this.history_diff_ticked(cx))),
-            )
-            .child(
-                button(t, "hd-pin", if pinned { "Unpin" } else { "Pin" }, false).on_click(
+                button(t, "hd-pin", if pinned { "Unpin" } else { "Pin" }, false).dev_click(
+                    "hd-pin",
+                    Role::Button,
+                    "hd-pin",
+                    true,
                     cx.listener(move |this, _, _, cx| {
                         this.history_set_pinned(vec![id], !pinned, cx)
                     }),
                 ),
             )
-            .child(
-                button(t, "hd-goto", "Go to request", false).on_click(cx.listener({
+            .child(button(t, "hd-goto", "Go to request", false).dev_click(
+                "hd-goto",
+                Role::Button,
+                "hd-goto",
+                true,
+                cx.listener({
                     let key = key.clone();
                     move |this, _, w, cx| this.open_request(&key, true, w, cx)
-                })),
-            )
-            .child(button(t, "hd-popout", "Open in tab", false).on_click(
+                }),
+            ))
+            .child(button(t, "hd-popout", "Open in tab", false).dev_click(
+                "hd-popout",
+                Role::Button,
+                "hd-popout",
+                true,
                 cx.listener(move |this, _, _, cx| this.open_history_entry(id, true, cx)),
             ));
         shell

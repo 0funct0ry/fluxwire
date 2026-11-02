@@ -4044,3 +4044,67 @@ fn char_keystrokes_carry_their_text() {
         assert_eq!(crate::ui_actions::char_keystroke(' ').key, "space");
     }
 }
+
+#[cfg(feature = "dev-mcp")]
+mod semantic_tree {
+    use super::*;
+    use crate::dev_id::{click_handler, last_frame};
+    use crate::dev_tree::{FindQuery, Role, find};
+
+    fn frame(cx: &mut VisualTestContext) -> crate::dev_tree::Frame {
+        cx.update(|_, cx| last_frame(cx))
+    }
+
+    #[gpui::test]
+    fn tagged_controls_are_found_with_bounds(cx: &mut TestAppContext) {
+        let (_view, cx) = setup(cx);
+        cx.run_until_parked();
+        let tree = frame(cx).tree();
+        let q = |label: &str, role| FindQuery {
+            label: Some(label.into()),
+            role,
+            text: None,
+        };
+        for (label, role) in [
+            ("Workspace", Role::Button),
+            ("Environment", Role::Button),
+            ("Send", Role::Button),
+            ("Open as text", Role::Button),
+            ("Problems", Role::Button),
+        ] {
+            let hits = find(&tree, &q(label, Some(role)));
+            assert!(!hits.is_empty(), "{label} not found");
+            assert!(hits[0].visible && !hits[0].bounds.is_empty(), "{label}");
+        }
+        let tabs = find(&tree, &q("", Some(Role::Tab)));
+        assert!(tabs.iter().any(|t| t.id == CREATE), "{tabs:?}");
+    }
+
+    #[gpui::test]
+    fn the_tree_is_identical_across_two_captures(cx: &mut TestAppContext) {
+        let (_view, cx) = setup(cx);
+        cx.run_until_parked();
+        let a = frame(cx).tree();
+        cx.run_until_parked();
+        let b = frame(cx).tree();
+        assert_eq!(a, b);
+        assert_eq!(
+            serde_json::to_string(&a).unwrap(),
+            serde_json::to_string(&b).unwrap()
+        );
+    }
+
+    #[gpui::test]
+    fn clicking_a_tab_element_runs_its_handler(cx: &mut TestAppContext) {
+        let (view, cx) = setup(cx);
+        view.update_in(cx, |w, window, cx| w.open_request(GET, true, window, cx));
+        cx.run_until_parked();
+        let h = cx
+            .update(|_, cx| click_handler(cx, CREATE))
+            .expect("tab handler");
+        cx.update(|window, cx| h(&gpui::ClickEvent::default(), window, cx));
+        cx.run_until_parked();
+        let active = view.read_with(cx, |w, _| w.scope.tabs.active().map(|t| t.key.clone()));
+        assert_eq!(active.as_deref(), Some(CREATE));
+    }
+}

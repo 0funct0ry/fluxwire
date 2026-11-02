@@ -32,6 +32,20 @@ pub enum UiRequest {
     Scroll { x: f32, y: f32, dx: f32, dy: f32 },
     /// `{idle, generation}`; the tool layer polls it for `ui.wait_for_idle`.
     Idle,
+    /// The semantic UI tree, optionally filtered (M9.5).
+    Tree {
+        subtree: Option<String>,
+        role: Option<String>,
+        visible_only: bool,
+    },
+    /// Elements matching a label, role or text.
+    Find {
+        label: Option<String>,
+        role: Option<String>,
+        text: Option<String>,
+    },
+    /// Click the centre of an element's visible bounds.
+    ClickElement { id: String },
 }
 
 /// Operations that need arguments; they call the same Workspace methods the UI uses.

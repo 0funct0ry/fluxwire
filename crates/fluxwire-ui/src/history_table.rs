@@ -1,10 +1,10 @@
 //! The History tab's virtualized table (SPEC §13.1): resizable, sortable columns, day headers,
 //! folder-run group rows, tick boxes, pin and note glyphs, and the row context menu.
 
+use crate::dev_id::{DevClick, Role};
 use gpui::{
-    AnyElement, Context, InteractiveElement, IntoElement, MouseButton, ParentElement,
-    StatefulInteractiveElement, Styled, anchored as popover, deferred, div, prelude::*, px,
-    uniform_list,
+    AnyElement, Context, InteractiveElement, IntoElement, MouseButton, ParentElement, Styled,
+    anchored as popover, deferred, div, prelude::*, px, uniform_list,
 };
 
 use crate::{
@@ -67,7 +67,11 @@ impl WorkspaceView {
                             .items_center()
                             .cursor_pointer()
                             .hover(move |s| s.bg(hover))
-                            .on_click(
+                            .dev_click(
+                                "history_table.render_history_table",
+                                Role::Button,
+                                "history_table.render_history_table",
+                                true,
                                 cx.listener(move |this, _, _, cx| this.history_set_sort(col, cx)),
                             )
                             .child(format!("{name}{arrow}")),
@@ -106,7 +110,13 @@ impl WorkspaceView {
                 .child("No entries match these filters")
                 .child(
                     self.chip(t, "hist-empty-clear".into(), "Clear filters", true)
-                        .on_click(cx.listener(|this, _, _, cx| this.history_clear_filters(cx))),
+                        .dev_click(
+                            "history_table.render_history_table",
+                            Role::Button,
+                            "history_table.render_history_table",
+                            true,
+                            cx.listener(|this, _, _, cx| this.history_clear_filters(cx)),
+                        ),
                 )
                 .into_any_element()
         } else {
@@ -177,7 +187,13 @@ impl WorkspaceView {
                 .text_size(px(12.))
                 .text_color(t.accent)
                 .child("Load more…")
-                .on_click(cx.listener(|this, _, _, cx| this.history_more(cx)))
+                .dev_click(
+                    "hist-more",
+                    Role::Button,
+                    "hist-more",
+                    true,
+                    cx.listener(|this, _, _, cx| this.history_more(cx)),
+                )
                 .into_any_element(),
             HistRow::Run {
                 id,
@@ -200,7 +216,13 @@ impl WorkspaceView {
                         let h = t.element_hover;
                         move |s| s.bg(h)
                     })
-                    .on_click(cx.listener(move |this, _, _, cx| this.history_toggle_run(&rid, cx)))
+                    .dev_click(
+                        "history_table.history_table_row",
+                        Role::Button,
+                        "history_table.history_table_row",
+                        true,
+                        cx.listener(move |this, _, _, cx| this.history_toggle_run(&rid, cx)),
+                    )
                     .child(icon(
                         if expanded {
                             "chevron-down"
@@ -249,13 +271,19 @@ impl WorkspaceView {
                         let h = t.element_hover;
                         d.hover(move |s| s.bg(h))
                     })
-                    .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, window, cx| {
-                        window.focus(&this.history_focus);
-                        this.history_select(id, cx);
-                        if ev.click_count() >= 2 {
-                            this.open_history_entry(id, true, cx);
-                        }
-                    }))
+                    .dev_click(
+                        "history_table.history_table_row",
+                        Role::Button,
+                        "history_table.history_table_row",
+                        true,
+                        cx.listener(move |this, ev: &gpui::ClickEvent, window, cx| {
+                            window.focus(&this.history_focus);
+                            this.history_select(id, cx);
+                            if ev.click_count() >= 2 {
+                                this.open_history_entry(id, true, cx);
+                            }
+                        }),
+                    )
                     .on_mouse_down(
                         MouseButton::Right,
                         cx.listener(move |this, ev: &gpui::MouseDownEvent, _, cx| {
@@ -280,10 +308,16 @@ impl WorkspaceView {
                                     .border_color(t.border)
                                     .when(ticked, |d| d.bg(t.accent).border_color(t.accent)),
                             )
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                cx.stop_propagation();
-                                this.history_toggle_tick(id, cx);
-                            })),
+                            .dev_click(
+                                "history_table.history_table_row",
+                                Role::Button,
+                                "history_table.history_table_row",
+                                true,
+                                cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.history_toggle_tick(id, cx);
+                                }),
+                            ),
                     )
                     .child(
                         cell(0)
@@ -464,11 +498,17 @@ impl WorkspaceView {
                                 .text_size(px(13.))
                                 .text_color(t.text)
                                 .hover(move |s| s.bg(hover))
-                                .on_click(cx.listener(move |this, _, w, cx| {
-                                    this.history.menu = None;
-                                    act(this, id, w, cx);
-                                    cx.notify();
-                                }))
+                                .dev_click(
+                                    "hist-menu",
+                                    Role::Button,
+                                    "hist-menu",
+                                    true,
+                                    cx.listener(move |this, _, w, cx| {
+                                        this.history.menu = None;
+                                        act(this, id, w, cx);
+                                        cx.notify();
+                                    }),
+                                )
                                 .child(label)
                         })),
                 ),

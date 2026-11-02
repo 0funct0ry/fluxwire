@@ -1,10 +1,11 @@
 //! Tab switching, tab menu, keymap loading and layout persistence glue (M6).
 
+use crate::dev_id::{DevClick, Role};
 use std::path::PathBuf;
 
 use gpui::{
-    ClipboardItem, Context, InteractiveElement, IntoElement, MouseButton, ParentElement,
-    StatefulInteractiveElement, Styled, Window, anchored as popover, deferred, div, prelude::*, px,
+    ClipboardItem, Context, InteractiveElement, IntoElement, MouseButton, ParentElement, Styled,
+    Window, anchored as popover, deferred, div, prelude::*, px,
 };
 
 use crate::{
@@ -254,12 +255,18 @@ impl WorkspaceView {
                                 .text_size(px(13.))
                                 .text_color(t.text)
                                 .hover(move |s| s.bg(hover))
-                                .on_click(cx.listener(move |this, _, w, cx| {
-                                    this.scope.tab_menu = None;
-                                    act(this, id, w, cx);
-                                    this.session_dirty = true;
-                                    cx.notify();
-                                }))
+                                .dev_click(
+                                    "tab-menu",
+                                    Role::Tab,
+                                    "tab-menu",
+                                    true,
+                                    cx.listener(move |this, _, w, cx| {
+                                        this.scope.tab_menu = None;
+                                        act(this, id, w, cx);
+                                        this.session_dirty = true;
+                                        cx.notify();
+                                    }),
+                                )
                                 .child(label)
                         })),
                 ),

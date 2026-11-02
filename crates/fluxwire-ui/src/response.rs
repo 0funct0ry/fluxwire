@@ -1,6 +1,7 @@
 //! Sending a request and showing the response (SPEC §17.4): per-tab run state, the runner
 //! bridge, cURL copy, and the response pane with a virtualized body viewer.
 
+use crate::dev_id::{DevClick, Role};
 use std::{
     collections::BTreeSet,
     ops::Range,
@@ -1357,9 +1358,15 @@ impl WorkspaceView {
                                         .cursor_pointer()
                                         .underline()
                                         .child("Back to latest")
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.history_back_to_latest(cx)
-                                        })),
+                                        .dev_click(
+                                            "resp-latest",
+                                            Role::Button,
+                                            "resp-latest",
+                                            true,
+                                            cx.listener(|this, _, _, cx| {
+                                                this.history_back_to_latest(cx)
+                                            }),
+                                        ),
                                 ),
                         )
                     })
@@ -1402,7 +1409,13 @@ impl WorkspaceView {
                     let h = t.element_hover;
                     d.text_color(t.text_muted).hover(move |s| s.bg(h))
                 })
-                .on_click(cx.listener(move |this, _, _, cx| this.set_body_mode(mode, cx)))
+                .dev_click(
+                    id,
+                    Role::Button,
+                    id,
+                    true,
+                    cx.listener(move |this, _, _, cx| this.set_body_mode(mode, cx)),
+                )
                 .child(label)
         };
         let has_text = view.pretty.is_some();
@@ -1518,19 +1531,28 @@ impl WorkspaceView {
                             String::new()
                         }),
                 )
-                .child(
-                    tool("wrap", "Wrap", r.wrap)
-                        .on_click(cx.listener(|this, _, _, cx| this.toggle_wrap(cx))),
-                )
+                .child(tool("wrap", "Wrap", r.wrap).dev_click(
+                    "response.render_resp_body",
+                    Role::Button,
+                    "response.render_resp_body",
+                    true,
+                    cx.listener(|this, _, _, cx| this.toggle_wrap(cx)),
+                ))
             })
-            .child(
-                tool("copy", "Copy", false)
-                    .on_click(cx.listener(|this, _, _, cx| this.copy_response_body(cx))),
-            )
-            .child(
-                tool("save", "Save", false)
-                    .on_click(cx.listener(|this, _, _, cx| this.save_response_body(cx))),
-            );
+            .child(tool("copy", "Copy", false).dev_click(
+                "response.render_resp_body",
+                Role::Button,
+                "response.render_resp_body",
+                true,
+                cx.listener(|this, _, _, cx| this.copy_response_body(cx)),
+            ))
+            .child(tool("save", "Save", false).dev_click(
+                "response.render_resp_body",
+                Role::Button,
+                "response.render_resp_body",
+                true,
+                cx.listener(|this, _, _, cx| this.save_response_body(cx)),
+            ));
 
         let body: AnyElement = if r.mode == BodyMode::Preview
             && let Some((fmt, bytes)) = &view.image
@@ -1966,7 +1988,13 @@ fn body_row(
                 11.,
                 t.text_placeholder,
             ))
-            .on_click(cx.listener(move |this, _, _, cx| this.toggle_fold(tab_id, line_ix, cx)))
+            .dev_click(
+                "response.body_row",
+                Role::Button,
+                "response.body_row",
+                true,
+                cx.listener(move |this, _, _, cx| this.toggle_fold(tab_id, line_ix, cx)),
+            )
             .into_any_element(),
         None => div().w(px(14.)).flex_none().into_any_element(),
     };

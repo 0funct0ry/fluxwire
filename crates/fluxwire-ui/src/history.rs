@@ -2,6 +2,7 @@
 //! tab and navigator (`history_tab.rs`, `history_nav.rs`), the read-only History entry and diff
 //! tabs, restore, copy as cURL, and the response-pane dropdown.
 
+use crate::dev_id::{DevClick, Role};
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
     sync::Arc,
@@ -16,8 +17,8 @@ use fluxwire_store::{
     Store, Summary, data_dir, diff_headers, diff_json_or_text, workspace_key,
 };
 use gpui::{
-    AnyElement, ClipboardItem, Context, InteractiveElement, IntoElement, ParentElement,
-    StatefulInteractiveElement, Styled, UniformListScrollHandle, Window, div, prelude::*, px,
+    AnyElement, ClipboardItem, Context, InteractiveElement, IntoElement, ParentElement, Styled,
+    UniformListScrollHandle, Window, div, prelude::*, px,
 };
 use serde_json::Value;
 
@@ -856,15 +857,27 @@ impl WorkspaceView {
             .child(
                 row()
                     .gap_2()
-                    .child(
-                        button(t, "h-restore", "Restore", true).on_click(cx.listener(
-                            move |this, _, w, cx| this.history_restore(id, key.clone(), w, cx),
-                        )),
-                    )
-                    .child(button(t, "h-curl", "Copy as cURL", false).on_click(
+                    .child(button(t, "h-restore", "Restore", true).dev_click(
+                        "h-restore",
+                        Role::Button,
+                        "h-restore",
+                        true,
+                        cx.listener(move |this, _, w, cx| {
+                            this.history_restore(id, key.clone(), w, cx)
+                        }),
+                    ))
+                    .child(button(t, "h-curl", "Copy as cURL", false).dev_click(
+                        "h-curl",
+                        Role::Button,
+                        "h-curl",
+                        true,
                         cx.listener(move |this, _, _, cx| this.history_copy_curl(id, cx)),
                     ))
-                    .child(button(t, "h-diff", diff_label, false).on_click(
+                    .child(button(t, "h-diff", diff_label, false).dev_click(
+                        "h-diff",
+                        Role::Button,
+                        "h-diff",
+                        true,
                         cx.listener(move |this, _, _, cx| this.history_pick_diff(id, cx)),
                     )),
             )
@@ -980,11 +993,15 @@ impl WorkspaceView {
             .child(
                 row()
                     .gap_2()
-                    .child(
-                        button(t, "h-restore", "Restore", true).on_click(cx.listener(
-                            move |this, _, w, cx| this.history_restore(id, key.clone(), w, cx),
-                        )),
-                    ),
+                    .child(button(t, "h-restore", "Restore", true).dev_click(
+                        "h-restore",
+                        Role::Button,
+                        "h-restore",
+                        true,
+                        cx.listener(move |this, _, w, cx| {
+                            this.history_restore(id, key.clone(), w, cx)
+                        }),
+                    )),
             )
             .children(err.map(|m| div().text_color(t.deleted).child(m.to_string())))
             .child(section("Handshake request headers"))
@@ -1091,7 +1108,13 @@ impl WorkspaceView {
             .text_size(px(11.))
             .when(open, |d| d.bg(t.element_selected))
             .child("History ▾")
-            .on_click(cx.listener(|this, _, _, cx| this.toggle_history_dropdown(cx)));
+            .dev_click(
+                "resp-history",
+                Role::Button,
+                "resp-history",
+                true,
+                cx.listener(|this, _, _, cx| this.toggle_history_dropdown(cx)),
+            );
         div()
             .relative()
             .child(btn)
@@ -1151,9 +1174,15 @@ impl WorkspaceView {
                                             time_label(e.ts_ms),
                                             e.total_ms
                                         )))
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.show_history_response(id, cx)
-                                        }))
+                                        .dev_click(
+                                            "history.render_history_dropdown",
+                                            Role::Button,
+                                            "history.render_history_dropdown",
+                                            true,
+                                            cx.listener(move |this, _, _, cx| {
+                                                this.show_history_response(id, cx)
+                                            }),
+                                        )
                                         .into_any_element()
                                 })
                                 .collect()

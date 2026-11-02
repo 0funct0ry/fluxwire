@@ -2,6 +2,7 @@
 //! pasted cURL command, options. Form logic is in `new_request.rs`; this file holds the
 //! entities, the view and the create step.
 
+use crate::dev_id::{DevClick, Role};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -395,7 +396,13 @@ impl WorkspaceView {
                         .id("nr-close")
                         .cursor_pointer()
                         .child(icon("x", 14., t.text_muted))
-                        .on_click(cx.listener(|this, _, w, cx| this.close_dialog(w, cx))),
+                        .dev_click(
+                            "nr-close",
+                            Role::Button,
+                            "nr-close",
+                            true,
+                            cx.listener(|this, _, w, cx| this.close_dialog(w, cx)),
+                        ),
                 ),
         );
 
@@ -416,7 +423,13 @@ impl WorkspaceView {
                             .cursor_pointer()
                             .text_color(t.accent)
                             .child("Paste cURL command from clipboard")
-                            .on_click(cx.listener(|this, _, w, cx| this.nr_use_clipboard(w, cx))),
+                            .dev_click(
+                                "nr-hint",
+                                Role::Button,
+                                "nr-hint",
+                                true,
+                                cx.listener(|this, _, w, cx| this.nr_use_clipboard(w, cx)),
+                            ),
                     )
                     .child(
                         div()
@@ -431,12 +444,18 @@ impl WorkspaceView {
                             .id("nr-hint-x")
                             .cursor_pointer()
                             .child(icon("x", 12., t.text_muted))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                if let Some(d) = this.nr() {
-                                    d.clipboard_hint = None;
-                                }
-                                cx.notify();
-                            })),
+                            .dev_click(
+                                "nr-hint-x",
+                                Role::Button,
+                                "nr-hint-x",
+                                true,
+                                cx.listener(|this, _, _, cx| {
+                                    if let Some(d) = this.nr() {
+                                        d.clipboard_hint = None;
+                                    }
+                                    cx.notify();
+                                }),
+                            ),
                     ),
             );
         }
@@ -520,12 +539,18 @@ impl WorkspaceView {
                             .child(crate::dock::middle_truncate(&rel, 60)),
                     )
                     .child(icon("chevron-down", 12., t.text_muted))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        if let Some(d) = this.nr() {
-                            d.picker_open = !d.picker_open;
-                        }
-                        cx.notify();
-                    })),
+                    .dev_click(
+                        "new_request_dialog.render_new_request",
+                        Role::Button,
+                        "new_request_dialog.render_new_request",
+                        true,
+                        cx.listener(|this, _, _, cx| {
+                            if let Some(d) = this.nr() {
+                                d.picker_open = !d.picker_open;
+                            }
+                            cx.notify();
+                        }),
+                    ),
             );
         if d.picker_open
             && let Some(w) = ws
@@ -563,13 +588,19 @@ impl WorkspaceView {
                         ))
                         .child(div().flex_1().child(l.label.clone()))
                         .when(on, |r| r.child(icon("check", 12., t.accent)))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if let Some(d) = this.nr() {
-                                d.form.location = dir.clone();
-                                d.picker_open = false;
-                            }
-                            cx.notify();
-                        })),
+                        .dev_click(
+                            "nr-picker",
+                            Role::Button,
+                            "nr-picker",
+                            true,
+                            cx.listener(move |this, _, _, cx| {
+                                if let Some(d) = this.nr() {
+                                    d.form.location = dir.clone();
+                                    d.picker_open = false;
+                                }
+                                cx.notify();
+                            }),
+                        ),
                 );
             }
             save_in = save_in
@@ -633,12 +664,18 @@ impl WorkspaceView {
                         .text_color(t.method_color(&m))
                         .child(m)
                         .child(icon("chevron-down", 12., t.text_muted))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            if let Some(d) = this.nr() {
-                                d.method_open = !d.method_open;
-                            }
-                            cx.notify();
-                        })),
+                        .dev_click(
+                            "nr-method",
+                            Role::Button,
+                            "nr-method",
+                            true,
+                            cx.listener(|this, _, _, cx| {
+                                if let Some(d) = this.nr() {
+                                    d.method_open = !d.method_open;
+                                }
+                                cx.notify();
+                            }),
+                        ),
                 );
             }
             r = r.child(
@@ -683,13 +720,19 @@ impl WorkspaceView {
                             .when(on, |c| c.bg(t.element_selected))
                             .hover(|s| s.bg(t.element_hover))
                             .child(m)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                if let Some(d) = this.nr() {
-                                    d.form.method = m.to_string();
-                                    d.method_open = false;
-                                }
-                                cx.notify();
-                            })),
+                            .dev_click(
+                                "new_request_dialog.render_new_request",
+                                Role::Button,
+                                "new_request_dialog.render_new_request",
+                                true,
+                                cx.listener(move |this, _, _, cx| {
+                                    if let Some(d) = this.nr() {
+                                        d.form.method = m.to_string();
+                                        d.method_open = false;
+                                    }
+                                    cx.notify();
+                                }),
+                            ),
                     );
                 }
                 panel = panel.child(chips);
@@ -720,13 +763,19 @@ impl WorkspaceView {
                             t.text_muted,
                         ))
                         .child("Options")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            if let Some(d) = this.nr() {
-                                d.form.options_open = !d.form.options_open;
-                                OPTIONS_OPEN.store(d.form.options_open, Ordering::Relaxed);
-                            }
-                            cx.notify();
-                        })),
+                        .dev_click(
+                            "nr-options",
+                            Role::Button,
+                            "nr-options",
+                            true,
+                            cx.listener(|this, _, _, cx| {
+                                if let Some(d) = this.nr() {
+                                    d.form.options_open = !d.form.options_open;
+                                    OPTIONS_OPEN.store(d.form.options_open, Ordering::Relaxed);
+                                }
+                                cx.notify();
+                            }),
+                        ),
                 )
                 .when(open, |c| {
                     let mut c = c.child(label("Description")).child(
@@ -804,14 +853,25 @@ impl WorkspaceView {
                     )
                 })
                 .child(
-                    button(t, "nr-cancel", "Cancel".to_string(), false, true)
-                        .on_click(cx.listener(|this, _, w, cx| this.close_dialog(w, cx))),
+                    button(t, "nr-cancel", "Cancel".to_string(), false, true).dev_click(
+                        "nr-cancel",
+                        Role::Button,
+                        "nr-cancel",
+                        true,
+                        cx.listener(|this, _, w, cx| this.close_dialog(w, cx)),
+                    ),
                 )
-                .child(create.on_click(cx.listener(move |this, _, w, cx| {
-                    if valid {
-                        this.submit_new_request(w, cx)
-                    }
-                }))),
+                .child(create.dev_click(
+                    "new_request_dialog.render_new_request",
+                    Role::Button,
+                    "new_request_dialog.render_new_request",
+                    true,
+                    cx.listener(move |this, _, w, cx| {
+                        if valid {
+                            this.submit_new_request(w, cx)
+                        }
+                    }),
+                )),
         )
     }
 }

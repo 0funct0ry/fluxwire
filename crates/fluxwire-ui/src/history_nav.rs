@@ -2,11 +2,11 @@
 //! built-in saved views and the requests that have history, with counts; every item opens the
 //! History tab with the matching filter applied.
 
+use crate::dev_id::{DevClick, Role};
 use fluxwire_store::Scope;
 use gpui::{
     AnyElement, Context, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels,
-    Point, StatefulInteractiveElement, Styled, Window, anchored as popover, deferred, div,
-    prelude::*, px,
+    Point, Styled, Window, anchored as popover, deferred, div, prelude::*, px,
 };
 
 use crate::{
@@ -134,7 +134,13 @@ impl WorkspaceView {
             let t2 = target.clone();
             self.tree_row(t, gpui::ElementId::Name(id.into()), depth, on)
                 .gap_2()
-                .on_click(cx.listener(move |this, _, _, cx| this.history_show(t2.clone(), cx)))
+                .dev_click(
+                    "history_nav.render_history_nav",
+                    Role::Button,
+                    "history_nav.render_history_nav",
+                    true,
+                    cx.listener(move |this, _, _, cx| this.history_show(t2.clone(), cx)),
+                )
                 .when_some(menu, |d, m| {
                     d.on_mouse_down(
                         MouseButton::Right,
@@ -317,18 +323,24 @@ impl WorkspaceView {
                                 .text_size(px(13.))
                                 .text_color(t.text)
                                 .hover(move |s| s.bg(hover))
-                                .on_click(cx.listener(move |this, _, w, cx| {
-                                    this.history.nav_menu = None;
-                                    match kind {
-                                        0 => this.history_show(target.item(), cx),
-                                        _ => this.confirm_clear_history(
-                                            target.scope(),
-                                            what.clone(),
-                                            w,
-                                            cx,
-                                        ),
-                                    }
-                                }))
+                                .dev_click(
+                                    "hist-nav-menu",
+                                    Role::Button,
+                                    "hist-nav-menu",
+                                    true,
+                                    cx.listener(move |this, _, w, cx| {
+                                        this.history.nav_menu = None;
+                                        match kind {
+                                            0 => this.history_show(target.item(), cx),
+                                            _ => this.confirm_clear_history(
+                                                target.scope(),
+                                                what.clone(),
+                                                w,
+                                                cx,
+                                            ),
+                                        }
+                                    }),
+                                )
                                 .child(label)
                         })),
                 ),

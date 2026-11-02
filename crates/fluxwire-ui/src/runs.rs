@@ -1,6 +1,7 @@
 //! Folder runs in the UI (SPEC §12): the Folder run tab, its options bar, the live result
 //! tree, export, "Copy CLI command", and the history entries every request of a run writes.
 
+use crate::dev_id::{DevClick, Role};
 use std::{
     collections::HashSet,
     path::PathBuf,
@@ -14,9 +15,8 @@ use fluxwire_runner::{
 };
 use fluxwire_store::{NewEntry, Redactor};
 use gpui::{
-    AnyElement, ClipboardItem, Context, InteractiveElement, IntoElement, ParentElement,
-    StatefulInteractiveElement, Styled, UniformListScrollHandle, div, prelude::*, px, relative,
-    uniform_list,
+    AnyElement, ClipboardItem, Context, InteractiveElement, IntoElement, ParentElement, Styled,
+    UniformListScrollHandle, div, prelude::*, px, relative, uniform_list,
 };
 
 use crate::{
@@ -750,10 +750,15 @@ impl WorkspaceView {
             return self
                 .page(t, &tab.title, "Folder run")
                 .child(
-                    row().gap_2().child(
-                        button(t, "run-go", "Run", true)
-                            .on_click(cx.listener(move |this, _, _, cx| this.start_run(id, cx))),
-                    ),
+                    row()
+                        .gap_2()
+                        .child(button(t, "run-go", "Run", true).dev_click(
+                            "run-go",
+                            Role::Button,
+                            "run-go",
+                            true,
+                            cx.listener(move |this, _, _, cx| this.start_run(id, cx)),
+                        )),
                 )
                 .child(div().text_color(t.text_muted).child(format!(
                     "{} — press Run to start.",
@@ -784,46 +789,53 @@ impl WorkspaceView {
                 })
                 .child(label)
         };
-        let stepper =
-            |key: &'static str, label: &str, value: u32, step_cx: &mut Context<Self>| {
-                row()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_size(px(12.))
-                            .text_color(t.text_muted)
-                            .child(label.to_string()),
-                    )
-                    .child(chip(format!("{key}-dec"), "−".into(), false).on_click(
-                        step_cx.listener(move |this, _, _, cx| {
-                            let r = this.run_entry(id, cx);
-                            match key {
-                                "conc" => r.concurrency = r.concurrency.saturating_sub(1).max(1),
-                                _ => r.iterations = r.iterations.saturating_sub(1).max(1),
-                            }
-                            cx.notify();
-                        }),
-                    ))
-                    .child(
-                        div()
-                            .w(px(24.))
-                            .flex()
-                            .justify_center()
-                            .font_family(BUFFER_FONT)
-                            .text_size(px(12.))
-                            .child(value.to_string()),
-                    )
-                    .child(chip(format!("{key}-inc"), "+".into(), false).on_click(
-                        step_cx.listener(move |this, _, _, cx| {
-                            let r = this.run_entry(id, cx);
-                            match key {
-                                "conc" => r.concurrency = (r.concurrency + 1).min(256),
-                                _ => r.iterations = (r.iterations + 1).min(10_000),
-                            }
-                            cx.notify();
-                        }),
-                    ))
-            };
+        let stepper = |key: &'static str, label: &str, value: u32, step_cx: &mut Context<Self>| {
+            row()
+                .gap_1()
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(t.text_muted)
+                        .child(label.to_string()),
+                )
+                .child(chip(format!("{key}-dec"), "−".into(), false).dev_click(
+                    "runs.render_run_tab",
+                    Role::Button,
+                    "runs.render_run_tab",
+                    true,
+                    step_cx.listener(move |this, _, _, cx| {
+                        let r = this.run_entry(id, cx);
+                        match key {
+                            "conc" => r.concurrency = r.concurrency.saturating_sub(1).max(1),
+                            _ => r.iterations = r.iterations.saturating_sub(1).max(1),
+                        }
+                        cx.notify();
+                    }),
+                ))
+                .child(
+                    div()
+                        .w(px(24.))
+                        .flex()
+                        .justify_center()
+                        .font_family(BUFFER_FONT)
+                        .text_size(px(12.))
+                        .child(value.to_string()),
+                )
+                .child(chip(format!("{key}-inc"), "+".into(), false).dev_click(
+                    "runs.render_run_tab",
+                    Role::Button,
+                    "runs.render_run_tab",
+                    true,
+                    step_cx.listener(move |this, _, _, cx| {
+                        let r = this.run_entry(id, cx);
+                        match key {
+                            "conc" => r.concurrency = (r.concurrency + 1).min(256),
+                            _ => r.iterations = (r.iterations + 1).min(10_000),
+                        }
+                        cx.notify();
+                    }),
+                ))
+        };
         let running = r.running();
         let (p, f, s, pending) = r.counts();
         let total = r.entries.len();
@@ -874,11 +886,17 @@ impl WorkspaceView {
                     .into(),
                     r.sequential,
                 )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    let r = this.run_entry(id, cx);
-                    r.sequential = !r.sequential;
-                    cx.notify();
-                })),
+                .dev_click(
+                    "run-filter",
+                    Role::Button,
+                    "run-filter",
+                    true,
+                    cx.listener(move |this, _, _, cx| {
+                        let r = this.run_entry(id, cx);
+                        r.sequential = !r.sequential;
+                        cx.notify();
+                    }),
+                ),
             )
             .when(!r.sequential, |d| {
                 d.child(stepper("conc", "Concurrency", r.concurrency, cx))
@@ -892,62 +910,102 @@ impl WorkspaceView {
                     format!("Env: {}", self.env_label()),
                     false,
                 )
-                .on_click(cx.listener(|this, _, w, cx| this.open_env_picker(w, cx))),
+                .dev_click(
+                    "runs.render_run_tab",
+                    Role::Button,
+                    "runs.render_run_tab",
+                    true,
+                    cx.listener(|this, _, w, cx| this.open_env_picker(w, cx)),
+                ),
             )
             .child(
-                chip("run-data".into(), data_label, r.data_file.is_some()).on_click(cx.listener(
-                    move |this, _, _, cx| {
+                chip("run-data".into(), data_label, r.data_file.is_some()).dev_click(
+                    "runs.render_run_tab",
+                    Role::Button,
+                    "runs.render_run_tab",
+                    true,
+                    cx.listener(move |this, _, _, cx| {
                         if this.run_entry(id, cx).data_file.is_some() {
                             this.run_entry(id, cx).data_file = None;
                             cx.notify();
                         } else {
                             this.pick_run_data_file(id, cx);
                         }
-                    },
-                )),
+                    }),
+                ),
             )
             .child(filter_box)
-            .child(
-                chip("run-bail".into(), "Bail".into(), r.bail).on_click(cx.listener(
-                    move |this, _, _, cx| {
-                        let r = this.run_entry(id, cx);
-                        r.bail = !r.bail;
-                        cx.notify();
-                    },
-                )),
-            );
+            .child(chip("run-bail".into(), "Bail".into(), r.bail).dev_click(
+                "runs.render_run_tab",
+                Role::Button,
+                "runs.render_run_tab",
+                true,
+                cx.listener(move |this, _, _, cx| {
+                    let r = this.run_entry(id, cx);
+                    r.bail = !r.bail;
+                    cx.notify();
+                }),
+            ));
 
         let actions = row()
             .flex_wrap()
             .gap_2()
             .child(if running {
-                button(t, "run-cancel", "Cancel", true)
-                    .on_click(cx.listener(move |this, _, _, cx| this.cancel_run(id, cx)))
+                button(t, "run-cancel", "Cancel", true).dev_click(
+                    "run-cancel",
+                    Role::Button,
+                    "run-cancel",
+                    true,
+                    cx.listener(move |this, _, _, cx| this.cancel_run(id, cx)),
+                )
             } else {
-                button(t, "run-go", "Run", true).on_click(cx.listener(move |this, _, _, cx| {
-                    this.run_entry(id, cx).only = None;
-                    this.start_run(id, cx)
-                }))
+                button(t, "run-go", "Run", true).dev_click(
+                    "run-go",
+                    Role::Button,
+                    "run-go",
+                    true,
+                    cx.listener(move |this, _, _, cx| {
+                        this.run_entry(id, cx).only = None;
+                        this.start_run(id, cx)
+                    }),
+                )
             })
+            .child(button(t, "run-failed", "Re-run failed", false).dev_click(
+                "run-failed",
+                Role::Button,
+                "run-failed",
+                true,
+                cx.listener(move |this, _, _, cx| this.rerun_failed(id, cx)),
+            ))
+            .child(button(t, "run-json", "Export JSON", false).dev_click(
+                "run-json",
+                Role::Button,
+                "run-json",
+                true,
+                cx.listener(move |this, _, _, cx| this.export_run(id, false, cx)),
+            ))
+            .child(button(t, "run-junit", "Export JUnit", false).dev_click(
+                "run-junit",
+                Role::Button,
+                "run-junit",
+                true,
+                cx.listener(move |this, _, _, cx| this.export_run(id, true, cx)),
+            ))
+            .child(button(t, "run-cli", "Copy CLI command", false).dev_click(
+                "run-cli",
+                Role::Button,
+                "run-cli",
+                true,
+                cx.listener(move |this, _, _, cx| this.copy_run_command(id, cx)),
+            ))
             .child(
-                button(t, "run-failed", "Re-run failed", false)
-                    .on_click(cx.listener(move |this, _, _, cx| this.rerun_failed(id, cx))),
-            )
-            .child(
-                button(t, "run-json", "Export JSON", false)
-                    .on_click(cx.listener(move |this, _, _, cx| this.export_run(id, false, cx))),
-            )
-            .child(
-                button(t, "run-junit", "Export JUnit", false)
-                    .on_click(cx.listener(move |this, _, _, cx| this.export_run(id, true, cx))),
-            )
-            .child(
-                button(t, "run-cli", "Copy CLI command", false)
-                    .on_click(cx.listener(move |this, _, _, cx| this.copy_run_command(id, cx))),
-            )
-            .child(
-                button(t, "run-history", "View in History", false)
-                    .on_click(cx.listener(move |this, _, _, cx| this.show_run_in_history(id, cx))),
+                button(t, "run-history", "View in History", false).dev_click(
+                    "run-history",
+                    Role::Button,
+                    "run-history",
+                    true,
+                    cx.listener(move |this, _, _, cx| this.show_run_in_history(id, cx)),
+                ),
             );
 
         let summary = row()
@@ -1123,7 +1181,11 @@ impl WorkspaceView {
                     .text_color(t.accent)
                     .cursor_pointer()
                     .child("Open request")
-                    .on_click(
+                    .dev_click(
+                        "runs.run_row",
+                        Role::Button,
+                        "runs.run_row",
+                        true,
                         cx.listener(move |this, _, w, cx| this.open_request(&key, true, w, cx)),
                     )
                     .into_any_element()
@@ -1182,17 +1244,23 @@ impl WorkspaceView {
                         let h = t.element_hover;
                         d.cursor_pointer().hover(move |s| s.bg(h))
                     })
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(r) = this.scope.runs.get_mut(&tab_id)
-                            && matches!(r.entries[e].slot, Slot::Done(_))
-                        {
-                            if !r.expanded.remove(&e) {
-                                r.expanded.insert(e);
+                    .dev_click(
+                        "runs.run_row",
+                        Role::Button,
+                        "runs.run_row",
+                        true,
+                        cx.listener(move |this, _, _, cx| {
+                            if let Some(r) = this.scope.runs.get_mut(&tab_id)
+                                && matches!(r.entries[e].slot, Slot::Done(_))
+                            {
+                                if !r.expanded.remove(&e) {
+                                    r.expanded.insert(e);
+                                }
+                                r.rebuild_flat();
+                                cx.notify();
                             }
-                            r.rebuild_flat();
-                            cx.notify();
-                        }
-                    }))
+                        }),
+                    )
                     .child(div().w(px(14.)).text_color(color).child(glyph))
                     .child(
                         div()

@@ -1,5 +1,6 @@
 //! The Keybindings tab: every action with its effective binding, searchable (SPEC §17.6).
 
+use crate::dev_id::{DevClick, Role};
 use gpui::{Context, InteractiveElement, IntoElement, ParentElement, Styled, div, prelude::*, px};
 
 use crate::{
@@ -93,11 +94,17 @@ impl WorkspaceView {
                             .cursor_pointer()
                             .text_size(px(12.))
                             .text_color(t.accent)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.keybind_editing = !this.keybind_editing;
-                                this.keybind_edit = None;
-                                cx.notify();
-                            }))
+                            .dev_click(
+                                "keybind-edit-toggle",
+                                Role::Button,
+                                "keybind-edit-toggle",
+                                true,
+                                cx.listener(|this, _, _, cx| {
+                                    this.keybind_editing = !this.keybind_editing;
+                                    this.keybind_edit = None;
+                                    cx.notify();
+                                }),
+                            )
                             .child(if editing { "Done" } else { "Edit" }),
                     )
                     .child(
@@ -106,9 +113,15 @@ impl WorkspaceView {
                             .cursor_pointer()
                             .text_size(px(12.))
                             .text_color(t.accent)
-                            .on_click(cx.listener(|_, _, w, cx| {
-                                w.dispatch_action(Box::new(OpenKeymapFile), cx)
-                            }))
+                            .dev_click(
+                                "open-keymap",
+                                Role::Button,
+                                "open-keymap",
+                                true,
+                                cx.listener(|_, _, w, cx| {
+                                    w.dispatch_action(Box::new(OpenKeymapFile), cx)
+                                }),
+                            )
                             .child("Open keymap.toml"),
                     ),
             )
@@ -173,15 +186,33 @@ impl WorkspaceView {
                                 };
                                 row()
                                     .gap_2()
-                                    .child(link("kb-edit", "Edit").on_click(cx.listener(
-                                        move |this, _, _, cx| this.begin_capture(action, cx),
-                                    )))
-                                    .child(link("kb-clear", "Clear").on_click(cx.listener(
-                                        move |this, _, _, cx| this.clear_keybinding(action, cx),
-                                    )))
-                                    .child(link("kb-reset", "Reset").on_click(cx.listener(
-                                        move |this, _, _, cx| this.reset_keybinding(action, cx),
-                                    )))
+                                    .child(link("kb-edit", "Edit").dev_click(
+                                        "keybindings.render_keybindings",
+                                        Role::Button,
+                                        "keybindings.render_keybindings",
+                                        true,
+                                        cx.listener(move |this, _, _, cx| {
+                                            this.begin_capture(action, cx)
+                                        }),
+                                    ))
+                                    .child(link("kb-clear", "Clear").dev_click(
+                                        "keybindings.render_keybindings",
+                                        Role::Button,
+                                        "keybindings.render_keybindings",
+                                        true,
+                                        cx.listener(move |this, _, _, cx| {
+                                            this.clear_keybinding(action, cx)
+                                        }),
+                                    ))
+                                    .child(link("kb-reset", "Reset").dev_click(
+                                        "keybindings.render_keybindings",
+                                        Role::Button,
+                                        "keybindings.render_keybindings",
+                                        true,
+                                        cx.listener(move |this, _, _, cx| {
+                                            this.reset_keybinding(action, cx)
+                                        }),
+                                    ))
                             }))
                             .children(match &pending {
                                 Some((a, Some(keys), Some(c))) if *a == r.action => Some(
@@ -198,9 +229,15 @@ impl WorkspaceView {
                                                 .id(("kb-replace", i))
                                                 .cursor_pointer()
                                                 .text_color(t.accent)
-                                                .on_click(cx.listener(|this, _, _, cx| {
-                                                    this.confirm_replace(cx)
-                                                }))
+                                                .dev_click(
+                                                    "keybindings.render_keybindings",
+                                                    Role::Button,
+                                                    "keybindings.render_keybindings",
+                                                    true,
+                                                    cx.listener(|this, _, _, cx| {
+                                                        this.confirm_replace(cx)
+                                                    }),
+                                                )
                                                 .child("Replace"),
                                         )
                                         .child(
@@ -208,9 +245,15 @@ impl WorkspaceView {
                                                 .id(("kb-cancel", i))
                                                 .cursor_pointer()
                                                 .text_color(t.accent)
-                                                .on_click(cx.listener(|this, _, _, cx| {
-                                                    this.cancel_edit(cx)
-                                                }))
+                                                .dev_click(
+                                                    "keybindings.render_keybindings",
+                                                    Role::Button,
+                                                    "keybindings.render_keybindings",
+                                                    true,
+                                                    cx.listener(|this, _, _, cx| {
+                                                        this.cancel_edit(cx)
+                                                    }),
+                                                )
                                                 .child("Cancel"),
                                         ),
                                 ),

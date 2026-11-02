@@ -11,8 +11,10 @@ pub mod code_editor_ops;
 pub mod completion;
 pub mod completion_providers;
 pub mod containment;
+pub mod dev_id;
 #[cfg(feature = "dev-mcp")]
 pub mod dev_mcp;
+pub mod dev_tree;
 pub mod dialogs;
 pub mod display_map;
 pub mod dock;

@@ -2,6 +2,7 @@
 //! live text inputs, edits that stay in memory until Cmd/Ctrl+S, validation, secrets, reorder by
 //! drag, bulk edit and the unsaved-values sync with sends. The document model is `env_doc.rs`.
 
+use crate::dev_id::{DevClick, Role};
 use std::path::{Path, PathBuf};
 
 use fluxwire_format::{EnvDiagnostic, EnvRow, EnvSeverity, Environment, list_environments};
@@ -444,10 +445,13 @@ impl WorkspaceView {
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .child(format!("Runtime variables · {}", rt.len())),
                     )
-                    .child(
-                        button(t, "runtime-clear", "Clear", false)
-                            .on_click(cx.listener(|this, _, _, cx| this.clear_runtime_vars(cx))),
-                    ),
+                    .child(button(t, "runtime-clear", "Clear", false).dev_click(
+                        "runtime-clear",
+                        Role::Button,
+                        "runtime-clear",
+                        true,
+                        cx.listener(|this, _, _, cx| this.clear_runtime_vars(cx)),
+                    )),
             )
             .when(rt.is_empty(), |d| {
                 d.child(
@@ -774,7 +778,11 @@ impl WorkspaceView {
                     .when(active, |d| d.child(pill(t, "active")))
                     .when(!active, |d| {
                         d.child(
-                            button(t, "env-set-active", "Set as active", false).on_click(
+                            button(t, "env-set-active", "Set as active", false).dev_click(
+                                "env-set-active",
+                                Role::Button,
+                                "env-set-active",
+                                true,
                                 cx.listener(move |this, _, _, cx| {
                                     this.env_set_active(&k_active, cx)
                                 }),
@@ -834,14 +842,22 @@ impl WorkspaceView {
                             .text_size(px(12.))
                             .child(format!("environments/{name}.env changed on disk.")),
                     )
-                    .child(button(t, "env-reload", "Reload", false).on_click(
+                    .child(button(t, "env-reload", "Reload", false).dev_click(
+                        "env-reload",
+                        Role::Button,
+                        "env-reload",
+                        true,
                         cx.listener(move |this, _, _, cx| this.env_resolve_conflict(&k1, true, cx)),
                     ))
-                    .child(
-                        button(t, "env-keep", "Keep mine", false).on_click(cx.listener(
-                            move |this, _, _, cx| this.env_resolve_conflict(&k2, false, cx),
-                        )),
-                    ),
+                    .child(button(t, "env-keep", "Keep mine", false).dev_click(
+                        "env-keep",
+                        Role::Button,
+                        "env-keep",
+                        true,
+                        cx.listener(move |this, _, _, cx| {
+                            this.env_resolve_conflict(&k2, false, cx)
+                        }),
+                    )),
             );
         }
         // Toolbar.
@@ -875,10 +891,13 @@ impl WorkspaceView {
                         .child(filter),
                 )
                 .child(div().flex_1())
-                .child(
-                    button(t, "env-add-var", "Add variable", false)
-                        .on_click(cx.listener(move |this, _, w, cx| this.env_add_row(&ka, w, cx))),
-                )
+                .child(button(t, "env-add-var", "Add variable", false).dev_click(
+                    "env-add-var",
+                    Role::Button,
+                    "env-add-var",
+                    true,
+                    cx.listener(move |this, _, w, cx| this.env_add_row(&ka, w, cx)),
+                ))
                 .child(
                     button(
                         t,
@@ -886,17 +905,30 @@ impl WorkspaceView {
                         if bulk_on { "Table" } else { "Bulk edit" },
                         false,
                     )
-                    .on_click(cx.listener(move |this, _, _, cx| this.env_toggle_bulk(&kb, cx))),
+                    .dev_click(
+                        "env_editor.render_environment",
+                        Role::Button,
+                        "env_editor.render_environment",
+                        true,
+                        cx.listener(move |this, _, _, cx| this.env_toggle_bulk(&kb, cx)),
+                    ),
                 )
-                .child(
-                    button(t, "env-reveal", "Reveal secrets", false)
-                        .on_click(cx.listener(move |this, _, _, cx| this.env_reveal_all(&kc, cx))),
-                )
-                .child(button(t, "env-save", "Save", dirty).on_click(cx.listener(
-                    move |this, _, _, cx| {
+                .child(button(t, "env-reveal", "Reveal secrets", false).dev_click(
+                    "env-reveal",
+                    Role::Button,
+                    "env-reveal",
+                    true,
+                    cx.listener(move |this, _, _, cx| this.env_reveal_all(&kc, cx)),
+                ))
+                .child(button(t, "env-save", "Save", dirty).dev_click(
+                    "env-save",
+                    Role::Button,
+                    "env-save",
+                    true,
+                    cx.listener(move |this, _, _, cx| {
                         this.save_env_doc(&kd, cx);
-                    },
-                ))),
+                    }),
+                )),
         );
         if bulk_on {
             page = page.child(self.render_env_bulk(t, &key, doc, cx));
@@ -1056,9 +1088,15 @@ impl WorkspaceView {
                                         .id(("env-eye", id))
                                         .flex_none()
                                         .cursor_pointer()
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.env_toggle_reveal(&kv, &nm, cx)
-                                        }))
+                                        .dev_click(
+                                            "env_editor.render_env_table",
+                                            Role::Button,
+                                            "env_editor.render_env_table",
+                                            true,
+                                            cx.listener(move |this, _, _, cx| {
+                                                this.env_toggle_reveal(&kv, &nm, cx)
+                                            }),
+                                        )
                                         .child(icon(
                                             "eye",
                                             14.,
@@ -1076,9 +1114,15 @@ impl WorkspaceView {
                                     .w(px(48.))
                                     .flex_none()
                                     .when(can_toggle, |d| d.cursor_pointer())
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.env_toggle_secret(&k3, id, cx)
-                                    }))
+                                    .dev_click(
+                                        "env_editor.render_env_table",
+                                        Role::Button,
+                                        "env_editor.render_env_table",
+                                        true,
+                                        cx.listener(move |this, _, _, cx| {
+                                            this.env_toggle_secret(&k3, id, cx)
+                                        }),
+                                    )
                                     .child(
                                         div()
                                             .size(px(14.))
@@ -1107,9 +1151,15 @@ impl WorkspaceView {
                                     .cursor_pointer()
                                     .text_size(px(11.))
                                     .text_color(t.text_muted)
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.env_move_to_file(&k4, id, !local, cx)
-                                    }))
+                                    .dev_click(
+                                        "env_editor.render_env_table",
+                                        Role::Button,
+                                        "env_editor.render_env_table",
+                                        true,
+                                        cx.listener(move |this, _, _, cx| {
+                                            this.env_move_to_file(&k4, id, !local, cx)
+                                        }),
+                                    )
                                     .child(if local { ".local.env" } else { ".env" }),
                             )
                             .child(
@@ -1121,18 +1171,30 @@ impl WorkspaceView {
                                         div()
                                             .id(("env-dup", id))
                                             .cursor_pointer()
-                                            .on_click(cx.listener(move |this, _, w, cx| {
-                                                this.env_duplicate_row(&k5, id, w, cx)
-                                            }))
+                                            .dev_click(
+                                                "env_editor.render_env_table",
+                                                Role::Button,
+                                                "env_editor.render_env_table",
+                                                true,
+                                                cx.listener(move |this, _, w, cx| {
+                                                    this.env_duplicate_row(&k5, id, w, cx)
+                                                }),
+                                            )
                                             .child(icon("copy", 12., t.text_placeholder)),
                                     )
                                     .child(
                                         div()
                                             .id(("env-del", id))
                                             .cursor_pointer()
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.env_delete_row(&k6, id, cx)
-                                            }))
+                                            .dev_click(
+                                                "env_editor.render_env_table",
+                                                Role::Button,
+                                                "env_editor.render_env_table",
+                                                true,
+                                                cx.listener(move |this, _, _, cx| {
+                                                    this.env_delete_row(&k6, id, cx)
+                                                }),
+                                            )
                                             .child(icon("x", 12., t.text_placeholder)),
                                     ),
                             ),
@@ -1162,7 +1224,13 @@ impl WorkspaceView {
                         let h = t.element_hover;
                         move |s| s.bg(h)
                     })
-                    .on_click(cx.listener(move |this, _, w, cx| this.env_add_row(&k, w, cx)))
+                    .dev_click(
+                        "env-ghost",
+                        Role::Button,
+                        "env-ghost",
+                        true,
+                        cx.listener(move |this, _, w, cx| this.env_add_row(&k, w, cx)),
+                    )
                     .child(icon("plus", 12., t.text_muted))
                     .child("Add variable")
             });

@@ -6,6 +6,7 @@
 //! Enter, Escape and Tab are not consumed; the owner of the field decides what they do.
 
 use crate::actions::KeymapState;
+use crate::dev_id::{DevClick, Role};
 use crate::input::TextBuffer;
 use crate::input_keys::*;
 use crate::theme::Theme;
@@ -878,9 +879,15 @@ impl TextInput {
                     .when(!enabled, |d| d.text_color(muted).opacity(0.5))
                     .child(m.label)
                     .when_some(m.shortcut, |d, s| d.child(div().text_color(muted).child(s)))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.activate_menu_item(i, window, cx)
-                    })),
+                    .dev_click(
+                        "text_input.render_menu",
+                        Role::Button,
+                        "text_input.render_menu",
+                        true,
+                        cx.listener(move |this, _, window, cx| {
+                            this.activate_menu_item(i, window, cx)
+                        }),
+                    ),
             );
         }
         Some(

@@ -1,5 +1,6 @@
 //! Views for environments, secrets, cookies and the Auth tab (SPEC §8, §9.3, §9.4, §17.3).
 
+use crate::dev_id::{DevClick, Role};
 use fluxwire_model::FmValue;
 use fluxwire_protocol::{Cookie, now_unix};
 use fluxwire_runner::{SendOptions, net_config_from_dir, runner, settings_from_defaults};
@@ -124,9 +125,15 @@ impl WorkspaceView {
                 .into_any_element(),
             None => {
                 let start = shown.clone();
-                base.on_click(cx.listener(move |this, _, w, cx| {
-                    this.start_field_edit(target.clone(), start.clone(), w, cx)
-                }))
+                base.dev_click(
+                    "env-field",
+                    Role::Input,
+                    "Edit field",
+                    true,
+                    cx.listener(move |this, _, w, cx| {
+                        this.start_field_edit(target.clone(), start.clone(), w, cx)
+                    }),
+                )
                 .when(shown.is_empty(), |d| {
                     d.text_color(t.text_placeholder).child(placeholder)
                 })
@@ -164,7 +171,7 @@ impl WorkspaceView {
                         .border_1()
                         .border_color(if on { t.accent } else { t.border_variant })
                         .text_color(if on { t.accent } else { t.text_muted })
-                        .on_click({
+                        .dev_click("var-completion", Role::Button, "var-completion", true, {
                             let n = n.clone();
                             let target = c.target;
                             cx.listener(move |this, _, _, cx| {
@@ -207,7 +214,7 @@ impl WorkspaceView {
                     .child(div().flex_1())
                     .child(
                         button(t, "cookies-clear", "Clear cookies", false)
-                            .on_click(cx.listener(move |this, _, _, cx| this.clear_cookies(&en, cx))),
+                            .dev_click("cookies-clear", Role::Button, "cookies-clear", true, cx.listener(move |this, _, _, cx| this.clear_cookies(&en, cx))),
                     ),
             )
             .child(div().text_size(px(12.)).text_color(t.text_muted).child(
@@ -242,7 +249,7 @@ impl WorkspaceView {
                             .w(px(16.))
                             .flex_none()
                             .cursor_pointer()
-                            .on_click(cx.listener(move |this, _, _, cx| this.remove_cookie(&dom, &path, &name, cx)))
+                            .dev_click("envs_view.render_cookies_section", Role::Button, "envs_view.render_cookies_section", true, cx.listener(move |this, _, _, cx| this.remove_cookie(&dom, &path, &name, cx)))
                             .child(icon("x", 12., t.text_placeholder)),
                     )
             }))
@@ -293,7 +300,13 @@ impl WorkspaceView {
                             .cursor_pointer()
                             .text_color(t.accent)
                             .child("New environment…")
-                            .on_click(cx.listener(|this, _, w, cx| this.start_new_env(w, cx))),
+                            .dev_click(
+                                "env-empty-new",
+                                Role::Button,
+                                "env-empty-new",
+                                true,
+                                cx.listener(|this, _, w, cx| this.start_new_env(w, cx)),
+                            ),
                     )
                     .into_any_element(),
             ];
@@ -327,11 +340,17 @@ impl WorkspaceView {
                             this.open_tree_menu(&menu_name, MenuKind::Environment, ev.position, cx)
                         }),
                     )
-                    .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, _, cx| {
-                        // Opening never activates; double-click pins the tab.
-                        this.open_env_doc(&r1, &n1, ev.click_count() >= 2);
-                        cx.notify();
-                    }))
+                    .dev_click(
+                        "envs_view.env_section_rows",
+                        Role::Button,
+                        "envs_view.env_section_rows",
+                        true,
+                        cx.listener(move |this, ev: &gpui::ClickEvent, _, cx| {
+                            // Opening never activates; double-click pins the tab.
+                            this.open_env_doc(&r1, &n1, ev.click_count() >= 2);
+                            cx.notify();
+                        }),
+                    )
                     .child(
                         div()
                             .id(("env-dot", i))
@@ -339,12 +358,19 @@ impl WorkspaceView {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                cx.stop_propagation();
-                                let v = (this.active_env_name().as_deref() != Some(n2.as_str()))
+                            .dev_click(
+                                "envs_view.env_section_rows",
+                                Role::Button,
+                                "envs_view.env_section_rows",
+                                true,
+                                cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    let v = (this.active_env_name().as_deref()
+                                        != Some(n2.as_str()))
                                     .then(|| n2.clone());
-                                this.set_active_env(v, cx);
-                            }))
+                                    this.set_active_env(v, cx);
+                                }),
+                            )
                             .child(
                                 div()
                                     .size(px(8.))
@@ -402,7 +428,13 @@ impl WorkspaceView {
                             })
                             .into()
                         })
-                        .on_click(cx.listener(|this, _, w, cx| this.start_new_env(w, cx)))
+                        .dev_click(
+                            "env-new",
+                            Role::Button,
+                            "env-new",
+                            true,
+                            cx.listener(|this, _, w, cx| this.start_new_env(w, cx)),
+                        )
                         .child(icon("plus", 14., t.text_muted)),
                 ),
             )
@@ -584,7 +616,11 @@ impl WorkspaceView {
             .child(row().gap_1().children(types.into_iter().enumerate().map(
                 |(i, (label, val))| {
                     let k = key.to_string();
-                    chip(("auth-type", i), label, current == val).on_click(
+                    chip(("auth-type", i), label, current == val).dev_click(
+                        "auth-type",
+                        Role::Button,
+                        label,
+                        true,
                         cx.listener(move |this, _, _, cx| this.set_auth_type(&k, val, cx)),
                     )
                 },
@@ -620,9 +656,15 @@ impl WorkspaceView {
                     .children(GRANTS.iter().enumerate().map(|(i, g)| {
                         let k = k.clone();
                         let g: &'static str = g;
-                        chip(("auth-grant", i), g, grant == g).on_click(cx.listener(
-                            move |this, _, _, cx| this.set_auth_field(&k, "grant", g, cx),
-                        ))
+                        chip(("auth-grant", i), g, grant == g).dev_click(
+                            "envs_view.render_auth_tab",
+                            Role::Button,
+                            "envs_view.render_auth_tab",
+                            true,
+                            cx.listener(move |this, _, _, cx| {
+                                this.set_auth_field(&k, "grant", g, cx)
+                            }),
+                        )
                     })),
             );
             let k = key.to_string();
@@ -639,16 +681,21 @@ impl WorkspaceView {
                                 .child("PKCE"),
                         )
                         .child(
-                            chip(("auth-pkce", 0), if pkce { "on" } else { "off" }, pkce).on_click(
-                                cx.listener(move |this, _, _, cx| {
-                                    this.set_auth_field(
-                                        &k,
-                                        "pkce",
-                                        if pkce { "false" } else { "true" },
-                                        cx,
-                                    )
-                                }),
-                            ),
+                            chip(("auth-pkce", 0), if pkce { "on" } else { "off" }, pkce)
+                                .dev_click(
+                                    "envs_view.render_auth_tab",
+                                    Role::Button,
+                                    "envs_view.render_auth_tab",
+                                    true,
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.set_auth_field(
+                                            &k,
+                                            "pkce",
+                                            if pkce { "false" } else { "true" },
+                                            cx,
+                                        )
+                                    }),
+                                ),
                         ),
                 );
             }
@@ -667,7 +714,11 @@ impl WorkspaceView {
                             .child("Send in"),
                     )
                     .child(
-                        chip(("auth-in", 0), if q { "query" } else { "header" }, true).on_click(
+                        chip(("auth-in", 0), if q { "query" } else { "header" }, true).dev_click(
+                            "envs_view.render_auth_tab",
+                            Role::Button,
+                            "envs_view.render_auth_tab",
+                            true,
                             cx.listener(move |this, _, _, cx| {
                                 this.set_auth_field(
                                     &k,
@@ -776,7 +827,13 @@ impl WorkspaceView {
                         },
                         !busy,
                     )
-                    .on_click(cx.listener(|this, _, _, cx| this.fetch_token(cx))),
+                    .dev_click(
+                        "envs_view.render_token_status",
+                        Role::Button,
+                        "envs_view.render_token_status",
+                        true,
+                        cx.listener(|this, _, _, cx| this.fetch_token(cx)),
+                    ),
                 ),
             )
             .into_any_element()

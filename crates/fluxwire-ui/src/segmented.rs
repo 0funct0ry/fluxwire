@@ -1,9 +1,9 @@
 //! A segmented control: one of N labelled options (New request type, initial body type).
 //! `step` is the pure selection logic; `segmented` renders the control.
 
+use crate::dev_id::{DevClick, Role};
 use gpui::{
-    App, InteractiveElement, ParentElement, SharedString, StatefulInteractiveElement, Styled,
-    Window, div, prelude::*, px,
+    App, InteractiveElement, ParentElement, SharedString, Styled, Window, div, prelude::*, px,
 };
 
 use crate::{theme::Theme, ui::row};
@@ -49,7 +49,13 @@ pub fn segmented(
                 )
                 .when(i != last, |d| d.border_r_1().border_color(t.border))
                 .child(SharedString::from(label))
-                .on_click(move |_, w, cx| f(i, w, cx)),
+                .dev_click(
+                    "segmented.segmented",
+                    Role::Button,
+                    "segmented.segmented",
+                    true,
+                    move |_, w, cx| f(i, w, cx),
+                ),
         );
     }
     bar
