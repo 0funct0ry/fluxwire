@@ -14,3 +14,7 @@ workspace = true
 fluxwire-model.workspace = true
 fluxwire-format.workspace = true
 fluxwire-runner.workspace = true
+fluxwire-agent.workspace = true
+clap = { version = "4", features = ["derive"] }
+directories = "6"
+tokio = { version = "1", features = ["rt-multi-thread"] }

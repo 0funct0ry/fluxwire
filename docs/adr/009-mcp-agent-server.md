@@ -44,3 +44,10 @@ The app brings its window to the front and waits for idle (no pending run events
 - Tool names and schemas become a public agent-facing API; changes after M9.8 need a note in the changelog.
 - Screenshots on macOS depend on a user-granted permission and a visible window; CI covers Linux under xvfb only until an offscreen path exists.
 - Tools are documented in `docs/agent-testing.md` (M9.8); the headless server, not the GUI, is what ships to users before M23.
+
+## M9.1 notes
+
+- `rmcp` 3.8 with a hand-written `ServerHandler` over our own registry, not the `#[tool]` macros: class filtering must apply to both `tools/list` and `tools/call`, and tool schemas still come from `schemars` types.
+- A refused class returns a protocol error (`invalid_params`), not a tool error, so an agent cannot mistake it for a failed run.
+- With `--transport both`, stdin closing ends only the stdio session; the socket keeps serving until SIGINT/SIGTERM.
+- Not yet: any `ui.*` tool, `fluxwire --mcp-stdio` in the GUI, named pipes on Windows.

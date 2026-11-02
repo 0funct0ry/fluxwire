@@ -17,9 +17,51 @@ pub struct UserSettings {
     /// The `[editor]` table (SPEC §17.3).
     #[serde(default)]
     pub editor: crate::EditorSettings,
+    /// The `[mcp]` table (ADR-009).
+    #[serde(default)]
+    pub mcp: McpSettings,
     /// Global variables, the lowest precedence layer (SPEC §8.2).
     #[serde(default)]
     pub globals: BTreeMap<String, String>,
+}
+
+/// The `[mcp]` table of `settings.toml` or `fluxwire.toml` (ADR-009). Every key is optional so
+/// layers can be merged; command-line flags win over both files.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+pub struct McpSettings {
+    /// `stdio`, `unix` or `both`.
+    #[serde(default)]
+    pub transport: Option<String>,
+    #[serde(default)]
+    pub socket: Option<std::path::PathBuf>,
+    /// Tool classes: `read`, `write`, `execute`.
+    #[serde(default)]
+    pub allow: Option<Vec<String>>,
+    /// Workspace allow-list.
+    #[serde(default)]
+    pub roots: Option<Vec<std::path::PathBuf>>,
+}
+
+impl McpSettings {
+    /// `self` with its unset keys filled from `lower`.
+    pub fn over(self, lower: McpSettings) -> McpSettings {
+        McpSettings {
+            transport: self.transport.or(lower.transport),
+            socket: self.socket.or(lower.socket),
+            allow: self.allow.or(lower.allow),
+            roots: self.roots.or(lower.roots),
+        }
+    }
+}
+
+/// The `[mcp]` table of a `fluxwire.toml`; missing or malformed yields the defaults.
+pub fn parse_manifest_mcp(text: &str) -> McpSettings {
+    #[derive(serde::Deserialize, Default)]
+    struct M {
+        #[serde(default)]
+        mcp: McpSettings,
+    }
+    toml::from_str::<M>(text).unwrap_or_default().mcp
 }
 
 pub fn parse_settings(text: &str) -> UserSettings {
@@ -129,5 +171,35 @@ mod tests {
         assert!(save_theme(&d, Some("Nord")).is_err());
         assert_eq!(read(&d), "not toml ===");
         let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
+#[cfg(test)]
+mod mcp_tests {
+    use super::*;
+
+    #[test]
+    fn mcp_table_parses_from_settings_and_manifest() {
+        let s = parse_settings("[mcp]\ntransport = \"both\"\nallow = [\"read\"]\n");
+        assert_eq!(s.mcp.transport.as_deref(), Some("both"));
+        assert_eq!(s.mcp.allow, Some(vec!["read".to_string()]));
+        let m = parse_manifest_mcp("[collection]\nformat = 1\n[mcp]\nsocket = \"/x/s.sock\"\n");
+        assert_eq!(m.socket, Some("/x/s.sock".into()));
+    }
+
+    #[test]
+    fn upper_layer_wins_per_key() {
+        let hi = McpSettings {
+            transport: Some("unix".into()),
+            ..Default::default()
+        };
+        let lo = McpSettings {
+            transport: Some("stdio".into()),
+            allow: Some(vec!["write".into()]),
+            ..Default::default()
+        };
+        let m = hi.over(lo);
+        assert_eq!(m.transport.as_deref(), Some("unix"));
+        assert_eq!(m.allow, Some(vec!["write".to_string()]));
     }
 }

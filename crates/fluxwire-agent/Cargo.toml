@@ -1,0 +1,24 @@
+[package]
+name = "fluxwire-agent"
+description = "MCP server hosting Fluxwire for agents: transports, tool registry, tool classes (no GPUI)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# Marker for builds that host the in-app server (ADR-009); off in release builds.
+dev-mcp = []
+
+[dependencies]
+fluxwire-format.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-std", "io-util", "sync", "macros", "signal", "time"] }
+rmcp = { version = "3.8.0", features = ["server", "client", "transport-io", "macros"] }
+schemars = "1.2.3"

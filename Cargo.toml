@@ -36,6 +36,7 @@ fluxwire-search = { path = "crates/fluxwire-search" }
 fluxwire-docs = { path = "crates/fluxwire-docs" }
 fluxwire-ui = { path = "crates/fluxwire-ui" }
 fluxwire-cli = { path = "crates/fluxwire-cli" }
+fluxwire-agent = { path = "crates/fluxwire-agent" }
 
 [profile.release]
 lto = "thin"

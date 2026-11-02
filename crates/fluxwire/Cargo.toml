@@ -18,3 +18,8 @@ runtime-shaders = ["fluxwire-ui/runtime-shaders"]
 [dependencies]
 fluxwire-cli.workspace = true
 fluxwire-ui = { workspace = true, optional = true }
+
+[dev-dependencies]
+rmcp = { version = "3.8.0", features = ["client", "transport-io"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "net", "time", "io-util"] }
+serde_json = "1"

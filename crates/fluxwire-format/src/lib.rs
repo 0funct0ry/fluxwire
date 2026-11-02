@@ -43,7 +43,9 @@ pub use parse::{parse, parse_with};
 pub use prose::{ProseEditError, edit_prose, prose_regions};
 pub use schema::front_matter_schema_json;
 pub use scope::{ScopeInputs, ancestor_docs, build_scope};
-pub use settings::{UserSettings, load_settings, parse_settings, save_theme};
+pub use settings::{
+    McpSettings, UserSettings, load_settings, parse_manifest_mcp, parse_settings, save_theme,
+};
 pub use template::*;
 pub use trust::{is_trusted, set_trusted, trusted_collections};
 pub use watch::{DEBOUNCE, WatchHandle, watch};
