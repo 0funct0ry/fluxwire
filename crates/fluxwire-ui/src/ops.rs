@@ -1512,7 +1512,7 @@ impl WorkspaceView {
         cx.notify();
     }
 
-    fn key_for(&self, abs: &Path) -> Option<String> {
+    pub(crate) fn key_for(&self, abs: &Path) -> Option<String> {
         self.scope.workspace.as_ref().map(|p| p.key_of(abs))
     }
 

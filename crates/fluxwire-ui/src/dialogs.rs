@@ -114,6 +114,7 @@ pub enum Dialog {
     NewWorkspace(NewWorkspaceForm),
     NewCollection(NewCollectionForm),
     NewEnvironment(NewEnvForm),
+    NewRequest(Box<crate::new_request_dialog::NewRequestDialog>),
     Confirm(Confirm),
 }
 
@@ -780,7 +781,15 @@ impl WorkspaceView {
     fn on_dialog_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let key = ev.keystroke.key.as_str();
         if key == "escape" {
-            self.close_dialog(window, cx);
+            if matches!(self.dialog, Some(Dialog::NewRequest(_))) {
+                self.nr_escape(window, cx);
+            } else {
+                self.close_dialog(window, cx);
+            }
+            return;
+        }
+        if key == "enter" && matches!(self.dialog, Some(Dialog::NewRequest(_))) {
+            self.nr_enter(ev.keystroke.modifiers.secondary(), window, cx);
             return;
         }
         match (&mut self.dialog, key) {
@@ -865,6 +874,9 @@ impl WorkspaceView {
                 .child(s)
         };
         match dialog {
+            Dialog::NewRequest(d) => {
+                panel = panel.w(px(560.)).child(self.render_new_request(d, &t, cx));
+            }
             Dialog::NewWorkspace(f) => {
                 let plan = plan_new_workspace(f.name.read(cx).text(), &f.location);
                 let (preview, error) = match &plan {
@@ -1133,7 +1145,7 @@ fn link(t: &Theme, id: &'static str, label: &'static str) -> gpui::Stateful<gpui
         .child(label)
 }
 
-fn button(
+pub(crate) fn button(
     t: &Theme,
     id: impl Into<gpui::ElementId>,
     label: String,

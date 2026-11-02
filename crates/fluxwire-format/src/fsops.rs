@@ -97,6 +97,54 @@ pub fn create_request_with_url(
     Ok(p)
 }
 
+/// What the New request dialog asks `create_request_from` to write.
+#[derive(Debug, Clone, Default)]
+pub struct RequestSpec<'a> {
+    pub name: &'a str,
+    pub description: &'a str,
+    pub method: &'a str,
+    pub url: &'a str,
+    pub websocket: bool,
+    pub body: InitialBody,
+}
+
+/// The path `create_request_from` would write for `name` in `dir` (collisions get `-2`).
+pub fn request_path(dir: &Path, name: &str) -> PathBuf {
+    unique(dir, &slug(name), ".flux.md")
+}
+
+/// Render the file text for a spec, without touching the disk.
+pub fn render_request(spec: &RequestSpec) -> String {
+    if spec.websocket {
+        new_websocket(spec.name, spec.description, spec.url)
+    } else {
+        new_request_with_body(
+            spec.name,
+            spec.description,
+            if spec.method.is_empty() {
+                "GET"
+            } else {
+                spec.method
+            },
+            spec.url,
+            spec.body,
+        )
+    }
+}
+
+/// Create a request file from a spec (name, method, URL, description, initial body).
+/// `text` overrides the rendered file, for callers that built it with further span edits.
+pub fn create_request_from(
+    dir: &Path,
+    spec: &RequestSpec,
+    text: Option<String>,
+) -> io::Result<PathBuf> {
+    std::fs::create_dir_all(dir)?;
+    let p = request_path(dir, spec.name);
+    std::fs::write(&p, text.unwrap_or_else(|| render_request(spec)))?;
+    Ok(p)
+}
+
 /// Rename a collection: its `name` in `fluxwire.toml` and the front matter `name` of
 /// `collection.flux.md`. The folder keeps its name, so keys and tabs stay valid. Only the
 /// `name` line is replaced; the rest of the file is untouched.
@@ -276,6 +324,51 @@ pub fn delete(path: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spec_bodies_are_canonical_and_collisions_get_a_suffix() {
+        let dir = std::env::temp_dir().join(format!("fluxwire-spec-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for (i, body) in [
+            InitialBody::None,
+            InitialBody::Json,
+            InitialBody::Text,
+            InitialBody::Form,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let spec = RequestSpec {
+                name: "List users",
+                method: "POST",
+                url: "{{baseUrl}}/users",
+                body,
+                ..Default::default()
+            };
+            let p = create_request_from(&dir, &spec, None).unwrap();
+            let name = if i == 0 {
+                "list-users.flux.md".to_string()
+            } else {
+                format!("list-users-{}.flux.md", i + 1)
+            };
+            assert_eq!(p.file_name().unwrap().to_str().unwrap(), name);
+            let src = std::fs::read_to_string(&p).unwrap();
+            assert!(crate::is_canonical(&src, FileKind::Request), "{src}");
+            assert!(src.contains("POST {{baseUrl}}/users"));
+        }
+        let json = std::fs::read_to_string(dir.join("list-users-2.flux.md")).unwrap();
+        assert!(json.contains("Content-Type: application/json\n\n{}\n```"));
+        let ws = RequestSpec {
+            name: "Feed",
+            url: "wss://x.test/",
+            websocket: true,
+            ..Default::default()
+        };
+        assert!(render_request(&ws).contains("```ws\nGET wss://x.test/"));
+        assert_eq!(InitialBody::default_for("PATCH"), InitialBody::Json);
+        assert_eq!(InitialBody::default_for("GET"), InitialBody::None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn a_request_with_an_empty_url_parses_with_an_empty_target() {

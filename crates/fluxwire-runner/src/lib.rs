@@ -248,6 +248,14 @@ pub struct ScriptOptions {
     pub env_root: Option<PathBuf>,
 }
 
+/// A registered protocol as the New request dialog sees it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProtocolDesc {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub url_schemes: Vec<&'static str>,
+}
+
 pub struct Runner {
     protocols: Arc<Vec<Arc<dyn Protocol>>>,
     rt: tokio::runtime::Runtime,
@@ -401,6 +409,28 @@ impl Runner {
     /// Rebuild the outcome of a stored record, to show an earlier response.
     pub fn history_outcome(&self, rec: &HistoryRecord) -> Option<Outcome> {
         self.protocol_by_id(&rec.protocol)?.history_to_outcome(rec)
+    }
+
+    /// The registered protocols, for the New request dialog.
+    pub fn protocols(&self) -> Vec<ProtocolDesc> {
+        self.protocols
+            .iter()
+            .map(|p| ProtocolDesc {
+                id: p.id(),
+                label: p.label(),
+                url_schemes: p.url_schemes().to_vec(),
+            })
+            .collect()
+    }
+
+    /// Summary of pasted text (a cURL command) from the first protocol that recognises it.
+    pub fn preview_paste(&self, text: &str) -> Option<fluxwire_protocol::PasteSummary> {
+        self.protocols.iter().find_map(|p| p.preview_paste(text))
+    }
+
+    /// Whether some protocol can import pasted commands.
+    pub fn can_import_paste(&self) -> bool {
+        self.preview_paste("curl http://example.test").is_some()
     }
 
     /// Edits that fill `doc` from pasted text, if some protocol recognises it.

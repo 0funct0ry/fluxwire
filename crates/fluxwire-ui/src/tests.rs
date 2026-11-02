@@ -372,7 +372,7 @@ fn new_request_prompt_creates_file_and_opens_tab(cx: &mut TestAppContext) {
     let count = view.read_with(cx, |w, _| {
         w.scope.workspace.as_ref().unwrap().all_requests().len()
     });
-    cx.simulate_keystrokes("secondary-n");
+    view.update_in(cx, |w, window, cx| w.route_new(false, false, window, cx));
     assert!(view.read_with(cx, |w, _| w.modal.is_none() && w.scope.inline.is_some()));
     cx.run_until_parked();
     cx.simulate_input("Capture payment");
@@ -3658,4 +3658,197 @@ fn preview_chip_target_opens_the_owning_sub_tab(cx: &mut TestAppContext) {
         )
     });
     assert_eq!(view.update(cx, |w, _| w.active_ui().unwrap().sub), 4);
+}
+
+// ---- M9.07: New request dialog ---------------------------------------------------------------
+
+fn nr_dialog<R>(
+    view: &Entity<WorkspaceView>,
+    cx: &mut VisualTestContext,
+    f: impl FnOnce(&crate::new_request_dialog::NewRequestDialog) -> R,
+) -> R {
+    view.read_with(cx, |w, _| match &w.dialog {
+        Some(crate::dialogs::Dialog::NewRequest(d)) => f(d),
+        _ => panic!("New request dialog is not open"),
+    })
+}
+
+fn nr_set(
+    view: &Entity<WorkspaceView>,
+    cx: &mut VisualTestContext,
+    name: &str,
+    url: &str,
+    method: &str,
+) {
+    view.update(cx, |w, cx| {
+        let Some(crate::dialogs::Dialog::NewRequest(d)) = &mut w.dialog else {
+            panic!("dialog")
+        };
+        d.name.update(cx, |i, cx| i.set_text(name, cx));
+        d.url.update(cx, |i, cx| i.set_text(url, cx));
+        d.form.method = method.into();
+        w.sync_new_request(cx);
+    });
+    cx.run_until_parked();
+}
+
+#[gpui::test]
+fn new_request_dialog_opens_at_the_selected_folder_and_secondary_n(cx: &mut TestAppContext) {
+    let (view, cx, root) = setup_with(cx, "payments-api", "nrdlg");
+    cx.simulate_keystrokes("secondary-n");
+    cx.run_until_parked();
+    let loc = nr_dialog(&view, cx, |d| d.form.location.clone());
+    assert_eq!(loc, root.join("payments"), "folder of the selected request");
+    assert!(view.read_with(cx, |w, _| w.scope.inline.is_none()));
+    let kinds = nr_dialog(&view, cx, |d| d.kinds.clone());
+    assert!(kinds.contains(&crate::new_request::NewKind::Http));
+    assert!(kinds.contains(&crate::new_request::NewKind::WebSocket));
+    assert!(kinds.contains(&crate::new_request::NewKind::Curl));
+}
+
+#[gpui::test]
+fn new_request_dialog_creates_a_pinned_request_that_fmt_leaves_alone(cx: &mut TestAppContext) {
+    let (view, cx, root) = setup_with(cx, "payments-api", "nrcreate");
+    view.update_in(cx, |w, window, cx| w.start_new_request(window, cx));
+    nr_set(&view, cx, "List users", "{{baseUrl}}/users", "POST");
+    assert!(nr_dialog(&view, cx, |d| d.form.is_valid()));
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    let created = root.join("payments/list-users.flux.md");
+    let text = std::fs::read_to_string(&created).expect("file written");
+    assert!(text.contains("POST {{baseUrl}}/users\nContent-Type: application/json\n\n{}\n"));
+    assert!(fluxwire_format::is_canonical(
+        &text,
+        fluxwire_model::FileKind::Request
+    ));
+    view.read_with(cx, |w, _| {
+        assert!(w.dialog.is_none());
+        let t = w.scope.tabs.active().unwrap();
+        assert_eq!(t.key, "payments/list-users.flux.md");
+        assert!(t.pinned);
+        assert!(w.notice.as_deref().unwrap().contains("list-users.flux.md"));
+    });
+}
+
+#[gpui::test]
+fn new_request_dialog_blocks_invalid_input_and_cancel_writes_nothing(cx: &mut TestAppContext) {
+    let (view, cx, root) = setup_with(cx, "payments-api", "nrinvalid");
+    view.update_in(cx, |w, window, cx| w.start_new_request(window, cx));
+    // empty name, nothing to suggest
+    cx.simulate_keystrokes("enter");
+    assert!(
+        view.read_with(cx, |w, _| w.dialog.is_some()),
+        "Create is disabled"
+    );
+    // WebSocket rejects https
+    view.update_in(cx, |w, window, cx| {
+        let i = nr_kind_index(w, crate::new_request::NewKind::WebSocket);
+        w.nr_set_kind(i, window, cx)
+    });
+    nr_set(&view, cx, "Feed", "https://x.test/", "GET");
+    assert!(!nr_dialog(&view, cx, |d| d.form.is_valid()));
+    cx.simulate_keystrokes("enter");
+    assert!(view.read_with(cx, |w, _| w.dialog.is_some()));
+    cx.simulate_keystrokes("escape");
+    assert!(view.read_with(cx, |w, _| w.dialog.is_none()));
+    assert!(!root.join("payments/feed.flux.md").exists());
+}
+
+fn nr_kind_index(w: &WorkspaceView, kind: crate::new_request::NewKind) -> usize {
+    match &w.dialog {
+        Some(crate::dialogs::Dialog::NewRequest(d)) => {
+            d.kinds.iter().position(|k| *k == kind).unwrap()
+        }
+        _ => panic!("dialog"),
+    }
+}
+
+#[gpui::test]
+fn new_request_dialog_from_curl_matches_pasting_and_collisions_get_a_suffix(
+    cx: &mut TestAppContext,
+) {
+    let (view, cx, root) = setup_with(cx, "payments-api", "nrcurl");
+    view.update_in(cx, |w, window, cx| w.start_new_request(window, cx));
+    view.update_in(cx, |w, window, cx| {
+        let i = nr_kind_index(w, crate::new_request::NewKind::Curl);
+        w.nr_set_kind(i, window, cx);
+        let Some(crate::dialogs::Dialog::NewRequest(d)) = &w.dialog else {
+            panic!("dialog")
+        };
+        d.curl.update(cx, |e, cx| {
+            e.set_text(
+                "curl -X POST https://x.test/v1/p -H 'Content-Type: application/json' -d '{\"a\":1}'",
+                cx,
+            )
+        });
+        w.sync_new_request(cx);
+    });
+    cx.run_until_parked();
+    let summary = nr_dialog(&view, cx, |d| d.form.curl_summary());
+    assert_eq!(
+        summary.as_deref(),
+        Some("POST https://x.test/v1/p \u{b7} 1 header \u{b7} JSON body 7 B")
+    );
+    assert_eq!(
+        nr_dialog(&view, cx, |d| d.form.suggestion()).as_deref(),
+        Some("POST p")
+    );
+    cx.simulate_keystrokes("secondary-enter");
+    cx.run_until_parked();
+    let text = std::fs::read_to_string(root.join("payments/post-p.flux.md")).unwrap();
+    assert!(
+        text.contains("POST https://x.test/v1/p\nContent-Type: application/json\n\n{\"a\":1}\n```")
+    );
+    // the same command again collides and gets -2
+    view.update_in(cx, |w, window, cx| w.start_new_request(window, cx));
+    nr_set(&view, cx, "post p", "https://x.test/p", "POST");
+    assert_eq!(
+        nr_dialog(&view, cx, |d| d.form.file_preview()),
+        Some(("post-p-2.flux.md".to_string(), true))
+    );
+}
+
+#[gpui::test]
+fn new_request_dialog_without_a_collection_opens_new_collection(cx: &mut TestAppContext) {
+    let (view, cx) = bare(cx);
+    let root = fresh_dir("nrnocoll");
+    view.update_in(cx, |w, window, cx| {
+        w.open_workspace(&root, window, cx);
+        w.start_new_request(window, cx);
+    });
+    cx.run_until_parked();
+    assert!(view.read_with(cx, |w, _| matches!(
+        w.dialog,
+        Some(crate::dialogs::Dialog::NewCollection(_))
+    )));
+}
+
+#[test]
+fn folder_menu_offers_new_request_and_quick_request_without_websocket() {
+    assert_eq!(
+        crate::dock::FOLDER_MENU,
+        ["New request…", "Quick request", "New folder", "Run folder"]
+    );
+}
+
+#[test]
+fn quick_request_is_a_workspace_level_palette_action() {
+    let a = crate::actions::ACTIONS
+        .iter()
+        .find(|a| a.label == "workspace: quick request")
+        .expect("registered");
+    assert!(a.palette && a.binding.is_none());
+    assert_eq!(
+        crate::actions::scope_of("QuickRequest"),
+        crate::actions::scope_of("NewRequest")
+    );
+}
+
+#[test]
+fn clipboard_hint_only_for_curl_commands() {
+    use crate::new_request_dialog::curl_on_clipboard as c;
+    assert!(c(Some("  curl https://x.test ".into())).is_some());
+    assert!(c(Some("echo hi".into())).is_none());
+    assert!(c(Some("curlish".into())).is_none());
+    assert!(c(None).is_none());
 }

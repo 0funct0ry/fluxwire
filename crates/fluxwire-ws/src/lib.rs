@@ -45,6 +45,14 @@ impl Protocol for WsProtocol {
         "ws"
     }
 
+    fn label(&self) -> &'static str {
+        "WebSocket"
+    }
+
+    fn url_schemes(&self) -> &[&'static str] {
+        &["ws://", "wss://"]
+    }
+
     fn feature(&self) -> Option<&'static str> {
         None
     }

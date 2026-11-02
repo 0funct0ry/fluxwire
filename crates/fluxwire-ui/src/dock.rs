@@ -42,6 +42,9 @@ impl Render for DragPreview {
     }
 }
 
+/// Context menu items of a Collection or Folder, in order.
+pub const FOLDER_MENU: [&str; 4] = ["New request…", "Quick request", "New folder", "Run folder"];
+
 impl WorkspaceView {
     pub(crate) fn render_body(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let t = t.clone();
@@ -322,7 +325,7 @@ impl WorkspaceView {
                     .child(
                         self.row_icon_button(t, ("coll-new-req", idx), "file-plus")
                             .on_click(cx.listener(move |this, _, w, cx| {
-                                this.start_new_in(&nk1, false, false, w, cx)
+                                this.start_new_request_in(&nk1, w, cx)
                             })),
                     )
                     .child(
@@ -355,7 +358,7 @@ impl WorkspaceView {
                         .child(icon(glyph, 14., t.text_muted))
                         .child(label)
                 };
-                let (k1, k2, k3) = (ckey.clone(), ckey.clone(), ckey.clone());
+                let (k1, k3) = (ckey.clone(), ckey.clone());
                 rows.push(
                     div()
                         .px_3()
@@ -380,16 +383,9 @@ impl WorkspaceView {
                         )
                         .child(action("empty-new-request", "plus", "New request").on_click(
                             cx.listener(move |this, _, w, cx| {
-                                this.start_new_in(&k1, false, false, w, cx)
+                                this.start_new_request_in(&k1, w, cx)
                             }),
                         ))
-                        .child(
-                            action("empty-new-ws", "globe", "New WebSocket request").on_click(
-                                cx.listener(move |this, _, w, cx| {
-                                    this.start_new_in(&k2, true, false, w, cx)
-                                }),
-                            ),
-                        )
                         .child(action("empty-new-folder", "folder", "New folder").on_click(
                             cx.listener(move |this, _, w, cx| {
                                 this.start_new_in(&k3, false, true, w, cx)
@@ -592,16 +588,16 @@ impl WorkspaceView {
         let mut items: Vec<(&'static str, Act)> = vec![];
         match m.kind {
             MenuKind::Folder | MenuKind::Collection => {
-                items.push(("New request", |w, k, win, cx| {
+                items.push((FOLDER_MENU[0], |w, k, win, cx| {
+                    w.start_new_request_in(k, win, cx)
+                }));
+                items.push((FOLDER_MENU[1], |w, k, win, cx| {
                     w.start_new_in(k, false, false, win, cx)
                 }));
-                items.push(("New WebSocket request", |w, k, win, cx| {
-                    w.start_new_in(k, true, false, win, cx)
-                }));
-                items.push(("New folder", |w, k, win, cx| {
+                items.push((FOLDER_MENU[2], |w, k, win, cx| {
                     w.start_new_in(k, false, true, win, cx)
                 }));
-                items.push(("Run folder", |w, k, _win, cx| w.open_run_tab(k, cx)));
+                items.push((FOLDER_MENU[3], |w, k, _win, cx| w.open_run_tab(k, cx)));
             }
             MenuKind::Request => {
                 items.push(("Open", |w, k, win, cx| w.open_request(k, true, win, cx)))

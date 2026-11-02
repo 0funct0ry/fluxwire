@@ -168,6 +168,26 @@ pub struct Parsed {
 }
 
 pub fn parse_curl(text: &str) -> Option<Parsed> {
+    parse_curl_ex(text).map(|(p, _)| p)
+}
+
+/// Flags that take a value and have no effect on a request file; they are reported as warnings.
+const IGNORED_WITH_VALUE: &[&str] = &[
+    "-o",
+    "--output",
+    "-x",
+    "--proxy",
+    "-m",
+    "--max-time",
+    "--connect-timeout",
+    "--retry",
+    "-w",
+    "--write-out",
+];
+
+/// Like [`parse_curl`], also returning warnings for ignored flags and extra URLs.
+pub fn parse_curl_ex(text: &str) -> Option<(Parsed, Vec<String>)> {
+    let mut warnings: Vec<String> = Vec::new();
     let words = tokenize(text.trim())?;
     let mut it = words.into_iter();
     if it.next()? != "curl" {
@@ -202,7 +222,13 @@ pub fn parse_curl(text: &str) -> Option<Parsed> {
                 p.headers.push((k.trim().to_string(), v.trim().to_string()));
             }
             "-d" | "--data" | "--data-raw" | "--data-binary" | "--data-ascii"
-            | "--data-urlencode" => data.push(value(&mut args)?),
+            | "--data-urlencode" => {
+                let d = value(&mut args)?;
+                if d.starts_with('@') {
+                    return None; // `-d @file` is not supported
+                }
+                data.push(d)
+            }
             "-u" | "--user" => {
                 use base64::Engine as _;
                 let u = value(&mut args)?;
@@ -223,12 +249,16 @@ pub fn parse_curl(text: &str) -> Option<Parsed> {
             "-L" | "--location" | "-k" | "--insecure" | "--compressed" | "-s" | "--silent"
             | "-S" | "--show-error" | "-v" | "--verbose" | "-i" | "--include" | "-f" | "--fail"
             | "--http1.1" | "--http2" => {}
+            f if IGNORED_WITH_VALUE.contains(&f) => {
+                value(&mut args)?;
+                warnings.push(format!("Ignored {f}"));
+            }
             f if f.starts_with('-') && f.len() > 1 => return None, // unknown flag: refuse rather than guess
             _ => {
                 if p.url.is_empty() {
                     p.url = a;
                 } else {
-                    return None;
+                    warnings.push(format!("Only the first URL is used; ignored {a}"));
                 }
             }
         }
@@ -254,7 +284,39 @@ pub fn parse_curl(text: &str) -> Option<Parsed> {
             "GET".into()
         };
     }
-    Some(p)
+    Some((p, warnings))
+}
+
+/// What a pasted cURL command will become, for the New request dialog.
+pub fn preview_curl(text: &str) -> Option<fluxwire_protocol::PasteSummary> {
+    let (p, mut warnings) = parse_curl_ex(text)?;
+    let has = |name: &str| p.headers.iter().any(|(k, _)| k.eq_ignore_ascii_case(name));
+    if has("authorization") || has("cookie") {
+        warnings.push("Contains credentials; consider moving to an environment variable".into());
+    }
+    let body = p.body.as_ref().map(|b| {
+        let ct = p
+            .headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+            .map(|(_, v)| v.to_ascii_lowercase())
+            .unwrap_or_default();
+        let kind = if ct.contains("json") {
+            "JSON"
+        } else if ct.contains("x-www-form-urlencoded") {
+            "form"
+        } else {
+            "text"
+        };
+        (kind.to_string(), b.len())
+    });
+    Some(fluxwire_protocol::PasteSummary {
+        method: p.method,
+        url: p.url,
+        header_count: p.headers.len(),
+        body,
+        warnings,
+    })
 }
 
 /// Replace the request block's content with the pasted command.
@@ -308,6 +370,25 @@ mod tests {
     fn unknown_flags_and_non_curl_are_refused() {
         assert!(parse_curl("curl --weird-flag http://x").is_none());
         assert!(parse_curl("echo hi").is_none());
+        assert!(parse_curl("curl http://x -d @body.json").is_none());
+    }
+
+    #[test]
+    fn preview_summarizes_and_warns() {
+        let s = preview_curl(
+            "curl -X POST https://x.test/v1/p -H 'Content-Type: application/json' -d '{\"a\":1}'",
+        )
+        .unwrap();
+        assert_eq!(
+            (s.method.as_str(), s.url.as_str(), s.header_count),
+            ("POST", "https://x.test/v1/p", 1)
+        );
+        assert_eq!(s.body, Some(("JSON".to_string(), 7)));
+        assert!(s.warnings.is_empty());
+        let w = preview_curl("curl http://a http://b -o out -H 'Authorization: x'").unwrap();
+        assert_eq!(w.warnings.len(), 3);
+        assert!(w.warnings[0].contains("http://b"));
+        assert!(preview_curl("curl --proxy").is_none());
     }
 
     #[test]

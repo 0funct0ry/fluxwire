@@ -183,4 +183,16 @@ impl Protocol for HttpProtocol {
     fn edits_from_paste(&self, text: &str, doc: &FluxDoc) -> Option<Vec<Edit>> {
         curl::edits_from_paste(text, doc)
     }
+
+    fn preview_paste(&self, text: &str) -> Option<fluxwire_protocol::PasteSummary> {
+        curl::preview_curl(text)
+    }
+
+    fn label(&self) -> &'static str {
+        "HTTP"
+    }
+
+    fn url_schemes(&self) -> &[&'static str] {
+        &["http://", "https://"]
+    }
 }

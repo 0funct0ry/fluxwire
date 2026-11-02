@@ -386,8 +386,27 @@ pub struct HistoryRecord {
     pub payload: serde_json::Value,
 }
 
+/// What pasted text (e.g. a cURL command) will become, shown before a request is created.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PasteSummary {
+    pub method: String,
+    pub url: String,
+    pub header_count: usize,
+    /// Body kind (`JSON`, `form`, `text`) and size in bytes.
+    pub body: Option<(String, usize)>,
+    pub warnings: Vec<String>,
+}
+
 pub trait Protocol: Send + Sync {
     fn id(&self) -> &'static str;
+    /// Human label for the New request dialog.
+    fn label(&self) -> &'static str {
+        self.id()
+    }
+    /// URL schemes a request of this protocol accepts (empty: any).
+    fn url_schemes(&self) -> &[&'static str] {
+        &[]
+    }
     fn feature(&self) -> Option<&'static str>;
     fn request_languages(&self) -> &[&'static str];
     fn roles(&self) -> &[RoleSpec];
@@ -470,6 +489,10 @@ pub trait Protocol: Send + Sync {
     }
     /// Turn pasted text (e.g. a `curl` command) into edits that fill `doc`.
     fn edits_from_paste(&self, _text: &str, _doc: &FluxDoc) -> Option<Vec<Edit>> {
+        None
+    }
+    /// Summary of pasted text for the New request dialog; `None` if not recognised.
+    fn preview_paste(&self, _text: &str) -> Option<PasteSummary> {
         None
     }
 }

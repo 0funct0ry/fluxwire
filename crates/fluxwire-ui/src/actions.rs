@@ -30,6 +30,7 @@ actions!(
         NewRequest,
         NewFolder,
         NewWebSocketRequest,
+        QuickRequest,
         RenameItem,
         DuplicateItem,
         DeleteItem,
@@ -193,6 +194,7 @@ pub static ACTIONS: &[ActionInfo] = &[
         Some("secondary-n"),
         None
     ),
+    a!("workspace: quick request", QuickRequest, None, None),
     h!("workspace: new folder", NewFolder, None, None),
     h!(
         "workspace: new WebSocket request",
@@ -681,6 +683,7 @@ const WORKSPACE_ACTIONS: &[&str] = &[
     "NewRequest",
     "NewFolder",
     "NewWebSocketRequest",
+    "QuickRequest",
     "AddCollection",
     "Import",
     "QuickSearch",
@@ -1010,6 +1013,7 @@ mod tests {
         "quick search: open",
         "quick search: open result beside",
         "command palette: toggle",
+        "workspace: quick request",
         "workspace: rename",
         "workspace: duplicate",
         "workspace: delete (move to trash)",
