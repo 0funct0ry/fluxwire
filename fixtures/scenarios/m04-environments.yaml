@@ -1,0 +1,21 @@
+# M4: environments are workspace-level; the active one is chosen from the switcher.
+name: m04-environments
+workspace: fixtures/payments-api
+size: default
+steps:
+  - step: command
+    command: choose_environment
+    name: local
+  - step: invoke
+    name: SwitchEnvironment
+  - step: wait_idle
+  - step: assert
+    path: /modal
+  - step: screenshot
+    name: switcher
+  - step: key
+    keys: escape
+  - step: wait_idle
+  - step: assert
+    path: /modal
+    not: true

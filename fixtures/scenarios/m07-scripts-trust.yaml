@@ -1,0 +1,19 @@
+# M7: a Collection with scripts asks for trust before any script runs.
+name: m07-scripts-trust
+workspace: fixtures/payments-api
+size: default
+steps:
+  - step: command
+    command: open_file
+    key: payments/create-payment.flux.md
+    permanent: true
+  - step: invoke
+    name: Send
+  - step: wait_for
+    path: /trust_prompt
+  - step: assert
+    path: /trust_prompt
+  - step: screenshot
+    name: trust-prompt
+  - step: audit
+    fail_on: error

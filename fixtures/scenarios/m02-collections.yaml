@@ -1,0 +1,23 @@
+# M2: a real Workspace on disk opens, its Requests open as tabs, malformed files raise Problems.
+name: m02-collections
+description: Open fixtures/payments-api, open a Request, then check the Problems of fixtures/format-edge.
+workspace: fixtures/payments-api
+size: default
+steps:
+  - step: assert
+    path: /workspace_name
+  - step: command
+    command: open_file
+    key: payments/get-payment.flux.md
+    permanent: true
+  - step: wait_idle
+  - step: assert
+    path: /active_tab
+    contains: get-payment
+  - step: assert_find
+    label: Send
+    enabled: true
+  - step: screenshot
+    name: request-open
+  - step: audit
+    fail_on: error

@@ -1,0 +1,23 @@
+# M9: running a Folder opens a Folder run tab; the run reaches a finished state.
+name: m09-folder-run
+workspace: fixtures/payments-api
+size: default
+steps:
+  - step: command
+    command: choose_environment
+    name: local
+  - step: invoke
+    name: RunFolder
+  - step: wait_for
+    path: /runs/0/folder
+    timeout_ms: 15000
+  - step: wait_for
+    path: /runs/0/running
+    equals: false
+    timeout_ms: 30000
+  - step: wait_event
+    kind: run
+    contains: finished
+    timeout_ms: 1000
+  - step: screenshot
+    name: folder-run

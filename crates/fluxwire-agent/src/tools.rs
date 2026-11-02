@@ -333,10 +333,57 @@ fn with_env<T>(
 }
 
 fn forward(ctx: &ToolCtx, req: UiRequest) -> Result<serde_json::Value, String> {
-    ctx.ui
+    let out = ctx
+        .ui
         .as_ref()
         .ok_or_else(|| "no UI bridge in this host".to_string())?
-        .call(req)
+        .call(req.clone());
+    if out.is_ok()
+        && let Ok(mut r) = crate::scenario::recorder().lock()
+    {
+        r.note(&req);
+    }
+    out
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct EventsIn {
+    /// Return events with a larger `seq`; 0 replays the whole buffer. Pass the `latest` of the
+    /// previous answer to continue.
+    #[serde(default)]
+    pub since: u64,
+    /// Kinds to return: `run`, `frame`, `notice`, `console`, `generation`; empty returns all.
+    #[serde(default)]
+    pub kinds: Vec<String>,
+    /// Wait up to this long for the first matching event (default 0, at most 30000).
+    pub wait_ms: Option<u64>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct RunScenarioIn {
+    /// A scenario name from `fixtures/scenarios`, such as `m03-send`.
+    pub name: Option<String>,
+    /// Or a scenario given inline.
+    pub scenario: Option<crate::scenario::Scenario>,
+    /// Take screenshot checkpoints and a failure screenshot (default true).
+    pub capture: Option<bool>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct RecordIn {
+    /// `start` clears and begins recording; `stop` returns the scenario as YAML.
+    pub action: String,
+    /// Scenario name for `stop` (default `recorded`).
+    pub name: Option<String>,
+    /// For `stop`: also write `<dir>/<name>.yaml` into `fixtures/scenarios` when it exists.
+    #[serde(default)]
+    pub save: bool,
+}
+
+fn scenario_dirs(env: &crate::screenshot::Env) -> Option<std::path::PathBuf> {
+    env.search
+        .iter()
+        .find_map(|d| crate::scenario::find_scenario_dir(d))
 }
 
 fn parse<T: serde::de::DeserializeOwned>(args: Option<JsonObject>) -> Result<T, String> {
@@ -574,6 +621,105 @@ pub fn ui_tools(r: &mut Registry) {
         |ctx, args| {
             let a: WalkthroughIn = parse(args)?;
             with_env(ctx, |env| crate::audit::walkthrough(env, &a.steps))
+        },
+    ));
+    r.register(def_in::<EventsIn, UiOut>(
+        ToolClass::Ui,
+        "ui.events",
+        "Replay or wait on the event feed: runs, WebSocket frames, notices, console lines and state generation changes, each with a `seq`. Returns `{events, latest, gap}`; pass `latest` as `since` next time. `gap` is true when older events were already dropped. The server also pushes each event as an MCP logging notification (logger `fluxwire.events`).",
+        |ctx, args| {
+            if ctx.ui.is_none() {
+                return Err("no UI bridge in this host".into());
+            }
+            let a: EventsIn = parse(args)?;
+            let wait = std::time::Duration::from_millis(a.wait_ms.unwrap_or(0).min(30_000));
+            let buf = crate::events::global();
+            let events = if wait.is_zero() {
+                buf.since(a.since, &a.kinds)
+            } else {
+                buf.wait(a.since, &a.kinds, wait)
+            };
+            let latest = events.last().map_or(buf.latest().max(a.since), |e| e.seq);
+            Ok(serde_json::json!({
+                "events": events,
+                "latest": latest,
+                "gap": buf.has_gap(a.since),
+            }))
+        },
+    ));
+    r.register(def_in::<RunScenarioIn, UiOut>(
+        ToolClass::Ui,
+        "ui.run_scenario",
+        "Run a scenario (YAML in fixtures/scenarios, or inline) and return a pass/fail report: per-step status and time, and on failure the step, expected vs actual, the ui.state and a screenshot. Screenshot checkpoints are attached as images. Steps: the ui.screenshot steps plus click_element, assert (JSON pointer on ui.state), assert_find, screenshot, audit and wait_event.",
+        |ctx, args| {
+            let a: RunScenarioIn = parse(args)?;
+            with_env(ctx, |env| {
+                let (sc, repo) = match (a.scenario, a.name) {
+                    (Some(sc), _) => (sc, None),
+                    (None, Some(n)) => {
+                        let dir = scenario_dirs(env)
+                            .ok_or("no fixtures/scenarios directory found")?;
+                        let repo = dir.parent().and_then(|p| p.parent()).map(|p| p.to_path_buf());
+                        (crate::scenario::load_named(&dir, &n)?, repo)
+                    }
+                    _ => return Err("give `name` or `scenario`".to_string()),
+                };
+                let repo = repo.or_else(|| env.search.first().cloned());
+                Ok(crate::scenario::run(
+                    env,
+                    &crate::scenario::RunOpts {
+                        capture: a.capture.unwrap_or(true),
+                        events: crate::events::global(),
+                        repo,
+                    },
+                    &sc,
+                ))
+            })
+        },
+    ));
+    r.register(def_in::<RecordIn, UiOut>(
+        ToolClass::Ui,
+        "ui.record",
+        "Record the state-changing ui.* calls that follow (open, invoke, key, type, command, click_element, set_theme, resize) as a scenario. `stop` returns the YAML with assertions taken from the final ui.state.",
+        |ctx, args| {
+            let a: RecordIn = parse(args)?;
+            let mut rec = crate::scenario::recorder()
+                .lock()
+                .map_err(|_| "recorder poisoned".to_string())?;
+            match a.action.as_str() {
+                "start" => {
+                    rec.start();
+                    Ok(serde_json::json!({"recording": true}))
+                }
+                "stop" => {
+                    if !rec.active() {
+                        return Err("not recording; call ui.record with action `start` first".into());
+                    }
+                    let st = ctx.ui.as_ref().and_then(|u| u.call(UiRequest::State).ok());
+                    let ws = st
+                        .as_ref()
+                        .and_then(|s| s["workspace_path"].as_str())
+                        .map(String::from);
+                    let name = a.name.unwrap_or_else(|| "recorded".into());
+                    let sc = rec.stop(&name, ws, st.as_ref());
+                    let yaml = sc.to_yaml()?;
+                    let mut out = serde_json::json!({"name": name, "steps": sc.steps.len(), "yaml": yaml});
+                    if a.save {
+                        let ok = !name.is_empty()
+                            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+                        if !ok {
+                            return Err(format!("invalid scenario name `{name}`"));
+                        }
+                        let dir = with_env(ctx, |env| Ok(scenario_dirs(env)))?
+                            .ok_or("no fixtures/scenarios directory found")?;
+                        let path = dir.join(format!("{name}.yaml"));
+                        std::fs::write(&path, &yaml).map_err(|e| e.to_string())?;
+                        out["saved"] = path.display().to_string().into();
+                    }
+                    Ok(out)
+                }
+                other => Err(format!("unknown action `{other}`: use start or stop")),
+            }
         },
     ));
     r.register(def_in::<WaitIdleIn, UiOut>(

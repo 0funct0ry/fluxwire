@@ -64,3 +64,57 @@ pub fn serve(a: ServeArgs) -> ExitCode {
         }
     }
 }
+
+#[derive(Args, Debug)]
+pub struct ScenarioArgs {
+    /// Scenario file, such as fixtures/scenarios/m03-send.yaml.
+    pub file: PathBuf,
+    /// Socket of the app started with `--mcp-socket`.
+    #[arg(long, value_name = "PATH")]
+    pub socket: PathBuf,
+    /// Skip screenshot checkpoints (no display or Screen Recording permission).
+    #[arg(long)]
+    pub no_capture: bool,
+    /// Write checkpoint and failure screenshots here.
+    #[arg(long, value_name = "DIR")]
+    pub out: Option<PathBuf>,
+}
+
+pub fn scenario(a: ScenarioArgs) -> ExitCode {
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("fluxwire: cannot start the runtime: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let out = rt.block_on(fluxwire_agent::scenario_client::run_file(
+        &a.file,
+        &a.socket,
+        !a.no_capture,
+    ));
+    match out {
+        Err(e) => {
+            eprintln!("fluxwire: {e}");
+            ExitCode::from(2)
+        }
+        Ok(o) => {
+            print!("{}", o.summary());
+            if let Some(dir) = &a.out {
+                let _ = std::fs::create_dir_all(dir);
+                for (i, (label, png)) in o.images.iter().enumerate() {
+                    let name: String = label
+                        .chars()
+                        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+                        .collect();
+                    let _ = std::fs::write(dir.join(format!("{i:02}-{name}.png")), png);
+                }
+            }
+            if o.passed() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(1)
+            }
+        }
+    }
+}

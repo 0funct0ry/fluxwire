@@ -1,0 +1,18 @@
+# M8: a WebSocket Request opens a session tab with a protocol-neutral log. Connecting needs the
+# sample API; this scenario checks the tab and that Connect is available.
+name: m08-websocket
+workspace: fixtures/payments-api
+size: default
+steps:
+  - step: command
+    command: open_file
+    key: events/order-stream.flux.md
+    permanent: true
+  - step: wait_idle
+  - step: assert
+    path: /active_tab
+    contains: order-stream
+  - step: screenshot
+    name: ws-tab
+  - step: audit
+    fail_on: error

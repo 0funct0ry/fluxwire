@@ -1,0 +1,12 @@
+# Deliberately wrong: used to prove a failing assertion gives a useful report and screenshot.
+# Not part of the passing suite (see tests/scenarios.rs and docs/agent-testing.md).
+name: broken-assertion
+workspace: fixtures/payments-api
+size: default
+steps:
+  - step: invoke
+    name: ShowProblems
+  - step: wait_idle
+  - step: assert
+    path: /bottom_tab
+    equals: console

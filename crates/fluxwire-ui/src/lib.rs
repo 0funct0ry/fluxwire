@@ -15,6 +15,8 @@ pub mod containment;
 pub mod dev_audit;
 #[cfg(feature = "dev-mcp")]
 pub mod dev_capture;
+#[cfg(feature = "dev-mcp")]
+pub mod dev_events;
 pub mod dev_id;
 #[cfg(feature = "dev-mcp")]
 pub mod dev_mcp;

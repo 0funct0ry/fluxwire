@@ -1,4 +1,5 @@
 //! The rmcp `ServerHandler` over the registry.
+#![allow(deprecated)] // logging carries the event feed; `ui.events` is the stable path
 
 use crate::registry::{Registry, ToolCtx};
 use crate::{AllowSet, Roots, UiBridge, tools};
@@ -7,9 +8,10 @@ use rmcp::RoleServer;
 use rmcp::ServerHandler;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
-    ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig,
+    ListToolsResult, LoggingLevel, LoggingMessageNotificationParam, PaginatedRequestParams,
+    ServerCapabilities, ServerConfig,
 };
-use rmcp::service::RequestContext;
+use rmcp::service::{NotificationContext, RequestContext};
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -45,9 +47,43 @@ impl FluxwireServer {
 
 impl ServerHandler for FluxwireServer {
     fn get_info(&self) -> ServerConfig {
-        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new("fluxwire", env!("CARGO_PKG_VERSION")))
-            .with_instructions("Fluxwire: inspect and drive a REST/WebSocket API client workspace.")
+        ServerConfig::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_logging()
+                .build(),
+        )
+        .with_server_info(Implementation::new("fluxwire", env!("CARGO_PKG_VERSION")))
+        .with_instructions("Fluxwire: inspect and drive a REST/WebSocket API client workspace.")
+    }
+
+    /// With a UI bridge, forwards the event feed to the client as logging notifications.
+    async fn on_initialized(&self, context: NotificationContext<RoleServer>) {
+        if self.ctx.ui.is_none() {
+            return;
+        }
+        let peer = context.peer.clone();
+        let handle = tokio::runtime::Handle::current();
+        let buf = crate::events::global().clone();
+        let mut since = buf.latest();
+        std::thread::spawn(move || {
+            loop {
+                let evs = buf.wait(since, &[], std::time::Duration::from_millis(500));
+                if peer.is_transport_closed() {
+                    return;
+                }
+                for e in evs {
+                    since = e.seq;
+                    let data = serde_json::to_value(&e).unwrap_or_default();
+                    let p = peer.clone();
+                    let param = LoggingMessageNotificationParam::new(LoggingLevel::Info, data)
+                        .with_logger("fluxwire.events");
+                    if handle.block_on(p.notify_logging_message(param)).is_err() {
+                        return;
+                    }
+                }
+            }
+        });
     }
 
     async fn list_tools(

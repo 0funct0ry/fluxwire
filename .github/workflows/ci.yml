@@ -30,3 +30,64 @@ jobs:
       - run: cargo build --workspace --release
       - name: Headless build (no GPUI)
         run: cargo build -p fluxwire --no-default-features
+
+  # Headless MCP server: an rmcp client over stdio and the unix socket, plus the scenario and
+  # event-feed tools against a fake bridge. No display needed.
+  smoke-headless:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p fluxwire --no-default-features
+      - run: cargo test -p fluxwire-agent --test transports --test scenarios --test ui_tools
+
+  # The dev-mcp app under xvfb, driven by short scenarios; fails on a failed assertion or an
+  # audit error. Screenshots are kept as an artifact.
+  smoke-ui-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: System libraries for GPUI, xvfb and capture tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libxcb1-dev libvulkan-dev libasound2-dev libfontconfig-dev libssl-dev \
+            xvfb mesa-vulkan-drivers imagemagick
+      - name: Run scenarios under xvfb
+        run: |
+          xvfb-run -a -s "-screen 0 1440x900x24" scripts/smoke-ui.sh \
+            fixtures/scenarios/m02-collections.yaml fixtures/scenarios/m04-environments.yaml \
+            fixtures/scenarios/m07-scripts-trust.yaml fixtures/scenarios/m08-websocket.yaml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke-ui-linux
+          path: target/smoke
+
+  # macOS has a window server on hosted runners but no Screen Recording grant, so screenshot
+  # checkpoints are skipped there (`--no-capture`); assertions and the audit still run.
+  smoke-ui-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run scenarios
+        env:
+          SMOKE_FEATURES: dev-mcp,runtime-shaders
+        run: |
+          scripts/smoke-ui.sh --no-capture \
+            fixtures/scenarios/m02-collections.yaml fixtures/scenarios/m04-environments.yaml \
+            fixtures/scenarios/m07-scripts-trust.yaml fixtures/scenarios/m08-websocket.yaml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke-ui-macos
+          path: target/smoke

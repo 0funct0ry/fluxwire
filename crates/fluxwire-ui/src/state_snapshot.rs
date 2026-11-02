@@ -143,6 +143,12 @@ impl WorkspaceView {
         let s = self.snapshot(window, cx);
         if self.last_state.as_ref() != Some(&s) {
             self.generation += 1;
+            #[cfg(feature = "dev-mcp")]
+            {
+                let mut cur = s.clone();
+                cur.generation = self.generation;
+                crate::dev_events::emit_changes(self.last_state.as_ref(), &cur);
+            }
             self.last_state = Some(s);
         }
     }

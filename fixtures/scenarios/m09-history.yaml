@@ -1,0 +1,17 @@
+# M9.03: the History panel opens and shows the navigator.
+name: m09-history
+workspace: fixtures/payments-api
+size: default
+steps:
+  - step: invoke
+    name: ShowHistoryPanel
+  - step: wait_idle
+  - step: assert
+    path: /panel
+    equals: history
+  - step: invoke
+    name: ShowProblems
+  - step: wait_idle
+  - step: assert
+    path: /bottom_tab
+    equals: problems

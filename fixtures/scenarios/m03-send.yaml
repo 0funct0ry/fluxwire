@@ -1,0 +1,26 @@
+# M3: sending a Request produces a response or an error response, never nothing. Passes with or
+# without the sample API on localhost:8080 (without it the response is a connection error).
+name: m03-send
+workspace: fixtures/payments-api
+size: default
+steps:
+  - step: command
+    command: open_file
+    key: payments/get-payment.flux.md
+    permanent: true
+  - step: command
+    command: choose_environment
+    name: local
+  - step: invoke
+    name: Send
+  - step: wait_for
+    path: /response
+    timeout_ms: 15000
+  - step: wait_idle
+  - step: assert
+    path: /response/sending
+    equals: false
+  - step: screenshot
+    name: response
+  - step: audit
+    fail_on: error

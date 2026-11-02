@@ -549,6 +549,8 @@ impl WorkspaceView {
     }
 
     fn log(&mut self, line: String) {
+        #[cfg(feature = "dev-mcp")]
+        crate::dev_events::console(&line);
         self.scope
             .console
             .push(format!("{}  {line}", clock(SystemTime::now())));
@@ -580,7 +582,11 @@ impl WorkspaceView {
                 }
                 self.log(format!("↪ {} {} → {}", h.status, h.from, h.to));
             }
-            RunEvent::Frame(f) => r.log.push(f),
+            RunEvent::Frame(f) => {
+                #[cfg(feature = "dev-mcp")]
+                crate::dev_events::frame(tab_id, &format!("{f:?}"));
+                r.log.push(f)
+            }
             RunEvent::Finished(res) => self.finish_run(tab_id, seq, *res, cx),
         }
         cx.notify();

@@ -452,6 +452,19 @@ impl WorkspaceView {
         let Some(r) = self.scope.runs.get_mut(&tab_id).filter(|r| r.seq == seq) else {
             return;
         };
+        #[cfg(feature = "dev-mcp")]
+        match &ev {
+            FolderRunEvent::RequestStarted { iteration, key } => crate::dev_events::run(
+                serde_json::json!({"run_id": run_id, "request_started": key, "iteration": iteration}),
+            ),
+            FolderRunEvent::RequestFinished(_) => crate::dev_events::run(
+                serde_json::json!({"run_id": run_id, "request_finished": true}),
+            ),
+            FolderRunEvent::Finished(_) => {
+                crate::dev_events::run(serde_json::json!({"run_id": run_id, "finished": true}))
+            }
+            FolderRunEvent::Started { .. } => {}
+        }
         match ev {
             FolderRunEvent::Started {
                 iterations,

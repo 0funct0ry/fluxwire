@@ -27,6 +27,9 @@ pub enum Command {
 pub enum McpCommand {
     /// Serve Fluxwire tools over stdio and/or a unix socket. Logs go to stderr.
     Serve(mcp::ServeArgs),
+    /// Run a scenario file against a running `dev-mcp` app over its socket. Exit 0 when every
+    /// step passes, 1 when one fails, 2 when the app cannot be reached.
+    Scenario(mcp::ScenarioArgs),
 }
 
 /// True when `arg` (the first argument after the program name) belongs to the CLI tree.
@@ -56,5 +59,8 @@ where
         Command::Mcp {
             command: McpCommand::Serve(a),
         } => mcp::serve(a),
+        Command::Mcp {
+            command: McpCommand::Scenario(a),
+        } => mcp::scenario(a),
     }
 }
