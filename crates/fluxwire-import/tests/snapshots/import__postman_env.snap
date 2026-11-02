@@ -1,0 +1,39 @@
+---
+source: crates/fluxwire-import/tests/import.rs
+expression: snapshot_text(& p)
+---
+=== .gitignore ===
+*.local.env
+fluxwire.local.toml
+.fluxwire/cache/
+
+=== environments/local.env ===
+baseUrl=http://localhost:8080
+user=demo
+
+=== environments/local.local.env ===
+password=hunter2
+apiToken=tok_123
+
+=== fluxwire.toml ===
+[collection]
+name = "Local"
+format = 1
+
+[secrets]
+names = ["apiToken", "password"]
+
+# Import report
+
+Source: Postman
+
+## Files (4)
+
+- `.gitignore`
+- `environments/local.env`
+- `environments/local.local.env`
+- `fluxwire.toml`
+
+## Lossy conversions (0)
+
+None.

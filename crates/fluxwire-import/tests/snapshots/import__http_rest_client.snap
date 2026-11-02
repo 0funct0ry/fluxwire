@@ -1,0 +1,79 @@
+---
+source: crates/fluxwire-import/tests/import.rs
+expression: snapshot_text(& p)
+---
+=== .gitignore ===
+*.local.env
+fluxwire.local.toml
+.fluxwire/cache/
+
+=== collection.flux.md ===
+---
+name: rest-client
+---
+
+# rest-client
+
+=== environments/dev.env ===
+region=eu
+host=http://localhost:8080
+name=dev
+
+=== environments/prod.env ===
+region=eu
+host=https://api.example.com
+
+=== environments/prod.local.env ===
+token=prod-secret
+
+=== fluxwire.toml ===
+[collection]
+name = "rest-client"
+format = 1
+
+[secrets]
+names = ["token"]
+
+=== get-ping.flux.md ===
+---
+name: GET /ping
+seq: 1
+---
+
+# GET /ping
+
+```http
+GET https://example.com/ping
+```
+
+=== post-upload.flux.md ===
+---
+name: POST /upload
+seq: 2
+---
+
+# POST /upload
+
+```http
+POST https://example.com/upload
+Content-Type: text/plain
+```
+
+# Import report
+
+Source: .http file
+
+## Files (8)
+
+- `.gitignore`
+- `collection.flux.md`
+- `environments/dev.env`
+- `environments/prod.env`
+- `environments/prod.local.env`
+- `fluxwire.toml`
+- `get-ping.flux.md`
+- `post-upload.flux.md`
+
+## Lossy conversions (1)
+
+- `post-upload.flux.md`: body from file `./payload.txt`. External request body files are not converted; the body was left empty

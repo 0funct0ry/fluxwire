@@ -1,0 +1,60 @@
+---
+source: crates/fluxwire-import/tests/import.rs
+expression: snapshot_text(& p)
+---
+=== .gitignore ===
+*.local.env
+fluxwire.local.toml
+.fluxwire/cache/
+
+=== collection.flux.md ===
+---
+name: Orders
+settings:
+  run_mode: sequential
+---
+
+# Orders
+
+=== create-order.flux.md ===
+---
+name: Create order
+seq: 1
+auth:
+  type: basic
+  username: svc
+  password: "{{svcPassword}}"
+---
+
+# Create order
+
+```http
+POST https://api.example.com/orders
+X-Request-Id: {{$guid}}
+Content-Type: application/x-www-form-urlencoded
+```
+
+```http form
+sku: A-1
+qty: 2
+```
+
+=== fluxwire.toml ===
+[collection]
+name = "Orders"
+format = 1
+
+# Import report
+
+Source: Postman
+
+## Files (4)
+
+- `.gitignore`
+- `collection.flux.md`
+- `create-order.flux.md`
+- `fluxwire.toml`
+
+## Lossy conversions (1)
+
+- `create-order.flux.md`: dynamic variable `{{$...}}`. Postman dynamic variables such as `$guid` and `$timestamp` are not variables in Fluxwire; set them in a `pre` script

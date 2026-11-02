@@ -1,0 +1,15 @@
+# ADR-020: Imports
+
+Status: accepted (M11)
+
+## Decisions
+- **Plan, then write.** Every importer returns an in-memory `ImportPlan` (`fluxwire-import`): the files to create with their kind (request, folder, collection, environment, local environment, config, `.gitignore`, support) and an `ImportReport` of lossy items, each with a feature and a reason. Nothing touches the disk until `apply`. The UI previews the plan; the CLI can `--dry-run` it.
+- **One renderer.** Importers fill `ReqDraft` and `FolderDraft`; `render.rs` is the only code that writes front matter, the title, description, `http` block, `http expect`, scripts and `http example` blocks. Each file is passed through `fluxwire_format::format`, so imports are canonical and `fluxwire validate` is clean (tested over the fixture corpus).
+- **No overwrites.** `apply` takes a per-file predicate. Existing requests, folders, collection files and environment files are kept unless confirmed and are listed in the report as skipped. `.gitignore` and `fluxwire.toml` are merged (missing lines, `[secrets].names`), never replaced.
+- **Secrets.** Values flagged secret by the source, or whose names look secret (`secret`, `password`, `token`, `apikey`, `private`, `credential`, `bearer`), go to `<env>.local.env`; their names go to `[secrets]`. Variable names that are not valid are renamed and reported.
+- **Postman scripts** stay JavaScript and run through the `pm` shim. A scanner reports `pm.*` members the shim lacks, the legacy `postman.*` object, and `require()` (with hints for `crypto-js` and `moment`). Postman collections and folders import as sequential, because Postman's runner is sequential and `pm.environment.set` chains requests.
+- **Hurl and `.http`.** Hurl asserts become `http expect` (status, headers) or a `ts test` per assert; unsupported queries are reported. `.http` response handlers get a small `client`/`response` preamble so they run unchanged under `fw`; unsupported members are reported.
+- **OpenAPI.** Operations keep the document order (`serde_json` `preserve_order` is enabled in this crate so snapshots do not depend on feature unification). With a Spec link the operations go under a folder named after the title, the document is copied to `openapi/`, a `[[openapi]]` entry is written, and `.fluxwire/sync/<name>.base.json` holds the initial snapshot. M12 may regenerate that snapshot.
+- **Where files go.** The CLI treats `--into` as a collection root, with its own `environments/`. The wizard targets the Workspace: environment files go to `<workspace>/environments/` (ADR-012), `.gitignore` to the Workspace root, and collection files are written only at a collection root; a target folder inside a collection gets `folder.flux.md` instead and no Spec link.
+- **CLI exit codes:** 64 usage, 65 parse failure, 74 for read or write failures (the SPEC §18 list has no I/O code).
+- **Deferred:** Insomnia scripts and request chaining tags, Postman `pm.visualizer`, binary bodies, Hurl `[Options]`, `.http` handler files, and a File menu (the app has no menu bar; the palette, empty states and drag-and-drop open the wizard).

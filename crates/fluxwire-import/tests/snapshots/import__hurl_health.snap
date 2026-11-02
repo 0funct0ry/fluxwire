@@ -1,0 +1,54 @@
+---
+source: crates/fluxwire-import/tests/import.rs
+expression: snapshot_text(& p)
+---
+=== .gitignore ===
+*.local.env
+fluxwire.local.toml
+.fluxwire/cache/
+
+=== collection.flux.md ===
+---
+name: health
+---
+
+# health
+
+=== fluxwire.toml ===
+[collection]
+name = "health"
+format = 1
+
+=== get-health.flux.md ===
+---
+name: GET /health
+seq: 1
+---
+
+# GET /health
+
+```http
+GET https://api.example.com/health
+```
+
+```http expect
+HTTP 200
+Content-Type: text/plain
+
+ok
+```
+
+# Import report
+
+Source: Hurl
+
+## Files (4)
+
+- `.gitignore`
+- `collection.flux.md`
+- `fluxwire.toml`
+- `get-health.flux.md`
+
+## Lossy conversions (0)
+
+None.

@@ -1,0 +1,113 @@
+---
+source: crates/fluxwire-import/tests/import.rs
+expression: snapshot_text(& p)
+---
+=== .gitignore ===
+*.local.env
+fluxwire.local.toml
+.fluxwire/cache/
+
+=== collection.flux.md ===
+---
+name: users
+vars:
+  host: https://api.example.com
+  contentType: application/json
+---
+
+# users
+
+=== createuser.flux.md ===
+---
+name: createUser
+seq: 1
+---
+
+# createUser
+
+```http
+POST {{host}}/users
+Content-Type: {{contentType}}
+X-Request-Id: {{$uuid}}
+
+{
+  "name": "Ada"
+}
+```
+
+```ts test
+const client = {
+  global: { set: (k, v) => fw.vars.set(k, v), get: (k) => fw.vars.get(k) },
+  test: (name, fn) => fw.test(name, fn),
+  assert: (cond, msg) => { if (!cond) throw new Error(msg ?? "assertion failed"); },
+  log: (...a) => console.log(...a),
+};
+const response = {
+  get status() { return fw.response.status; },
+  get body() { return fw.response.json(); },
+  headers: { valueOf: (n) => fw.response.headers.get(n) },
+  contentType: { get mimeType() { return (fw.response.headers.get("content-type") ?? "").split(";")[0]; } },
+};
+client.test("created", function () {
+  client.assert(response.status === 201, "expected 201");
+});
+client.global.set("userId", response.body.id);
+client.log("done");
+client.exit();
+```
+
+=== environments/dev.env ===
+region=eu
+host=http://localhost:8080
+name=dev
+
+=== environments/prod.env ===
+region=eu
+host=https://api.example.com
+
+=== environments/prod.local.env ===
+token=prod-secret
+
+=== fluxwire.toml ===
+[collection]
+name = "users"
+format = 1
+
+[secrets]
+names = ["token"]
+
+=== get-user.flux.md ===
+---
+name: Get user
+seq: 2
+---
+
+# Get user
+
+```http
+GET {{host}}/users/{{userId}}
+    ?verbose=true
+    &fields=name
+Accept: application/json
+# X-Debug: 1
+```
+
+# Import report
+
+Source: .http file
+
+## Files (8)
+
+- `.gitignore`
+- `collection.flux.md`
+- `createuser.flux.md`
+- `environments/dev.env`
+- `environments/prod.env`
+- `environments/prod.local.env`
+- `fluxwire.toml`
+- `get-user.flux.md`
+
+## Lossy conversions (2)
+
+- `createuser.flux.md`: client.exit. Response handler API not available in Fluxwire
+- `createuser.flux.md`: dynamic variable `{{$...}}`. Built-in dynamic variables such as `$uuid` and `$timestamp` are not variables in Fluxwire; set them in a `pre` script

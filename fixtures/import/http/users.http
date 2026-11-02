@@ -1,0 +1,28 @@
+@host = https://api.example.com
+@contentType = application/json
+
+### Create user
+# @name createUser
+POST {{host}}/users HTTP/1.1
+Content-Type: {{contentType}}
+X-Request-Id: {{$uuid}}
+
+{
+  "name": "Ada"
+}
+
+> {%
+  client.test("created", function () {
+    client.assert(response.status === 201, "expected 201");
+  });
+  client.global.set("userId", response.body.id);
+  client.log("done");
+  client.exit();
+%}
+
+### Get user
+GET {{host}}/users/{{userId}}
+  ?verbose=true
+  &fields=name
+Accept: application/json
+# X-Debug: 1

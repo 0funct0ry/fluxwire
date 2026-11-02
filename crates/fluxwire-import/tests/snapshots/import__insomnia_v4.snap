@@ -1,0 +1,108 @@
+---
+source: crates/fluxwire-import/tests/import.rs
+expression: snapshot_text(& p)
+---
+=== .gitignore ===
+*.local.env
+fluxwire.local.toml
+.fluxwire/cache/
+
+=== books/create-book.flux.md ===
+---
+name: Create book
+seq: 2
+---
+
+# Create book
+
+```http
+POST {{baseUrl}}/books
+# X-Trace: {% uuid 'v4' %}
+Content-Type: application/json
+
+{
+  "title": "{% faker 'randomWord' %}"
+}
+```
+
+=== books/folder.flux.md ===
+---
+name: Books
+seq: 1
+---
+
+# Books
+
+Book endpoints
+
+=== books/list-books.flux.md ===
+---
+name: List books
+seq: 1
+auth:
+  type: bearer
+  token: "{{apiKey}}"
+---
+
+# List books
+
+```http
+GET {{baseUrl}}/books?page=1
+Accept: application/json
+```
+
+=== collection.flux.md ===
+---
+name: Bookstore
+---
+
+# Bookstore
+
+=== environments/dev.env ===
+nested_a=1
+baseUrl=https://dev.example.com
+
+=== environments/dev.local.env ===
+apiKey=key-123
+
+=== fluxwire.toml ===
+[collection]
+name = "Bookstore"
+format = 1
+
+[secrets]
+names = ["apiKey"]
+
+=== health.flux.md ===
+---
+name: Health
+seq: 2
+---
+
+# Health
+
+```http
+GET {{baseUrl}}/health
+```
+
+# Import report
+
+Source: Insomnia
+
+## Files (9)
+
+- `.gitignore`
+- `books/create-book.flux.md`
+- `books/folder.flux.md`
+- `books/list-books.flux.md`
+- `collection.flux.md`
+- `environments/dev.env`
+- `environments/dev.local.env`
+- `fluxwire.toml`
+- `health.flux.md`
+
+## Lossy conversions (3)
+
+- `books/create-book.flux.md`: template tag `{% uuid %}`. Insomnia template tags are not converted and are left as text
+- `books/create-book.flux.md`: template tag `{% faker %}`. Insomnia template tags are not converted and are left as text
+- `books/create-book.flux.md`: auth type `hawk`. Not supported; the request inherits auth instead

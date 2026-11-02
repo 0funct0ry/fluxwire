@@ -1,0 +1,150 @@
+---
+source: crates/fluxwire-import/tests/import.rs
+expression: snapshot_text(& p)
+---
+=== .gitignore ===
+*.local.env
+fluxwire.local.toml
+.fluxwire/cache/
+
+=== collection.flux.md ===
+---
+name: Petstore
+auth:
+  type: bearer
+  token: "{{token}}"
+vars:
+  baseUrl: https://petstore.example.com/v1
+---
+
+# Petstore
+
+A tiny pet store.
+
+=== deletepet.flux.md ===
+---
+name: deletePet
+seq: 1
+operation: deletePet
+auth: none
+path:
+  petId: "{{petId}}"
+---
+
+# deletePet
+
+```http
+DELETE {{baseUrl}}/pets/:petId
+```
+
+```http expect
+HTTP 204
+```
+
+=== environments/staging.env ===
+baseUrl=https://staging.petstore.example.com/v1
+
+=== fluxwire.toml ===
+[collection]
+name = "Petstore"
+format = 1
+
+=== pets/create-a-pet.flux.md ===
+---
+name: Create a pet
+seq: 2
+tags: [pets]
+operation: createPet
+---
+
+# Create a pet
+
+```http
+POST {{baseUrl}}/pets
+Content-Type: application/json
+
+{
+  "id": 0,
+  "name": "Rex",
+  "tags": [
+    "string"
+  ]
+}
+```
+
+```http expect
+HTTP 201
+```
+
+=== pets/folder.flux.md ===
+---
+name: pets
+seq: 1
+---
+
+# pets
+
+Everything about pets
+
+=== pets/get-a-pet.flux.md ===
+---
+name: Get a pet
+seq: 3
+tags: [pets]
+operation: GET /pets/{petId}
+deprecated: true
+path:
+  petId: "{{petId}}"
+---
+
+# Get a pet
+
+```http
+GET {{baseUrl}}/pets/:petId
+```
+
+```http expect
+HTTP 200
+```
+
+=== pets/list-pets.flux.md ===
+---
+name: List pets
+seq: 1
+tags: [pets]
+operation: listPets
+---
+
+# List pets
+
+Returns all pets.
+
+```http
+GET {{baseUrl}}/pets
+    # &limit=20
+X-Trace: abc
+```
+
+```http expect
+HTTP 200
+```
+
+# Import report
+
+Source: OpenAPI
+
+## Files (9)
+
+- `.gitignore`
+- `collection.flux.md`
+- `deletepet.flux.md`
+- `environments/staging.env`
+- `fluxwire.toml`
+- `pets/create-a-pet.flux.md`
+- `pets/folder.flux.md`
+- `pets/get-a-pet.flux.md`
+- `pets/list-pets.flux.md`
+
+## Lossy conversions (0)
+
+None.

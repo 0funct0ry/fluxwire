@@ -1,0 +1,22 @@
+{
+  "info": {
+    "name": "Orders",
+    "_postman_id": "00000000-0000-0000-0000-000000000001",
+    "schema": "https://schema.getpostman.com/json/collection/v2.0.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Create order",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "X-Request-Id", "value": "{{$guid}}" }],
+        "url": "https://api.example.com/orders",
+        "body": { "mode": "urlencoded", "urlencoded": [
+          { "key": "sku", "value": "A-1" },
+          { "key": "qty", "value": "2" }
+        ] },
+        "auth": { "type": "basic", "basic": { "username": "svc", "password": "{{svcPassword}}" } }
+      }
+    }
+  ]
+}

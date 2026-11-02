@@ -1,0 +1,102 @@
+---
+source: crates/fluxwire-import/tests/import.rs
+expression: snapshot_text(& p)
+---
+=== .gitignore ===
+*.local.env
+fluxwire.local.toml
+.fluxwire/cache/
+
+=== collection.flux.md ===
+---
+name: Notes
+---
+
+# Notes
+
+=== environments/base.env ===
+host=http://localhost:4000
+
+=== environments/base.local.env ===
+password=s3cret
+
+=== fluxwire.toml ===
+[collection]
+name = "Notes"
+format = 1
+
+[secrets]
+names = ["password"]
+
+=== notes/create-note.flux.md ===
+---
+name: Create note
+seq: 1
+auth:
+  type: basic
+  username: me
+  password: "{{password}}"
+---
+
+# Create note
+
+```http
+POST {{host}}/notes
+Content-Type: application/x-www-form-urlencoded
+```
+
+```http form
+text: hello
+```
+
+=== notes/folder.flux.md ===
+---
+name: Notes
+seq: 1
+---
+
+# Notes
+
+=== notes/get-note.flux.md ===
+---
+name: Get note
+seq: 2
+---
+
+# Get note
+
+```http
+GET {{host}}/notes/1
+```
+
+=== ping.flux.md ===
+---
+name: Ping
+seq: 2
+---
+
+# Ping
+
+```http
+GET {{host}}/ping
+```
+
+# Import report
+
+Source: Insomnia
+
+## Files (9)
+
+- `.gitignore`
+- `collection.flux.md`
+- `environments/base.env`
+- `environments/base.local.env`
+- `fluxwire.toml`
+- `notes/create-note.flux.md`
+- `notes/folder.flux.md`
+- `notes/get-note.flux.md`
+- `ping.flux.md`
+
+## Lossy conversions (0)
+
+None.

@@ -116,6 +116,7 @@ pub enum Dialog {
     NewCollection(NewCollectionForm),
     NewEnvironment(NewEnvForm),
     NewRequest(Box<crate::new_request_dialog::NewRequestDialog>),
+    Import(Box<crate::import_dialog::ImportDialog>),
     Confirm(Confirm),
 }
 
@@ -127,6 +128,7 @@ impl Dialog {
             Dialog::NewCollection(_) => "new_collection",
             Dialog::NewEnvironment(_) => "new_environment",
             Dialog::NewRequest(_) => "new_request",
+            Dialog::Import(_) => "import",
             Dialog::Confirm(c) => return format!("confirm:{}", c.title),
         }
         .into()
@@ -891,6 +893,9 @@ impl WorkspaceView {
         match dialog {
             Dialog::NewRequest(d) => {
                 panel = panel.w(px(560.)).child(self.render_new_request(d, &t, cx));
+            }
+            Dialog::Import(d) => {
+                panel = panel.w(px(600.)).child(self.render_import(d, &t, cx));
             }
             Dialog::NewWorkspace(f) => {
                 let plan = plan_new_workspace(f.name.read(cx).text(), &f.location);

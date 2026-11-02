@@ -1,0 +1,8 @@
+GET https://example.com/ping
+
+###
+
+POST https://example.com/upload
+Content-Type: text/plain
+
+< ./payload.txt

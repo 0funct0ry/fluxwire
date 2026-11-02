@@ -1495,6 +1495,14 @@ impl Render for WorkspaceView {
             .text_color(t.text)
             .font_family(UI_FONT)
             .text_size(px(14.))
+            .on_drop(cx.listener(|this, paths: &gpui::ExternalPaths, w, cx| {
+                if this.scope.workspace.is_some() {
+                    this.import_drop(paths.paths(), w, cx);
+                } else {
+                    this.notice = Some("Open a workspace before importing.".into());
+                    cx.notify();
+                }
+            }))
             .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, window, cx| {
                 if this.history.resizing.is_some() {
                     this.history_drag(f32::from(ev.position.x), cx);
@@ -1685,7 +1693,7 @@ impl Render for WorkspaceView {
             KeepMine => |this, _w, c| this.resolve_conflict(false, c),
             FocusUrlBar => |this, w, c| this.focus_url(w, c),
             Save => |this, _w, c| this.save_active(c),
-            Import => |this, _w, _c| this.notice = Some("Import arrives in a later milestone (M11).".into()),
+            Import => |this, w, c| this.start_import(None, w, c),
             OpenAsText => |this, _w, c| this.toggle_text_mode(c),
             EditorGoToLine => |this, w, c| this.start_go_to_line(w, c),
             RequestFormatBody => |this, _w, c| this.format_body(c),

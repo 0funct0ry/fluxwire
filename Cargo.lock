@@ -2451,10 +2451,12 @@ dependencies = [
  "directories",
  "fluxwire-agent",
  "fluxwire-format",
+ "fluxwire-import",
  "fluxwire-model",
  "fluxwire-protocol",
  "fluxwire-runner",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 
@@ -2522,8 +2524,18 @@ dependencies = [
 name = "fluxwire-import"
 version = "0.1.0"
 dependencies = [
+ "axum",
  "fluxwire-format",
  "fluxwire-model",
+ "fluxwire-protocol",
+ "fluxwire-runner",
+ "insta",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "tempfile",
+ "tokio",
+ "toml_edit 0.22.27",
 ]
 
 [[package]]
@@ -2632,6 +2644,7 @@ dependencies = [
  "directories",
  "fluxwire-agent",
  "fluxwire-format",
+ "fluxwire-import",
  "fluxwire-model",
  "fluxwire-protocol",
  "fluxwire-runner",
@@ -2645,6 +2658,7 @@ dependencies = [
  "serde",
  "serde_json",
  "smol",
+ "tempfile",
  "tokio",
  "tree-sitter",
  "tree-sitter-javascript",

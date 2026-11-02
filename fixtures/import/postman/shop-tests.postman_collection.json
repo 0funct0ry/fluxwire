@@ -1,0 +1,110 @@
+{
+  "info": {
+    "name": "Shop API",
+    "description": "Sample shop collection with tests.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [{ "key": "token", "value": "{{accessToken}}", "type": "string" }]
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:8080" }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": { "exec": ["pm.collectionVariables.set('startedAt', Date.now());"] }
+    }
+  ],
+  "item": [
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Login",
+          "request": {
+            "method": "POST",
+            "auth": { "type": "noauth" },
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/v1/login", "host": ["{{baseUrl}}"], "path": ["v1", "login"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user\": \"{{user}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "description": "Exchanges credentials for a token."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status is 200', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "const body = pm.response.json();",
+                  "pm.expect(body).to.have.property('token');",
+                  "pm.environment.set('accessToken', body.token);"
+                ]
+              }
+            }
+          ],
+          "response": [
+            {
+              "name": "Success",
+              "code": 200,
+              "status": "OK",
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\"token\": \"abc\"}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "List products",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/products?limit=10&sort=name",
+          "host": ["{{baseUrl}}"],
+          "path": ["v1", "products"],
+          "query": [
+            { "key": "limit", "value": "10" },
+            { "key": "sort", "value": "name", "disabled": true }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "const moment = require('moment');",
+              "pm.test('is array', () => pm.expect(pm.response.json()).to.be.an('array'));",
+              "pm.visualizer.set('<div></div>', {});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Upload photo",
+      "request": {
+        "method": "POST",
+        "auth": { "type": "awsv4", "awsv4": [] },
+        "header": [],
+        "url": "{{baseUrl}}/v1/photos/:id",
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            { "key": "caption", "value": "hello", "type": "text" },
+            { "key": "file", "type": "file", "src": "photo.png" }
+          ]
+        }
+      }
+    }
+  ]
+}

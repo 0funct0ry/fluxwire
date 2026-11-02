@@ -13,3 +13,17 @@ workspace = true
 [dependencies]
 fluxwire-model.workspace = true
 fluxwire-format.workspace = true
+serde.workspace = true
+# Keep the source document's key order (paths, tags, folders) in every build.
+serde_json = { workspace = true, features = ["preserve_order"] }
+serde_yaml_ng = "0.10"
+toml_edit = "0.22"
+
+[dev-dependencies]
+insta = "1"
+tempfile = "3"
+fluxwire-protocol.workspace = true
+fluxwire-runner = { workspace = true }
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+serde_json.workspace = true

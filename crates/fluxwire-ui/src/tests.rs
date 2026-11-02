@@ -4306,3 +4306,107 @@ mod audit {
         assert!(started.elapsed().as_secs() < 30, "{:?}", started.elapsed());
     }
 }
+
+// ---- M11: Import dialog ----------------------------------------------------------------------
+
+fn import_fixture(rel: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/import")
+        .join(rel)
+}
+
+fn imp_dialog<R>(
+    view: &Entity<WorkspaceView>,
+    cx: &mut VisualTestContext,
+    f: impl FnOnce(&crate::import_dialog::ImportDialog) -> R,
+) -> R {
+    view.read_with(cx, |w, _| match &w.dialog {
+        Some(crate::dialogs::Dialog::Import(d)) => f(d),
+        _ => panic!("Import dialog is not open"),
+    })
+}
+
+#[gpui::test]
+fn import_action_opens_the_dialog_and_dropping_a_file_detects_the_source(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "impopen");
+    cx.dispatch_action(crate::actions::Import);
+    cx.run_until_parked();
+    assert!(imp_dialog(&view, cx, |d| d.wizard.src.is_none()));
+    assert_eq!(
+        view.read_with(cx, |w, _| w.dialog.as_ref().map(|d| d.name())),
+        Some("import".to_string())
+    );
+    view.update_in(cx, |w, window, cx| {
+        w.import_drop(
+            &[import_fixture("postman/orders.postman_collection.json")],
+            window,
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    imp_dialog(&view, cx, |d| {
+        assert_eq!(d.wizard.detected, Some(fluxwire_import::Source::Postman));
+        assert!(d.wizard.can_import());
+    });
+    cx.simulate_keystrokes("escape");
+    assert!(view.read_with(cx, |w, _| w.dialog.is_none()));
+}
+
+#[gpui::test]
+fn import_writes_files_keeps_existing_ones_and_opens_the_first_request(cx: &mut TestAppContext) {
+    let (view, cx, root) = setup_with(cx, "payments-api", "impgo");
+    view.update_in(cx, |w, window, cx| {
+        w.scope.selected = None;
+        w.start_import(Some(import_fixture("hurl/health.hurl")), window, cx)
+    });
+    cx.run_until_parked();
+    // payments-api is a collection: the default target is its root
+    assert_eq!(imp_dialog(&view, cx, |d| d.wizard.target.clone()), root);
+    view.update_in(cx, |w, window, cx| w.submit_import(window, cx));
+    cx.run_until_parked();
+    let created = root.join("get-health.flux.md");
+    assert!(created.is_file());
+    view.read_with(cx, |w, _| {
+        assert!(w.dialog.is_none());
+        assert!(
+            w.notice
+                .as_deref()
+                .unwrap()
+                .starts_with("Imported 1 request ")
+        );
+        assert_eq!(w.scope.tabs.active().unwrap().key, "get-health.flux.md");
+    });
+    // the collection settings were kept, not replaced
+    assert!(
+        std::fs::read_to_string(root.join("fluxwire.toml"))
+            .unwrap()
+            .contains("Payments API")
+    );
+    // importing again keeps the edited file unless it is confirmed
+    std::fs::write(&created, "mine").unwrap();
+    view.update_in(cx, |w, window, cx| {
+        w.scope.selected = None;
+        w.start_import(Some(import_fixture("hurl/health.hurl")), window, cx)
+    });
+    view.update_in(cx, |w, window, cx| w.submit_import(window, cx));
+    cx.run_until_parked();
+    assert_eq!(std::fs::read_to_string(&created).unwrap(), "mine");
+    assert!(
+        view.read_with(cx, |w, _| w.notice.clone().unwrap())
+            .contains("existing files kept")
+    );
+}
+
+#[gpui::test]
+fn import_without_a_workspace_only_shows_a_notice(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        cx.set_global(Theme::one_dark());
+        actions::install(cx);
+    });
+    let (view, cx) = cx.add_window_view(WorkspaceView::new);
+    view.update_in(cx, |w, window, cx| w.start_import(None, window, cx));
+    view.read_with(cx, |w, _| {
+        assert!(w.dialog.is_none());
+        assert!(w.notice.as_deref().unwrap().contains("Open a workspace"));
+    });
+}

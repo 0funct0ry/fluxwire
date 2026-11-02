@@ -15,6 +15,7 @@ fluxwire-model.workspace = true
 fluxwire-format.workspace = true
 fluxwire-runner.workspace = true
 fluxwire-agent.workspace = true
+fluxwire-import.workspace = true
 clap = { version = "4", features = ["derive"] }
 directories = "6"
 tokio = { version = "1", features = ["rt-multi-thread"] }
@@ -24,6 +25,7 @@ clap_complete = "4"
 
 [dev-dependencies]
 assert_cmd = "2"
+tempfile = "3"
 
 [[bin]]
 name = "fluxwire-cli"

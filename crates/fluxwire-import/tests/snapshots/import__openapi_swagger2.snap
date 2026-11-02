@@ -1,0 +1,78 @@
+---
+source: crates/fluxwire-import/tests/import.rs
+expression: snapshot_text(& p)
+---
+=== .gitignore ===
+*.local.env
+fluxwire.local.toml
+.fluxwire/cache/
+
+=== add-user.flux.md ===
+---
+name: Add user
+seq: 2
+operation: addUser
+---
+
+# Add user
+
+```http
+POST {{baseUrl}}/users
+Content-Type: application/json
+
+{
+  "name": "string",
+  "age": 0
+}
+```
+
+```http expect
+HTTP 200
+```
+
+=== collection.flux.md ===
+---
+name: Legacy
+vars:
+  baseUrl: https://legacy.example.com/api
+---
+
+# Legacy
+
+=== find-users.flux.md ===
+---
+name: Find users
+seq: 1
+operation: GET /users
+---
+
+# Find users
+
+```http
+GET {{baseUrl}}/users?q
+```
+
+```http expect
+HTTP 200
+```
+
+=== fluxwire.toml ===
+[collection]
+name = "Legacy"
+format = 1
+
+# Import report
+
+Source: OpenAPI
+
+## Files (5)
+
+- `.gitignore`
+- `add-user.flux.md`
+- `collection.flux.md`
+- `find-users.flux.md`
+- `fluxwire.toml`
+
+## Lossy conversions (0)
+
+None.

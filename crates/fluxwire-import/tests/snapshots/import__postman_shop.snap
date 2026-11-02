@@ -1,0 +1,137 @@
+---
+source: crates/fluxwire-import/tests/import.rs
+expression: snapshot_text(& p)
+---
+=== .gitignore ===
+*.local.env
+fluxwire.local.toml
+.fluxwire/cache/
+
+=== auth/folder.flux.md ===
+---
+name: Auth
+seq: 1
+settings:
+  run_mode: sequential
+---
+
+# Auth
+
+=== auth/login.flux.md ===
+---
+name: Login
+seq: 1
+auth: none
+---
+
+# Login
+
+Exchanges credentials for a token.
+
+```http
+POST {{baseUrl}}/v1/login
+Content-Type: application/json
+
+{
+  "user": "{{user}}",
+  "password": "{{password}}"
+}
+```
+
+```js test
+pm.test('status is 200', function () {
+  pm.response.to.have.status(200);
+});
+const body = pm.response.json();
+pm.expect(body).to.have.property('token');
+pm.environment.set('accessToken', body.token);
+```
+
+```http example Success
+HTTP 200 OK
+Content-Type: application/json
+
+{"token": "abc"}
+```
+
+=== collection.flux.md ===
+---
+name: Shop API
+auth:
+  type: bearer
+  token: "{{accessToken}}"
+vars:
+  baseUrl: http://localhost:8080
+settings:
+  run_mode: sequential
+---
+
+# Shop API
+
+Sample shop collection with tests.
+
+```js pre
+pm.collectionVariables.set('startedAt', Date.now());
+```
+
+=== fluxwire.toml ===
+[collection]
+name = "Shop API"
+format = 1
+
+=== list-products.flux.md ===
+---
+name: List products
+seq: 2
+---
+
+# List products
+
+```http
+GET {{baseUrl}}/v1/products
+    ?limit=10
+    # &sort=name
+```
+
+```js test
+const moment = require('moment');
+pm.test('is array', () => pm.expect(pm.response.json()).to.be.an('array'));
+pm.visualizer.set('<div></div>', {});
+```
+
+=== upload-photo.flux.md ===
+---
+name: Upload photo
+seq: 3
+---
+
+# Upload photo
+
+```http
+POST {{baseUrl}}/v1/photos/:id
+```
+
+```http multipart
+caption: hello
+file: @file(photo.png)
+```
+
+# Import report
+
+Source: Postman
+
+## Files (7)
+
+- `.gitignore`
+- `auth/folder.flux.md`
+- `auth/login.flux.md`
+- `collection.flux.md`
+- `fluxwire.toml`
+- `list-products.flux.md`
+- `upload-photo.flux.md`
+
+## Lossy conversions (3)
+
+- `list-products.flux.md`: pm.visualizer. Not supported by the pm shim; the call throws `Unsupported in Fluxwire` when run
+- `list-products.flux.md`: require('moment'). npm packages are not available (use the built-in `Date`); import from lib/ instead
+- `upload-photo.flux.md`: auth type `awsv4`. Not supported; the request inherits auth instead

@@ -1,0 +1,25 @@
+{
+  "_type": "export",
+  "__export_format": 4,
+  "resources": [
+    { "_id": "wrk_1", "_type": "workspace", "name": "Bookstore", "parentId": null },
+    { "_id": "env_base", "_type": "environment", "parentId": "wrk_1", "name": "Base Environment",
+      "data": { "baseUrl": "http://localhost:3000", "apiKey": "key-123", "nested": { "a": 1 } } },
+    { "_id": "env_dev", "_type": "environment", "parentId": "env_base", "name": "Dev",
+      "data": { "baseUrl": "https://dev.example.com" } },
+    { "_id": "fld_1", "_type": "request_group", "parentId": "wrk_1", "name": "Books",
+      "description": "Book endpoints", "metaSortKey": 1 },
+    { "_id": "req_1", "_type": "request", "parentId": "fld_1", "name": "List books", "method": "GET",
+      "url": "{{ _.baseUrl }}/books", "metaSortKey": 1,
+      "parameters": [{ "name": "page", "value": "1" }],
+      "headers": [{ "name": "Accept", "value": "application/json" }],
+      "authentication": { "type": "bearer", "token": "{{ _.apiKey }}" } },
+    { "_id": "req_2", "_type": "request", "parentId": "fld_1", "name": "Create book", "method": "POST",
+      "url": "{{ _.baseUrl }}/books", "metaSortKey": 2,
+      "body": { "mimeType": "application/json", "text": "{\n  \"title\": \"{% faker 'randomWord' %}\"\n}" },
+      "headers": [{ "name": "X-Trace", "value": "{% uuid 'v4' %}", "disabled": true }],
+      "authentication": { "type": "hawk", "id": "x" } },
+    { "_id": "req_3", "_type": "request", "parentId": "wrk_1", "name": "Health", "method": "GET",
+      "url": "{{ _.baseUrl }}/health", "metaSortKey": 3 }
+  ]
+}

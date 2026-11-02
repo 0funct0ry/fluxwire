@@ -444,11 +444,7 @@ impl WorkspaceView {
                             Role::Button,
                             "dock.render_workspace_tree",
                             true,
-                            cx.listener(|this, _, _, cx| {
-                                this.notice =
-                                    Some("Import arrives in a later milestone (M11).".into());
-                                cx.notify();
-                            }),
+                            cx.listener(|this, _, w, cx| this.start_import(None, w, cx)),
                         ))
                         .into_any_element(),
                 );

@@ -1,0 +1,347 @@
+---
+source: crates/fluxwire-import/tests/import.rs
+expression: snapshot_text(& p)
+---
+=== .fluxwire/sync/petstore.base.json ===
+{
+  "version": 1,
+  "operations": {
+    "GET /pets/{petId}": {
+      "method": "GET",
+      "path": "/pets/{petId}",
+      "name": "Get a pet",
+      "description": "",
+      "tags": [
+        "pets"
+      ],
+      "parameters": [
+        {
+          "in": "path",
+          "name": "petId",
+          "required": true,
+          "description": "",
+          "type": "string",
+          "example": ""
+        }
+      ],
+      "body": null,
+      "expected_status": 200,
+      "deprecated": true
+    },
+    "createPet": {
+      "method": "POST",
+      "path": "/pets",
+      "name": "Create a pet",
+      "description": "",
+      "tags": [
+        "pets"
+      ],
+      "parameters": [],
+      "body": {
+        "application/json": {
+          "id": 0,
+          "name": "Rex",
+          "tags": [
+            "string"
+          ]
+        }
+      },
+      "expected_status": 201,
+      "deprecated": false
+    },
+    "deletePet": {
+      "method": "DELETE",
+      "path": "/pets/{petId}",
+      "name": "",
+      "description": "",
+      "tags": [],
+      "parameters": [
+        {
+          "in": "path",
+          "name": "petId",
+          "required": true,
+          "description": "",
+          "type": "string",
+          "example": ""
+        }
+      ],
+      "body": null,
+      "expected_status": 204,
+      "deprecated": false
+    },
+    "listPets": {
+      "method": "GET",
+      "path": "/pets",
+      "name": "List pets",
+      "description": "Returns all pets.",
+      "tags": [
+        "pets"
+      ],
+      "parameters": [
+        {
+          "in": "query",
+          "name": "limit",
+          "required": false,
+          "description": "",
+          "type": "integer",
+          "example": "20"
+        },
+        {
+          "in": "header",
+          "name": "X-Trace",
+          "required": true,
+          "description": "",
+          "type": "string",
+          "example": "abc"
+        }
+      ],
+      "body": null,
+      "expected_status": 200,
+      "deprecated": false
+    }
+  }
+}
+
+=== .gitignore ===
+*.local.env
+fluxwire.local.toml
+.fluxwire/cache/
+
+=== collection.flux.md ===
+---
+name: Petstore
+auth:
+  type: bearer
+  token: "{{token}}"
+vars:
+  baseUrl: https://petstore.example.com/v1
+---
+
+# Petstore
+
+A tiny pet store.
+
+=== environments/staging.env ===
+baseUrl=https://staging.petstore.example.com/v1
+
+=== fluxwire.toml ===
+[collection]
+name = "Petstore"
+format = 1
+
+[[openapi]]
+name = "petstore"
+source = "openapi/petstore.yaml"
+folder = "petstore"
+mode = "two-way"
+base_url_variable = "baseUrl"
+
+=== openapi/petstore.yaml ===
+openapi: 3.0.3
+info:
+  title: Petstore
+  description: A tiny pet store.
+  version: 1.0.0
+servers:
+  - url: https://petstore.example.com/v1
+    description: Production
+  - url: https://staging.petstore.example.com/v1
+    description: Staging
+tags:
+  - name: pets
+    description: Everything about pets
+security:
+  - bearerAuth: []
+paths:
+  /pets:
+    get:
+      tags: [pets]
+      operationId: listPets
+      summary: List pets
+      description: Returns all pets.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, example: 20 }
+        - name: X-Trace
+          in: header
+          required: true
+          schema: { type: string }
+          example: abc
+      responses:
+        "200": { description: OK }
+    post:
+      tags: [pets]
+      operationId: createPet
+      summary: Create a pet
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Pet"
+      responses:
+        "400": { description: Bad }
+        "201": { description: Created }
+  /pets/{petId}:
+    parameters:
+      - name: petId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [pets]
+      summary: Get a pet
+      deprecated: true
+      responses:
+        "200": { description: OK }
+    delete:
+      operationId: deletePet
+      security: []
+      responses:
+        "204": { description: Gone }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  schemas:
+    Pet:
+      type: object
+      required: [name]
+      properties:
+        id: { type: integer, format: int64 }
+        name: { type: string, example: Rex }
+        tags: { type: array, items: { type: string } }
+
+=== petstore/deletepet.flux.md ===
+---
+name: deletePet
+seq: 1
+operation: deletePet
+auth: none
+path:
+  petId: "{{petId}}"
+---
+
+# deletePet
+
+```http
+DELETE {{baseUrl}}/pets/:petId
+```
+
+```http expect
+HTTP 204
+```
+
+=== petstore/folder.flux.md ===
+---
+name: Petstore
+---
+
+# Petstore
+
+A tiny pet store.
+
+=== petstore/pets/create-a-pet.flux.md ===
+---
+name: Create a pet
+seq: 2
+tags: [pets]
+operation: createPet
+---
+
+# Create a pet
+
+```http
+POST {{baseUrl}}/pets
+Content-Type: application/json
+
+{
+  "id": 0,
+  "name": "Rex",
+  "tags": [
+    "string"
+  ]
+}
+```
+
+```http expect
+HTTP 201
+```
+
+=== petstore/pets/folder.flux.md ===
+---
+name: pets
+seq: 1
+---
+
+# pets
+
+Everything about pets
+
+=== petstore/pets/get-a-pet.flux.md ===
+---
+name: Get a pet
+seq: 3
+tags: [pets]
+operation: GET /pets/{petId}
+deprecated: true
+path:
+  petId: "{{petId}}"
+---
+
+# Get a pet
+
+```http
+GET {{baseUrl}}/pets/:petId
+```
+
+```http expect
+HTTP 200
+```
+
+=== petstore/pets/list-pets.flux.md ===
+---
+name: List pets
+seq: 1
+tags: [pets]
+operation: listPets
+---
+
+# List pets
+
+Returns all pets.
+
+```http
+GET {{baseUrl}}/pets
+    # &limit=20
+X-Trace: abc
+```
+
+```http expect
+HTTP 200
+```
+
+# Import report
+
+Source: OpenAPI
+
+## Files (12)
+
+- `.fluxwire/sync/petstore.base.json`
+- `.gitignore`
+- `collection.flux.md`
+- `environments/staging.env`
+- `fluxwire.toml`
+- `openapi/petstore.yaml`
+- `petstore/deletepet.flux.md`
+- `petstore/folder.flux.md`
+- `petstore/pets/create-a-pet.flux.md`
+- `petstore/pets/folder.flux.md`
+- `petstore/pets/get-a-pet.flux.md`
+- `petstore/pets/list-pets.flux.md`
+
+## Lossy conversions (0)
+
+None.

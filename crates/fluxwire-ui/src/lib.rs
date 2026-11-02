@@ -41,6 +41,8 @@ pub mod history_nav;
 pub mod history_query;
 pub mod history_tab;
 pub mod history_table;
+pub mod import_dialog;
+pub mod import_wizard;
 pub mod input;
 pub mod input_keys;
 pub mod keybinding_editor;

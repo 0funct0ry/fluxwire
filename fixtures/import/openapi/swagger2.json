@@ -1,0 +1,25 @@
+{
+  "swagger": "2.0",
+  "info": { "title": "Legacy", "version": "1" },
+  "host": "legacy.example.com",
+  "basePath": "/api",
+  "schemes": ["https"],
+  "consumes": ["application/json"],
+  "paths": {
+    "/users": {
+      "post": {
+        "operationId": "addUser",
+        "summary": "Add user",
+        "parameters": [
+          { "in": "body", "name": "body", "schema": { "type": "object", "properties": { "name": { "type": "string" }, "age": { "type": "integer" } } } }
+        ],
+        "responses": { "200": { "description": "OK" } }
+      },
+      "get": {
+        "summary": "Find users",
+        "parameters": [ { "name": "q", "in": "query", "type": "string", "required": true } ],
+        "responses": { "200": { "description": "OK" } }
+      }
+    }
+  }
+}

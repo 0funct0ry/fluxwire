@@ -1,0 +1,102 @@
+---
+source: crates/fluxwire-import/tests/import.rs
+expression: snapshot_text(& p)
+---
+=== .gitignore ===
+*.local.env
+fluxwire.local.toml
+.fluxwire/cache/
+
+=== collection.flux.md ===
+---
+name: login-flow
+---
+
+# login-flow
+
+=== fluxwire.toml ===
+[collection]
+name = "login-flow"
+format = 1
+
+=== login-flow/fetch-profile.flux.md ===
+---
+name: Fetch profile
+seq: 2
+---
+
+# Fetch profile
+
+```http
+GET https://api.example.com/profile
+    ?verbose=true
+    &fields=name,email
+Authorization: Bearer {{token}}
+```
+
+```http expect
+HTTP 200
+```
+
+```ts test
+fw.test("jsonpath \"$.name\" startsWith \"De\"", () => fw.expect(String(fw.jsonpath(fw.response.json(), "$.name")[0]).startsWith("De")).toBeTruthy());
+```
+
+=== login-flow/folder.flux.md ===
+---
+name: login-flow
+settings:
+  run_mode: sequential
+---
+
+# login-flow
+
+=== login-flow/log-in.flux.md ===
+---
+name: Log in
+seq: 1
+capture:
+  token: $.token
+  session: header Set-Cookie
+---
+
+# Log in
+
+```http
+POST https://api.example.com/login
+Content-Type: application/json
+
+{
+  "user": "demo",
+  "password": "{{password}}"
+}
+```
+
+```http expect
+HTTP 200
+Content-Type: application/json
+```
+
+```ts test
+fw.test("jsonpath \"$.token\" exists", () => fw.expect(fw.jsonpath(fw.response.json(), "$.token")[0] !== undefined && fw.jsonpath(fw.response.json(), "$.token")[0] !== null).toBeTruthy());
+fw.test("jsonpath \"$.user.name\" == \"demo\"", () => fw.expect(JSON.stringify(fw.jsonpath(fw.response.json(), "$.user.name")[0]) === JSON.stringify("demo")).toBeTruthy());
+fw.test("jsonpath \"$.roles\" count > 0", () => fw.expect((fw.jsonpath(fw.response.json(), "$.roles")[0]).length > 0).toBeTruthy());
+fw.test("duration < 1000", () => fw.expect(fw.response.time < 1000).toBeTruthy());
+```
+
+# Import report
+
+Source: Hurl
+
+## Files (6)
+
+- `.gitignore`
+- `collection.flux.md`
+- `fluxwire.toml`
+- `login-flow/fetch-profile.flux.md`
+- `login-flow/folder.flux.md`
+- `login-flow/log-in.flux.md`
+
+## Lossy conversions (1)
+
+- `login-flow/log-in.flux.md`: assert `xpath "string(//a)" == "x"`. Query or predicate has no equivalent; the assert was dropped

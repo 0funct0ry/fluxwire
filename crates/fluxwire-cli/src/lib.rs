@@ -3,6 +3,7 @@
 mod data;
 mod exit;
 mod files;
+mod import;
 mod mcp;
 mod reporter;
 mod run;
@@ -42,12 +43,8 @@ pub enum Command {
     },
     /// Print a shell completion script.
     Completions(tools::CompletionsArgs),
-    /// Import Postman, Insomnia, OpenAPI, Hurl or .http files (M11).
-    #[command(hide = true)]
-    Import {
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
+    /// Import a Postman, Insomnia, OpenAPI, Hurl or .http source into a folder (SPEC §14).
+    Import(import::ImportArgs),
     /// OpenAPI sync (M12).
     #[command(hide = true)]
     Openapi {
@@ -131,7 +128,7 @@ where
             command: EnvCommand::List(a),
         } => tools::env_list(a),
         Command::Completions(a) => tools::completions(a),
-        Command::Import { .. } => tools::stub("import", "M11"),
+        Command::Import(a) => import::run(a),
         Command::Openapi { .. } => tools::stub("openapi", "M12"),
         Command::Docs { .. } => tools::stub("docs export", "M13"),
         Command::Mcp {

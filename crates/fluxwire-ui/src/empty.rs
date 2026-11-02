@@ -183,10 +183,7 @@ impl WorkspaceView {
                     Role::Button,
                     "empty.render_collection_actions",
                     true,
-                    cx.listener(|this, _, _, cx| {
-                        this.notice = Some("Import arrives in a later milestone (M11).".into());
-                        cx.notify();
-                    }),
+                    cx.listener(|this, _, w, cx| this.start_import(None, w, cx)),
                 ),
             )
     }
