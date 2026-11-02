@@ -6,16 +6,16 @@ use std::path::{Path, PathBuf};
 
 use fluxwire_format::{EnvDiagnostic, EnvRow, EnvSeverity, Environment, list_environments};
 use gpui::{
-    AnyElement, Context, Entity, InteractiveElement, IntoElement, MouseButton, ParentElement,
-    Render, StatefulInteractiveElement, Styled, Window, div, prelude::*, px,
+    AnyElement, Context, Entity, InteractiveElement, IntoElement, ParentElement, Render,
+    StatefulInteractiveElement, Styled, Window, div, prelude::*, px,
 };
 
 use crate::{
     assets::BUFFER_FONT,
     center::{button, pill},
-    editor::{LINE_HEIGHT, editor_content},
-    env_doc::{Bulk, Cell, EnvDoc},
-    highlight::{Lang, highlight},
+    editor::LINE_HEIGHT,
+    env_doc::{Cell, EnvDoc},
+    highlight::Lang,
     tabs::{Tab, TabKind},
     text_input::{TextInput, bound_input},
     theme::Theme,
@@ -1180,103 +1180,99 @@ impl WorkspaceView {
         let Some(b) = doc.bulk.as_ref() else {
             return div().into_any_element();
         };
-        let pane =
-            |which: usize, label: &'static str, text: &String, st: &crate::editor::EditorState| {
-                let focused = self.env_bulk_active.get() == which;
-                let spans = highlight(text, Lang::Plain);
-                let probs = EnvDoc::bulk_problems(text);
-                let k = key.clone();
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_size(px(11.))
-                            .text_color(t.text_placeholder)
-                            .child(label),
-                    )
-                    .child(
-                        div()
-                            .id(("env-bulk", which))
-                            .h(px(LINE_HEIGHT * 10.0))
-                            .overflow_y_scroll()
-                            .rounded(px(4.))
-                            .border_1()
-                            .border_color(t.border)
-                            .bg(t.editor)
-                            .track_focus(&self.env_bulk_focus[which])
-                            .key_context("Editor")
-                            .on_key_down(cx.listener(move |this, ev, _, cx| {
-                                this.on_env_bulk_key(&k, which, ev, cx)
-                            }))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(move |this, _, w, cx| {
-                                    this.env_bulk_active.set(which);
-                                    w.focus(&this.env_bulk_focus[which]);
-                                    cx.notify();
-                                }),
-                            )
-                            .child(editor_content(
-                                text,
-                                &spans,
-                                focused.then_some(st.cursor),
-                                st.selection(),
-                                None,
-                                t,
-                            )),
-                    )
-                    .children(probs.into_iter().map(|(line, msg)| {
-                        div()
-                            .text_size(px(11.))
-                            .text_color(t.deleted)
-                            .child(format!("line {line}: {msg}"))
-                    }))
-            };
+        let pane = |which: usize, label: &'static str, text: &String, cx: &mut Context<Self>| {
+            let ed = self.env_bulk_editor(key, which, text, cx);
+            let probs = EnvDoc::bulk_problems(text);
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(t.text_placeholder)
+                        .child(label),
+                )
+                .child(
+                    div()
+                        .id(("env-bulk", which))
+                        .h(px(LINE_HEIGHT * 10.0))
+                        .rounded(px(4.))
+                        .border_1()
+                        .border_color(t.border)
+                        .bg(t.editor)
+                        .child(ed),
+                )
+                .children(probs.into_iter().map(|(line, msg)| {
+                    div()
+                        .text_size(px(11.))
+                        .text_color(t.deleted)
+                        .child(format!("line {line}: {msg}"))
+                }))
+        };
+        let (public, local) = (b.public.clone(), b.local.clone());
         div()
             .flex()
             .flex_col()
             .gap_3()
-            .child(pane(0, ".env", &b.public, &b.public_ed))
-            .child(pane(1, ".local.env", &b.local, &b.local_ed))
+            .child(pane(0, ".env", &public, cx))
+            .child(pane(1, ".local.env", &local, cx))
             .into_any_element()
     }
 
-    fn on_env_bulk_key(
-        &mut self,
+    /// The bulk-edit editor of one pane, created on first use. Its text mirrors the
+    /// document's bulk buffer; edits write back and refresh the unsaved-values sync.
+    fn env_bulk_editor(
+        &self,
         key: &DocKey,
         which: usize,
-        ev: &gpui::KeyDownEvent,
+        text: &str,
         cx: &mut Context<Self>,
-    ) {
-        let clip = cx.read_from_clipboard().and_then(|c| c.text());
-        let Some(b) = self
-            .scope
-            .envs
-            .docs
-            .get_mut(key)
-            .and_then(|d| d.bulk.as_mut())
-        else {
-            return;
-        };
-        let Bulk {
-            public,
-            local,
-            public_ed,
-            local_ed,
-        } = b;
-        let (text, ed) = if which == 0 {
-            (public, public_ed)
-        } else {
-            (local, local_ed)
-        };
-        let out = ed.handle_key(text, ev, clip.as_deref());
-        if let Some(c) = ed.take_clipboard() {
-            cx.write_to_clipboard(gpui::ClipboardItem::new_string(c));
+    ) -> gpui::Entity<crate::code_editor::CodeEditor> {
+        use crate::code_editor::{CodeEditor, CodeEditorEvent};
+        let slot = (key.clone(), which);
+        let existing = self.scope.env_bulk_editors.borrow().get(&slot).cloned();
+        if let Some(ed) = existing {
+            ed.update(cx, |e, cx| {
+                if e.text() != text {
+                    e.set_text(text, cx);
+                }
+            });
+            return ed;
         }
-        if !matches!(out, crate::editor::KeyOutcome::Ignored) {
-            self.env_doc_changed(key, cx);
-        }
+        let ed =
+            gpui::AppContext::new(cx, |cx| CodeEditor::new(Lang::Plain, cx).line_numbers(true));
+        let settings = self.scope.envs.settings.editor.clone();
+        ed.update(cx, |e, cx| {
+            e.apply_settings(&settings, cx);
+            e.set_text(text, cx)
+        });
+        let k = key.clone();
+        cx.subscribe(&ed, move |this, ed, ev: &CodeEditorEvent, cx| {
+            if *ev != CodeEditorEvent::Changed {
+                return;
+            }
+            let t = ed.read(cx).text().to_string();
+            if let Some(b) = this
+                .scope
+                .envs
+                .docs
+                .get_mut(&k)
+                .and_then(|d| d.bulk.as_mut())
+            {
+                if which == 0 {
+                    b.public = t;
+                } else {
+                    b.local = t;
+                }
+                this.env_doc_changed(&k, cx);
+            }
+        })
+        .detach();
+        self.scope
+            .env_bulk_editors
+            .borrow_mut()
+            .insert(slot, ed.clone());
+        ed
     }
 }

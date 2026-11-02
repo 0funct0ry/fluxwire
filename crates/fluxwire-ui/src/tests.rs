@@ -300,7 +300,14 @@ fn text_mode_and_form_edit_the_same_document(cx: &mut TestAppContext) {
     let (view, cx, _root) = setup_with(cx, "payments-api", "text");
     view.update_in(cx, |w, window, cx| {
         w.toggle_text_mode(cx);
-        window.focus(&w.editor_focus);
+        let key = w.active_key().unwrap();
+        w.focus_code_editor(
+            &key,
+            crate::workspace_model::Target::Text,
+            Some(0),
+            window,
+            cx,
+        );
     });
     cx.run_until_parked();
     // Cursor starts at 0: type a YAML comment line at the top of the file.
@@ -479,7 +486,7 @@ fn malformed_file_opens_with_problems_and_click_jumps_to_span(cx: &mut TestAppCo
             .expect("F101 listed")
     });
     view.update_in(cx, |w, window, cx| w.goto_problem(&problem, window, cx));
-    view.read_with(cx, |w, _| {
+    view.read_with(cx, |w, app| {
         let d = w
             .scope
             .workspace
@@ -488,10 +495,12 @@ fn malformed_file_opens_with_problems_and_click_jumps_to_span(cx: &mut TestAppCo
             .doc("malformed.flux.md")
             .unwrap();
         assert!(d.text_mode);
-        assert_eq!(
-            d.editors[&crate::workspace_model::Target::Text].cursor,
-            problem.span.start
-        );
+        let ed = w.scope.code_editors.borrow()[&(
+            "malformed.flux.md".to_string(),
+            crate::workspace_model::Target::Text,
+        )]
+            .clone();
+        assert_eq!(ed.read(app).cursor(), problem.span.start);
         assert_eq!(w.scope.tabs.active().unwrap().key, "malformed.flux.md");
     });
 }
@@ -3013,8 +3022,6 @@ fn only_allow_listed_modules_read_key_char() {
     const ALLOWED: &[&str] = &[
         "input.rs",
         "text_input.rs",
-        // Code editors and the WebSocket composer (known gap: no IME yet, see editor.rs docs).
-        "editor.rs",
         // Test helpers build keystrokes.
         "tests.rs",
     ];
@@ -3366,4 +3373,289 @@ fn keymap_edit_opens_the_tab_in_edit_mode(cx: &mut TestAppContext) {
                 .active()
                 .is_some_and(|t| t.key == "keybindings")
     }));
+}
+
+#[gpui::test]
+fn body_editor_edits_only_the_body_span(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "body-editor");
+    let before = doc_text(&view, cx, CREATE);
+    view.update_in(cx, |w, _, _| {
+        w.active_ui().unwrap().sub = 2;
+    });
+    cx.run_until_parked();
+    view.update_in(cx, |w, window, cx| {
+        w.focus_code_editor(
+            CREATE,
+            crate::workspace_model::Target::Body,
+            Some(0),
+            window,
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    cx.simulate_input("// x");
+    cx.simulate_keystrokes("enter");
+    let after = doc_text(&view, cx, CREATE);
+    assert_ne!(before, after);
+    assert_eq!(before.lines().count() + 1, after.lines().count());
+    assert!(after.contains("// x\n"));
+    let head = before.find("```http").unwrap();
+    assert_eq!(&before[..head], &after[..head], "front matter untouched");
+}
+
+#[gpui::test]
+fn docs_editor_changes_prose_only(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "docs-editor");
+    let before = doc_text(&view, cx, CREATE);
+    view.update_in(cx, |w, _, _| {
+        w.active_ui().unwrap().sub = 6;
+        w.active_ui().unwrap().docs_source = true;
+    });
+    cx.run_until_parked();
+    view.update_in(cx, |w, window, cx| {
+        w.focus_code_editor(
+            CREATE,
+            crate::workspace_model::Target::Docs,
+            Some(0),
+            window,
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    cx.simulate_input("Note. ");
+    let after = doc_text(&view, cx, CREATE);
+    assert!(after.contains("Note. "), "{after}");
+    assert_eq!(after.len(), before.len() + 6);
+    let fm_end = before.find("\n---\n").unwrap() + 5;
+    assert_eq!(
+        &before[..fm_end],
+        &after[..fm_end],
+        "front matter untouched"
+    );
+    let fence = &before[before.find("```http").unwrap()..];
+    let fence = &fence[..fence.find("\n```").unwrap()];
+    assert!(after.contains(fence), "request block untouched");
+}
+
+#[gpui::test]
+fn docs_editor_refuses_typing_inside_a_block(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "docs-ro");
+    let before = doc_text(&view, cx, CREATE);
+    view.update_in(cx, |w, _, _| {
+        w.active_ui().unwrap().sub = 6;
+        w.active_ui().unwrap().docs_source = true;
+    });
+    cx.run_until_parked();
+    let inside = {
+        let base = before.find("\n---\n").unwrap() + 5;
+        before.find("```http").unwrap() - base + 4
+    };
+    view.update_in(cx, |w, window, cx| {
+        w.focus_code_editor(
+            CREATE,
+            crate::workspace_model::Target::Docs,
+            Some(inside),
+            window,
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    cx.simulate_input("x");
+    assert_eq!(doc_text(&view, cx, CREATE), before);
+}
+
+#[gpui::test]
+fn body_editor_completes_variables_after_braces(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "body-complete");
+    view.update_in(cx, |w, _, _| {
+        w.active_ui().unwrap().sub = 2;
+    });
+    cx.run_until_parked();
+    view.update_in(cx, |w, window, cx| {
+        w.focus_code_editor(
+            CREATE,
+            crate::workspace_model::Target::Body,
+            Some(0),
+            window,
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    cx.simulate_input("{{");
+    let ed = view.read_with(cx, |w, _| {
+        w.scope.code_editors.borrow()[&(CREATE.to_string(), crate::workspace_model::Target::Body)]
+            .clone()
+    });
+    let labels = ed.read_with(cx, |e, _| e.completion_labels());
+    assert!(labels.contains(&"$uuid".to_string()), "{labels:?}");
+    cx.simulate_keystrokes("escape");
+    assert!(!ed.read_with(cx, |e, _| e.completion_open()));
+}
+
+fn body_editor(
+    view: &Entity<WorkspaceView>,
+    cx: &mut VisualTestContext,
+) -> Entity<crate::code_editor::CodeEditor> {
+    view.update_in(cx, |w, _, _| {
+        w.active_ui().unwrap().sub = 2;
+    });
+    cx.run_until_parked();
+    view.update_in(cx, |w, window, cx| {
+        w.focus_code_editor(
+            CREATE,
+            crate::workspace_model::Target::Body,
+            Some(0),
+            window,
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    view.read_with(cx, |w, _| {
+        w.scope.code_editors.borrow()[&(CREATE.to_string(), crate::workspace_model::Target::Body)]
+            .clone()
+    })
+}
+
+#[gpui::test]
+fn format_body_pretty_prints_in_one_undo_step_and_refuses_invalid(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "format-body");
+    let ed = body_editor(&view, cx);
+    ed.update(cx, |e, cx| {
+        e.replace_all("{\"a\":{{amount}},\"b\":[1,2]}", cx)
+    });
+    cx.run_until_parked();
+    view.update(cx, |w, cx| w.format_body(cx));
+    cx.run_until_parked();
+    let text = ed.read_with(cx, |e, _| e.text().to_string());
+    assert_eq!(
+        text,
+        "{\n  \"a\": {{amount}},\n  \"b\": [\n    1,\n    2\n  ]\n}"
+    );
+    assert!(doc_text(&view, cx, CREATE).contains("\"a\": {{amount}}"));
+    cx.simulate_keystrokes("secondary-z");
+    assert_eq!(
+        ed.read_with(cx, |e, _| e.text().to_string()),
+        "{\"a\":{{amount}},\"b\":[1,2]}"
+    );
+    ed.update(cx, |e, cx| e.replace_all("{bad", cx));
+    cx.run_until_parked();
+    let before = doc_text(&view, cx, CREATE);
+    view.update(cx, |w, cx| w.format_body(cx));
+    assert_eq!(doc_text(&view, cx, CREATE), before);
+    let notice = view.read_with(cx, |w, _| w.notice.clone().unwrap().to_string());
+    assert!(
+        notice.starts_with("Body is not valid JSON (line 1"),
+        "{notice}"
+    );
+}
+
+#[gpui::test]
+fn editor_settings_reach_new_editors_with_language_overrides(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "editor-settings");
+    view.update(cx, |w, _| {
+        w.scope.envs.settings = fluxwire_format::parse_settings(
+            "[editor]\ntab_size = 4\nindent_guides = false\n[editor.languages.json]\ntab_size = 3\nsoft_wrap = \"editor_width\"\n",
+        );
+    });
+    let ed = body_editor(&view, cx);
+    let cfg = ed.read_with(cx, |e, _| e.cfg);
+    // The payments body is JSON: the language override wins over `[editor]`.
+    assert_eq!(cfg.tab_size, 3);
+    assert!(!cfg.indent_guides);
+    assert_eq!(cfg.soft_wrap, fluxwire_format::SoftWrap::EditorWidth);
+}
+
+#[gpui::test]
+fn go_to_line_prompt_moves_the_caret(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "goto");
+    let ed = body_editor(&view, cx);
+    ed.update(cx, |e, cx| e.replace_all("one\ntwo\nthree", cx));
+    view.update_in(cx, |w, window, cx| {
+        w.start_go_to_line(window, cx);
+        w.prefill_modal("2:2", cx);
+        w.confirm_prompt(window, cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(ed.read_with(cx, |e, _| e.line_col()), (2, 2));
+    view.update_in(cx, |w, window, cx| {
+        w.start_go_to_line(window, cx);
+        w.prefill_modal("zzz", cx);
+        w.confirm_prompt(window, cx);
+    });
+    let notice = view.read_with(cx, |w, _| w.notice.clone().unwrap().to_string());
+    assert!(notice.contains("not a line number"), "{notice}");
+}
+
+#[gpui::test]
+fn clicking_a_docs_chip_opens_the_owning_sub_tab(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "docs-chip");
+    view.update_in(cx, |w, _, _| {
+        w.active_ui().unwrap().sub = 6;
+        w.active_ui().unwrap().docs_source = true;
+    });
+    cx.run_until_parked();
+    view.update_in(cx, |w, window, cx| {
+        w.focus_code_editor(
+            CREATE,
+            crate::workspace_model::Target::Docs,
+            Some(0),
+            window,
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    let ed = view.read_with(cx, |w, _| {
+        w.scope.code_editors.borrow()[&(CREATE.to_string(), crate::workspace_model::Target::Docs)]
+            .clone()
+    });
+    let rects = ed.read_with(cx, |e, _| e.chip_rects.clone());
+    assert!(!rects.is_empty(), "chips are painted");
+    let (b, tag) = rects[0];
+    cx.simulate_click(b.center(), gpui::Modifiers::default());
+    cx.run_until_parked();
+    let sub = view.update(cx, |w, _| w.active_ui().unwrap().sub);
+    assert_eq!(sub, tag);
+}
+
+#[gpui::test]
+fn docs_tab_defaults_to_the_rendered_preview_and_toggles_to_source(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "docs-modes");
+    assert!(!view.update(cx, |w, _| w.active_ui().unwrap().docs_source));
+    view.update_in(cx, |w, _, _| {
+        w.active_ui().unwrap().sub = 6;
+    });
+    cx.run_until_parked();
+    // Preview draws no editor.
+    let docs_key = (CREATE.to_string(), crate::workspace_model::Target::Docs);
+    assert!(!view.read_with(cx, |w, _| {
+        w.scope.code_editors.borrow().contains_key(&docs_key)
+    }));
+    view.update(cx, |w, _| w.active_ui().unwrap().docs_source = true);
+    view.update(cx, |_, cx| cx.notify());
+    cx.run_until_parked();
+    assert!(view.read_with(cx, |w, _| {
+        w.scope.code_editors.borrow().contains_key(&docs_key)
+    }));
+    // Preview keeps the file untouched.
+    let before = doc_text(&view, cx, CREATE);
+    view.update(cx, |w, _| w.active_ui().unwrap().docs_source = false);
+    view.update(cx, |_, cx| cx.notify());
+    cx.run_until_parked();
+    assert_eq!(doc_text(&view, cx, CREATE), before);
+}
+
+#[gpui::test]
+fn preview_chip_target_opens_the_owning_sub_tab(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "docs-preview-chip");
+    view.update_in(cx, |w, _, _| {
+        w.active_ui().unwrap().sub = 6;
+    });
+    cx.run_until_parked();
+    view.update(cx, |w, cx| {
+        w.open_chip_target(
+            crate::docs_edit::chip_tab(&fluxwire_model::BlockKind::Post),
+            cx,
+        )
+    });
+    assert_eq!(view.update(cx, |w, _| w.active_ui().unwrap().sub), 4);
 }

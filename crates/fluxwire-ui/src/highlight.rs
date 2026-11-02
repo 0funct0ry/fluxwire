@@ -153,6 +153,143 @@ fn paint_lang(paint: &mut [Tok], src: &str, range: Span, lang: Lang) {
     }
 }
 
+/// Incremental highlighting for single-language buffers (M9.06): one parse tree per editor,
+/// updated with `Tree::edit` when the text changes, and spans computed only for the byte range
+/// asked for (the rows in view), so typing in a very large body does not re-highlight it all.
+pub struct Highlighter {
+    lang: Lang,
+    parser: Option<Parser>,
+    tree: Option<tree_sitter::Tree>,
+    text: String,
+}
+
+fn point_of(text: &str, byte: usize) -> tree_sitter::Point {
+    let before = &text.as_bytes()[..byte];
+    let row = before.iter().filter(|b| **b == b'\n').count();
+    let col = before.iter().rev().take_while(|b| **b != b'\n').count();
+    tree_sitter::Point { row, column: col }
+}
+
+impl Highlighter {
+    /// Whether `lang` is highlighted incrementally (a single grammar; `.flux.md` has injected
+    /// languages and keeps the whole-document path).
+    pub fn supports(lang: Lang) -> bool {
+        compiled(lang).is_some_and(|c| c.query.is_some())
+    }
+
+    pub fn new(lang: Lang) -> Self {
+        let parser = compiled(lang).and_then(|c| {
+            let mut p = Parser::new();
+            p.set_language(&c.lang).ok().map(|_| p)
+        });
+        Self {
+            lang,
+            parser,
+            tree: None,
+            text: String::new(),
+        }
+    }
+
+    pub fn lang(&self) -> Lang {
+        self.lang
+    }
+
+    /// Brings the tree up to date with `text`: an edit (found as the common prefix and suffix
+    /// with the previous text) is applied to the old tree, which is then re-parsed from it.
+    pub fn update(&mut self, text: &str) {
+        let Some(parser) = self.parser.as_mut() else {
+            return;
+        };
+        if self.tree.is_some() && self.text == text {
+            return;
+        }
+        if let Some(tree) = self.tree.as_mut() {
+            let (r, repl) = crate::docs_edit::diff(&self.text, text);
+            let start = r.start;
+            let (old_end, new_end) = (r.end, start + repl.len());
+            tree.edit(&tree_sitter::InputEdit {
+                start_byte: start,
+                old_end_byte: old_end,
+                new_end_byte: new_end,
+                start_position: point_of(&self.text, start),
+                old_end_position: point_of(&self.text, old_end),
+                new_end_position: point_of(text, new_end),
+            });
+        }
+        self.tree = parser.parse(text, self.tree.as_ref());
+        self.text.clear();
+        self.text.push_str(text);
+    }
+
+    /// Spans intersecting `range` (absolute offsets, clamped to the range).
+    pub fn spans(&self, range: std::ops::Range<usize>) -> Spans {
+        let (Some(tree), Some(c)) = (self.tree.as_ref(), compiled(self.lang)) else {
+            return vec![];
+        };
+        let Some(query) = &c.query else { return vec![] };
+        let end = range.end.min(self.text.len());
+        if range.start >= end {
+            return vec![];
+        }
+        let mut paint = vec![Tok::Plain; end - range.start];
+        let names = query.capture_names();
+        let mut cursor = QueryCursor::new();
+        cursor.set_byte_range(range.start..end);
+        let mut caps = cursor.captures(query, tree.root_node(), self.text.as_bytes());
+        while let Some((m, i)) = caps.next() {
+            let cap = m.captures[*i];
+            let Some(tok) = tok_for_capture(names[cap.index as usize]) else {
+                continue;
+            };
+            let s = cap.node.start_byte().max(range.start);
+            let e = cap.node.end_byte().min(end);
+            if s >= e {
+                continue;
+            }
+            for p in &mut paint[s - range.start..e - range.start] {
+                if !(tok == Tok::String && *p == Tok::Property) {
+                    *p = tok;
+                }
+            }
+        }
+        let mut out = compress(&self.text[range.start..end], &paint);
+        for sp in &mut out {
+            sp.0 += range.start;
+            sp.1 += range.start;
+        }
+        out
+    }
+
+    /// Whether `offset` lies inside a string or comment node of the syntax tree.
+    pub fn in_string_or_comment(&self, offset: usize) -> bool {
+        let Some(tree) = self.tree.as_ref() else {
+            return false;
+        };
+        let end = (offset + 1).min(self.text.len());
+        let Some(mut n) = tree
+            .root_node()
+            .descendant_for_byte_range(offset.min(end), end)
+        else {
+            return false;
+        };
+        loop {
+            let k = n.kind();
+            let lk = k.to_ascii_lowercase();
+            if lk.contains("string")
+                || lk.contains("comment")
+                || lk.contains("scalar") && lk.contains("quote")
+                || k == "AttValue"
+            {
+                return true;
+            }
+            match n.parent() {
+                Some(p) => n = p,
+                None => return false,
+            }
+        }
+    }
+}
+
 fn paint_range(paint: &mut [Tok], span: Span, tok: Tok) {
     let end = span.end.min(paint.len());
     if span.start < end {
@@ -503,5 +640,101 @@ mod tests {
             .map(|l| l.iter().map(|(s, _)| s.as_str()).collect())
             .collect();
         assert_eq!(rebuilt.join("\n"), src);
+    }
+
+    fn clip(spans: &Spans, r: std::ops::Range<usize>) -> Spans {
+        spans
+            .iter()
+            .filter(|(s, e, _)| *s < r.end && *e > r.start)
+            .map(|(s, e, t)| ((*s).max(r.start), (*e).min(r.end), *t))
+            .collect()
+    }
+
+    #[test]
+    fn incremental_spans_match_a_full_highlight_after_edits() {
+        let mut h = Highlighter::new(Lang::Json);
+        let mut text = String::from("{\n  \"a\": [1, true, null],\n  \"b\": \"x\"\n}");
+        h.update(&text);
+        let full = |t: &str| highlight(t, Lang::Json);
+        assert_eq!(h.spans(0..text.len()), full(&text));
+        // typing in the middle, deleting, inserting a newline, replacing across lines
+        for (at, del, ins) in [
+            (8, 0, "9"),
+            (3, 2, ""),
+            (0, 0, "\n"),
+            (5, 12, "\"k\": 1"),
+            (2, 0, "é"),
+        ] {
+            let at = (0..=at.min(text.len()))
+                .rev()
+                .find(|i| text.is_char_boundary(*i))
+                .unwrap();
+            let end = (at + del).min(text.len());
+            let end = (end..=text.len())
+                .find(|i| text.is_char_boundary(*i))
+                .unwrap();
+            text.replace_range(at..end, ins);
+            h.update(&text);
+            assert_eq!(h.spans(0..text.len()), full(&text), "after edit at {at}");
+        }
+        let r = 4..text.len() - 2;
+        assert_eq!(h.spans(r.clone()), clip(&full(&text), r));
+    }
+
+    #[test]
+    fn script_incremental_spans_and_string_detection() {
+        let mut h = Highlighter::new(Lang::Ts);
+        let src = "const a = \"x { y\"; // note {\nfoo(1);";
+        h.update(src);
+        assert_eq!(h.spans(0..src.len()), highlight(src, Lang::Ts));
+        assert!(h.in_string_or_comment(src.find("x {").unwrap() + 2));
+        assert!(h.in_string_or_comment(src.find("note").unwrap()));
+        assert!(!h.in_string_or_comment(src.find("foo").unwrap()));
+    }
+
+    #[test]
+    fn unsupported_languages_are_left_to_the_full_path() {
+        assert!(Highlighter::supports(Lang::Json) && Highlighter::supports(Lang::Xml));
+        assert!(!Highlighter::supports(Lang::FluxMd) && !Highlighter::supports(Lang::Plain));
+    }
+
+    /// Typing in a 1 MB JSON body: incremental update + the spans of the rows in view.
+    #[test]
+    fn typing_in_a_one_megabyte_body_stays_fast() {
+        let mut text = String::from("[\n");
+        let mut i = 0;
+        while text.len() < 1_000_000 {
+            text.push_str(&format!(
+                "  {{\"id\": {i}, \"name\": \"item {i}\", \"ok\": true}},\n"
+            ));
+            i += 1;
+        }
+        text.push_str("  null\n]");
+        let mut h = Highlighter::new(Lang::Json);
+        let t0 = std::time::Instant::now();
+        h.update(&text);
+        let first = t0.elapsed();
+        let mid = text.len() / 2;
+        let mid = (mid..)
+            .find(|i| text.is_char_boundary(*i) && text.as_bytes()[*i] == b'\n')
+            .unwrap();
+        let view_start = text[..mid].rfind('\n').unwrap_or(0);
+        let mut worst = std::time::Duration::ZERO;
+        for k in 0..20 {
+            text.insert(mid + 1 + k, 'x');
+            let t = std::time::Instant::now();
+            h.update(&text);
+            let spans = h.spans(view_start..(view_start + 3000).min(text.len()));
+            worst = worst.max(t.elapsed());
+            assert!(!spans.is_empty());
+        }
+        let t = std::time::Instant::now();
+        let _ = highlight(&text, Lang::Json);
+        let full = t.elapsed();
+        eprintln!(
+            "1 MB JSON: first parse {first:?}, incremental update+visible spans worst {worst:?}, old full highlight {full:?}"
+        );
+        let limit = if cfg!(debug_assertions) { 600 } else { 40 };
+        assert!(worst < std::time::Duration::from_millis(limit), "{worst:?}");
     }
 }

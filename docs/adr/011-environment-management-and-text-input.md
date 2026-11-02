@@ -25,7 +25,7 @@ Environments were workspace-wide (one active name), written to disk on every key
 - **Offsets are byte offsets on grapheme boundaries,** not char indices as the prompt says: Rust strings are bytes, and the shaped-line and platform-UTF-16 conversions need byte positions anyway. Every move and edit snaps to a grapheme boundary (`unicode-segmentation`), so the observable behaviour matches.
 - **Platform keymaps** are one table (`input_keys.rs`) built by `input_keymap(macos)` so both platforms are tested on any host. Actions run in the `TextInput` key context; owners add their own context (`Modal`, `RequestEditor`, `EnvTable`) because a GPUI context predicate matches only the deepest context.
 - **Masked fields** (secrets) draw bullets and refuse Copy and Cut; typing and paste work.
-- **Multi-line editors** (`editor.rs`) run on the same `TextBuffer` (selection, clipboard, coalescing undo, mouse selection) but still take characters from key events. They have no IME or context menu yet; the guard test allow-lists `editor.rs` and says why.
+- **Multi-line editors** run on the same `TextBuffer` and, since M9.06, on the platform input handler too (`CodeEditor`, ADR-016), so IME and dead keys work there as well.
 
 ## Consequences
 

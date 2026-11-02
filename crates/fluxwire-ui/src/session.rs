@@ -6,15 +6,14 @@ use std::ops::Range;
 use fluxwire_model::{BlockKind, MessageBlock};
 use fluxwire_runner::Frame;
 use gpui::{
-    AnyElement, Context, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
-    ParentElement, StatefulInteractiveElement, Styled, Window, div, prelude::*, px, uniform_list,
+    AnyElement, Context, InteractiveElement, IntoElement, ParentElement,
+    StatefulInteractiveElement, Styled, Window, div, prelude::*, px, uniform_list,
 };
 
 use crate::{
     assets::BUFFER_FONT,
     center::{button, pill},
-    editor::{EditorState, KeyOutcome, Lang, code_view, editor_content},
-    highlight::highlight,
+    editor::{Lang, code_view},
     session_log::{DirFilter, SessionLog, detail, fmt_offset, preview},
     theme::Theme,
     ui::row,
@@ -33,7 +32,6 @@ pub enum LogRef {
 /// Unsaved message being written in the Messages tab.
 pub struct Composer {
     pub text: String,
-    pub state: EditorState,
     /// `json`, `text`, `xml` or `binary`.
     pub lang: &'static str,
 }
@@ -42,7 +40,6 @@ impl Default for Composer {
     fn default() -> Self {
         Self {
             text: String::new(),
-            state: EditorState::default(),
             lang: "json",
         }
     }
@@ -123,7 +120,13 @@ impl WorkspaceView {
             }
             return;
         }
-        if self.composer_focus.is_focused(window)
+        let composer_focused = self
+            .scope
+            .composer_editors
+            .borrow()
+            .get(&id)
+            .is_some_and(|e| gpui::Focusable::focus_handle(e.read(cx), cx).is_focused(window));
+        if composer_focused
             && self
                 .scope
                 .composers
@@ -256,22 +259,47 @@ impl WorkspaceView {
 
     // ---- composer input -----------------------------------------------------------------------
 
-    pub fn on_composer_key(&mut self, ev: &gpui::KeyDownEvent, cx: &mut Context<Self>) {
-        let Some(id) = self.scope.tabs.active_id() else {
-            return;
-        };
-        let clip = cx.read_from_clipboard().and_then(|c| c.text());
-        let c = self.scope.composers.entry(id).or_default();
-        let mut text = std::mem::take(&mut c.text);
-        let out = c.state.handle_key(&mut text, ev, clip.as_deref());
-        c.text = text;
-        let copied = c.state.take_clipboard();
-        if let Some(t) = copied {
-            cx.write_to_clipboard(gpui::ClipboardItem::new_string(t));
+    /// The composer's code editor of tab `id`, created on first use; its text mirrors
+    /// `Composer::text`, which stays the source of truth for send and save.
+    fn composer_editor(
+        &self,
+        id: u64,
+        lang: Lang,
+        text: &str,
+        cx: &mut Context<Self>,
+    ) -> gpui::Entity<crate::code_editor::CodeEditor> {
+        use crate::code_editor::{CodeEditor, CodeEditorEvent};
+        let existing = self.scope.composer_editors.borrow().get(&id).cloned();
+        if let Some(ed) = existing {
+            ed.update(cx, |e, cx| {
+                if e.lang() != lang {
+                    e.set_language(lang);
+                }
+                if e.text() != text {
+                    e.set_text(text, cx);
+                }
+            });
+            return ed;
         }
-        if !matches!(out, KeyOutcome::Ignored) {
-            cx.notify();
-        }
+        let ed = gpui::AppContext::new(cx, |cx| CodeEditor::new(lang, cx).placeholder("Message"));
+        let settings = self.scope.envs.settings.editor.clone();
+        ed.update(cx, |e, cx| {
+            e.apply_settings(&settings, cx);
+            e.set_text(text, cx)
+        });
+        cx.subscribe(&ed, move |this, ed, ev: &CodeEditorEvent, cx| {
+            if *ev == CodeEditorEvent::Changed {
+                let t = ed.read(cx).text().to_string();
+                this.scope.composers.entry(id).or_default().text = t;
+                cx.notify();
+            }
+        })
+        .detach();
+        self.scope
+            .composer_editors
+            .borrow_mut()
+            .insert(id, ed.clone());
+        ed
     }
 
     fn ws_edit_saved(&mut self, idx: usize, cx: &mut Context<Self>) {
@@ -281,7 +309,6 @@ impl WorkspaceView {
         if let Some(m) = self.saved_messages().into_iter().nth(idx) {
             let c = self.scope.composers.entry(id).or_default();
             c.text = m.text;
-            c.state = EditorState::default();
             c.lang = match m.language.as_str() {
                 "text" => "text",
                 "xml" => "xml",
@@ -424,21 +451,13 @@ impl WorkspaceView {
                 .collect()
         };
 
-        let composer = self.scope.composers.get(&tab_id);
-        let (text, cursor, selection, lang) = composer
-            .map_or((String::new(), 0, (0, 0), "json"), |c| {
-                (c.text.clone(), c.state.cursor, c.state.selection(), c.lang)
-            });
-        let spans = highlight(&text, lang_of(lang));
-        let focused = self.scope.composer_active;
-        let editor = editor_content(
-            &text,
-            &spans,
-            focused.then_some(cursor),
-            selection,
-            Some(self.composer_bounds.clone()),
-            t,
-        );
+        let (text, lang) = self
+            .scope
+            .composers
+            .get(&tab_id)
+            .map_or((String::new(), "json"), |c| (c.text.clone(), c.lang));
+        let composer_ed = self.composer_editor(tab_id, lang_of(lang), &text, cx);
+        let focused = composer_ed.read(cx).has_focus();
         div()
             .flex()
             .flex_col()
@@ -496,46 +515,12 @@ impl WorkspaceView {
                     .mb_3()
                     .min_h(px(96.))
                     .max_h(px(220.))
-                    .overflow_y_scroll()
+                    .h(px(120.))
                     .rounded(px(4.))
                     .border_1()
                     .border_color(if focused { t.accent } else { t.border })
                     .bg(t.editor)
-                    .track_focus(&self.composer_focus)
-                    .key_context("Editor")
-                    .on_key_down(cx.listener(|this, ev, _, cx| this.on_composer_key(ev, cx)))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, ev: &MouseDownEvent, w, cx| {
-                            w.focus(&this.composer_focus);
-                            this.scope.composer_active = true;
-                            if let Some(id) = this.scope.tabs.active_id() {
-                                let bounds = this.composer_bounds.get();
-                                let c = this.scope.composers.entry(id).or_default();
-                                let off =
-                                    EditorState::offset_for_click(&c.text, bounds, ev.position);
-                                c.state.mouse_down(
-                                    &c.text,
-                                    off,
-                                    ev.click_count,
-                                    ev.modifiers.shift,
-                                );
-                            }
-                            cx.notify();
-                        }),
-                    )
-                    .on_mouse_move(cx.listener(|this, ev: &gpui::MouseMoveEvent, _, cx| {
-                        if ev.pressed_button == Some(MouseButton::Left)
-                            && let Some(id) = this.scope.tabs.active_id()
-                        {
-                            let bounds = this.composer_bounds.get();
-                            let c = this.scope.composers.entry(id).or_default();
-                            let off = EditorState::offset_for_click(&c.text, bounds, ev.position);
-                            c.state.drag_to(&c.text, off);
-                            cx.notify();
-                        }
-                    }))
-                    .child(editor),
+                    .child(composer_ed),
             )
             .into_any_element()
     }

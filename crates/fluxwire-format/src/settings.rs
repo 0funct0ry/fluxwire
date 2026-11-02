@@ -14,6 +14,9 @@ pub struct UserSettings {
     /// Name of the colour theme; absent follows the OS appearance (SPEC §17.7).
     #[serde(default)]
     pub theme: Option<String>,
+    /// The `[editor]` table (SPEC §17.3).
+    #[serde(default)]
+    pub editor: crate::EditorSettings,
     /// Global variables, the lowest precedence layer (SPEC §8.2).
     #[serde(default)]
     pub globals: BTreeMap<String, String>,

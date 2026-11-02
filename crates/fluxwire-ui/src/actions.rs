@@ -8,6 +8,17 @@ actions!(
     fluxwire,
     [
         Send,
+        EditorToggleComment,
+        RequestFormatBody,
+        EditorMoveLineUp,
+        EditorMoveLineDown,
+        EditorDuplicateLine,
+        EditorDeleteLine,
+        EditorGoToLine,
+        EditorJumpToBracket,
+        EditorShowCompletions,
+        EditorDismissCompletions,
+        EditorToggleSoftWrap,
         CancelRequest,
         CopyAsCurl,
         CopyAsCurlWithSecrets,
@@ -286,6 +297,12 @@ pub static ACTIONS: &[ActionInfo] = &[
     a!("panel: problems", ShowProblems, None, None),
     a!("request: open as text", OpenAsText, None, None),
     a!(
+        "request: format body",
+        RequestFormatBody,
+        Some("alt-shift-f"),
+        None
+    ),
+    a!(
         "workspace: close",
         CloseWorkspace,
         Some("secondary-shift-w"),
@@ -540,6 +557,66 @@ pub static ACTIONS: &[ActionInfo] = &[
         InputContextMenu,
         None,
         Some(crate::input_keys::CONTEXT)
+    ),
+    h!(
+        "editor: toggle comment",
+        EditorToggleComment,
+        Some("secondary-/"),
+        Some("CodeEditor")
+    ),
+    h!(
+        "editor: move line up",
+        EditorMoveLineUp,
+        Some("alt-up"),
+        Some("CodeEditor")
+    ),
+    h!(
+        "editor: move line down",
+        EditorMoveLineDown,
+        Some("alt-down"),
+        Some("CodeEditor")
+    ),
+    h!(
+        "editor: duplicate line",
+        EditorDuplicateLine,
+        Some("secondary-shift-d"),
+        Some("CodeEditor")
+    ),
+    h!(
+        "editor: delete line",
+        EditorDeleteLine,
+        Some("secondary-shift-k"),
+        Some("CodeEditor")
+    ),
+    a!(
+        "editor: go to line…",
+        EditorGoToLine,
+        Some("ctrl-g"),
+        Some("CodeEditor")
+    ),
+    h!(
+        "editor: jump to matching bracket",
+        EditorJumpToBracket,
+        Some("ctrl-m"),
+        Some("CodeEditor")
+    ),
+    h!(
+        "editor: show completions",
+        EditorShowCompletions,
+        Some("ctrl-space"),
+        Some("CodeEditor")
+    ),
+    h!(
+        "editor: dismiss completions",
+        EditorDismissCompletions,
+        Some("escape"),
+        Some("CodeEditor")
+    ),
+    a!(
+        "editor: toggle soft wrap",
+        EditorToggleSoftWrap,
+        Some("alt-z"),
+        Some("CodeEditor")
     ),
 ];
 
@@ -923,6 +1000,9 @@ mod tests {
         "request: show scripts",
         "request: show tests",
         "request: show docs",
+        "request: format body",
+        "editor: go to line…",
+        "editor: toggle soft wrap",
         "request: show settings",
         "response: find",
         "response: copy body",

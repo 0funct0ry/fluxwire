@@ -36,6 +36,9 @@ fluxwire-protocol.workspace = true
 fluxwire-vars.workspace = true
 fluxwire-store.workspace = true
 fluxwire-search.workspace = true
+fluxwire-script.workspace = true
+nucleo-matcher = "0.3.1"
+pulldown-cmark = { version = "0.13", default-features = false }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 [dev-dependencies]

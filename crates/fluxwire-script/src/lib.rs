@@ -5,6 +5,7 @@
 //! Scripts record what they change (variables, request edits, tests, console lines) in a
 //! [`ScriptState`]; the runner applies it.
 
+mod completions;
 mod engine;
 mod native;
 mod transpile;
@@ -15,6 +16,9 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
+pub use completions::{
+    Item as CompletionItem, ItemKind as CompletionKind, ScriptCompletionCtx, script_completions,
+};
 pub use engine::run_blocks;
 pub use native::{query_json, validate_schema};
 

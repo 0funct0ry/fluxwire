@@ -472,6 +472,7 @@ impl WorkspaceView {
                             batch[0].parent().unwrap_or(std::path::Path::new(".")),
                         );
                         this.scope.envs.invalidate();
+                        this.apply_editor_settings(cx);
                         cx.notify();
                     }
                 });
@@ -495,5 +496,27 @@ impl WorkspaceView {
             let _ = std::fs::write(&path, template);
         }
         cx.open_with_system(&path);
+    }
+}
+
+impl WorkspaceView {
+    /// Re-applies `[editor]` settings to every open code editor and reports problems found.
+    pub(crate) fn apply_editor_settings(&mut self, cx: &mut Context<Self>) {
+        let settings = self.scope.envs.settings.editor.clone();
+        let editors: Vec<_> = self
+            .scope
+            .code_editors
+            .borrow()
+            .values()
+            .cloned()
+            .chain(self.scope.composer_editors.borrow().values().cloned())
+            .chain(self.scope.env_bulk_editors.borrow().values().cloned())
+            .collect();
+        for ed in editors {
+            ed.update(cx, |e, cx| e.apply_settings(&settings, cx));
+        }
+        if let Some(n) = settings.notices.first() {
+            self.notice = Some(n.clone());
+        }
     }
 }

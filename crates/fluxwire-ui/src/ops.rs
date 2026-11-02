@@ -8,8 +8,8 @@ use fluxwire_model::{BlockKind, RequestKind, TreeNode};
 use gpui::{Context, KeyDownEvent, PathPromptOptions, Window};
 
 use crate::{
-    editor::EditorState,
     envs::{CompleteKey, CompleteTarget},
+    highlight::Lang,
     tabs::TabKind,
     workspace::{
         CellEdit, Col, METHODS, MenuKind, ModalKind, PromptPurpose, TabUi, Table, WorkspaceView,
@@ -48,6 +48,7 @@ impl WorkspaceView {
             PromptPurpose::Rename { .. } => Some("Rename to".to_string()),
             PromptPurpose::RenameCollection { .. } => Some("Rename collection to".to_string()),
             PromptPurpose::RenameEnvironment { .. } => Some("Rename environment to".to_string()),
+            PromptPurpose::GoToLine { .. } => Some("Go to line (line or line:column)".to_string()),
         }
     }
 
@@ -430,88 +431,262 @@ impl WorkspaceView {
         cx.notify();
     }
 
-    /// Route a key press to the focused editor surface of the active document.
-    pub fn on_editor_key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) {
-        let Some(key) = self.active_key() else { return };
-        let target = self.scope.target;
-        let clip = cx.read_from_clipboard().and_then(|c| c.text());
-        let Some(doc) = self.scope.workspace.as_mut().and_then(|p| p.doc_mut(&key)) else {
-            return;
-        };
-        let mut text = doc.target_text(target);
-        let mut st = doc.editors.remove(&target).unwrap_or_default();
-        let out = st.handle_key(&mut text, ev, clip.as_deref());
-        let line = crate::editor::line_col(&text, st.cursor).0;
-        let copied = st.take_clipboard();
-        doc.editors.insert(target, st);
-        if let Some(c) = copied {
-            cx.write_to_clipboard(gpui::ClipboardItem::new_string(c));
-        }
-        match out {
-            crate::editor::KeyOutcome::Edited => {
-                if text != doc.target_text(target) {
-                    doc.set_target_text(target, &text);
+    /// The code editor of `target` in request `key`, created on first use and kept in sync
+    /// with the document: a change made elsewhere (form view, another editor) is pushed in
+    /// here, and an edit made here goes through the span editor. A trailing newline the
+    /// span editor normalises away does not count as a difference.
+    pub(crate) fn code_editor(
+        &self,
+        key: &str,
+        target: Target,
+        lang: Lang,
+        text: &str,
+        cx: &mut Context<Self>,
+    ) -> gpui::Entity<crate::code_editor::CodeEditor> {
+        use crate::code_editor::{CodeEditor, CodeEditorEvent};
+        let slot = (key.to_string(), target);
+        let existing = self.scope.code_editors.borrow().get(&slot).cloned();
+        if let Some(ed) = existing {
+            let ro = self.docs_ranges(key, target);
+            let provider = self.completion_provider_for(key, target);
+            let settings = self.scope.envs.settings.editor.clone();
+            let check = self.var_check_for(key, target);
+            let chips = self.docs_chips(key, target);
+            ed.update(cx, |e, cx| {
+                e.set_completion_provider(Some(provider));
+                e.set_var_check(check);
+                e.set_chips(chips);
+                if e.lang() != lang {
+                    e.set_language(lang);
+                    e.apply_settings(&settings, cx);
                 }
-                self.after_edit(&key, cx);
+                let cur = e.text();
+                if cur != text && cur.trim_end_matches(['\n', '\r']) != text {
+                    e.set_text(text, cx);
+                }
+                if let Some(r) = ro {
+                    e.set_read_only_ranges(r);
+                }
+            });
+            return ed;
+        }
+        let ed = gpui::AppContext::new(cx, |cx| CodeEditor::new(lang, cx));
+        let ro = self.docs_ranges(key, target);
+        let provider = self.completion_provider_for(key, target);
+        let settings = self.scope.envs.settings.editor.clone();
+        let check = self.var_check_for(key, target);
+        let chips = self.docs_chips(key, target);
+        ed.update(cx, |e, cx| {
+            e.apply_settings(&settings, cx);
+            e.set_var_check(check);
+            e.set_chips(chips);
+            e.set_completion_provider(Some(provider));
+            e.set_text(text, cx);
+            if let Some(r) = ro {
+                e.set_read_only_ranges(r);
             }
-            crate::editor::KeyOutcome::Moved => cx.notify(),
-            crate::editor::KeyOutcome::Ignored => return,
-        }
-        self.scroll_to_line(line);
+            if target == Target::Docs {
+                e.set_placeholder("Describe this request in Markdown…");
+            }
+        });
+        let k = key.to_string();
+        cx.subscribe(&ed, move |this, ed, ev: &CodeEditorEvent, cx| match ev {
+            CodeEditorEvent::Changed => {
+                let text = ed.read(cx).text().to_string();
+                this.code_editor_changed(&k, target, &text, cx);
+            }
+            CodeEditorEvent::ChipClicked(tag) => this.open_chip_target(*tag, cx),
+            CodeEditorEvent::Focused => {
+                if this.scope.target != target {
+                    this.scope.target = target;
+                    cx.notify();
+                }
+            }
+            _ => {}
+        })
+        .detach();
+        self.scope
+            .code_editors
+            .borrow_mut()
+            .insert(slot, ed.clone());
+        ed
     }
 
-    pub fn scroll_to_line(&mut self, line: usize) {
-        let h = self.editor_scroll.bounds().size.height;
-        if f32::from(h) <= 0.0 {
-            return;
+    /// The completion providers of a surface (M9.06): variables first (they only answer
+    /// inside `{{`), then the surface's own, then buffer words.
+    fn completion_provider_for(
+        &self,
+        key: &str,
+        target: Target,
+    ) -> std::rc::Rc<dyn crate::completion::CompletionProvider> {
+        use crate::completion::{CompletionProvider, Composite};
+        use crate::completion_providers::*;
+        use std::rc::Rc;
+        let vars: Vec<(String, String)> = self
+            .scope_for(key)
+            .map(|scope| {
+                self.var_names(&scope)
+                    .into_iter()
+                    .map(|n| {
+                        let src = scope
+                            .var(&n)
+                            .map_or_else(|| "dynamic".to_string(), |v| v.source.describe());
+                        (n, src)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let names: Vec<String> = vars.iter().map(|(n, _)| n.clone()).collect();
+        let mut parts: Vec<Rc<dyn CompletionProvider>> = vec![Rc::new(VariablesProvider { vars })];
+        let doc = self.scope.workspace.as_ref().and_then(|p| p.doc(key));
+        let role = |i: usize| {
+            doc.and_then(|d| d.parsed.blocks.get(i))
+                .and_then(|b| match b.kind {
+                    BlockKind::Pre => Some(fluxwire_script::Role::Pre),
+                    BlockKind::Post => Some(fluxwire_script::Role::Post),
+                    BlockKind::Test => Some(fluxwire_script::Role::Test),
+                    _ => None,
+                })
+        };
+        match target {
+            Target::Block(i) => {
+                if let Some(role) = role(i) {
+                    parts.push(Rc::new(ScriptProvider {
+                        role,
+                        variables: names,
+                    }));
+                }
+            }
+            Target::Text => parts.push(Rc::new(FluxMdProvider { variables: names })),
+            Target::Docs => {
+                let links = self
+                    .scope
+                    .workspace
+                    .as_ref()
+                    .map(|p| p.all_requests().into_iter().map(|r| r.0).collect())
+                    .unwrap_or_default();
+                parts.push(Rc::new(MarkdownProvider { links }));
+            }
+            Target::Body => {}
         }
-        let y = gpui::px(line as f32 * crate::editor::LINE_HEIGHT + 8.0);
-        let off = self.editor_scroll.offset();
-        let top = -off.y;
-        if y < top {
-            self.editor_scroll.set_offset(gpui::point(off.x, -y));
-        } else if y + gpui::px(crate::editor::LINE_HEIGHT) > top + h {
-            self.editor_scroll.set_offset(gpui::point(
-                off.x,
-                -(y + gpui::px(crate::editor::LINE_HEIGHT) - h),
-            ));
-        }
+        parts.push(Rc::new(WordsProvider));
+        Rc::new(Composite(parts))
     }
 
-    pub fn click_editor(
+    /// `{{name}}` resolution for the Body and "Open as text" editors (colour and underline).
+    fn var_check_for(&self, key: &str, target: Target) -> Option<crate::code_editor::VarCheck> {
+        if !matches!(target, Target::Body | Target::Text) {
+            return None;
+        }
+        let scope = self.scope_for(key)?;
+        Some(std::rc::Rc::new(move |name: &str| {
+            fluxwire_vars::interpolate(&format!("{{{{{name}}}}}"), &scope)
+                .missing
+                .is_empty()
+        }))
+    }
+
+    /// Labels of the protected blocks of the Docs editor, each at its block's offset.
+    pub(crate) fn docs_chips(&self, key: &str, target: Target) -> Vec<crate::code_editor::Chip> {
+        if target != Target::Docs {
+            return vec![];
+        }
+        let Some(doc) = self.scope.workspace.as_ref().and_then(|p| p.doc(key)) else {
+            return vec![];
+        };
+        let base = crate::docs_edit::base_of(&doc.parsed);
+        doc.parsed
+            .blocks
+            .iter()
+            .filter(|b| {
+                !matches!(b.kind, BlockKind::Prose | BlockKind::Example) && b.span.start >= base
+            })
+            .map(|b| {
+                let info = b.info_span.slice(&doc.text);
+                crate::code_editor::Chip {
+                    offset: b.span.start - base,
+                    label: crate::docs_edit::chip_for(info).into(),
+                    tag: crate::docs_edit::chip_tab(&b.kind),
+                }
+            })
+            .collect()
+    }
+
+    /// Read-only ranges of the Docs editor (everything but prose); `None` for other surfaces.
+    fn docs_ranges(&self, key: &str, target: Target) -> Option<Vec<std::ops::Range<usize>>> {
+        if target != Target::Docs {
+            return None;
+        }
+        let doc = self.scope.workspace.as_ref()?.doc(key)?;
+        Some(crate::docs_edit::protected_ranges(&doc.parsed))
+    }
+
+    /// A Docs chip was clicked: show the sub-tab that owns the block (or the raw file).
+    pub(crate) fn open_chip_target(&mut self, tag: usize, cx: &mut Context<Self>) {
+        if tag == crate::docs_edit::OPEN_AS_TEXT {
+            if let Some(doc) = self
+                .active_key()
+                .and_then(|k| self.scope.workspace.as_ref().and_then(|p| p.doc(&k)))
+                && !doc.text_mode
+            {
+                self.toggle_text_mode(cx);
+            }
+        } else {
+            self.show_request_tab(tag);
+        }
+        cx.notify();
+    }
+
+    /// An editor's text changed: write it to the document through the span editor.
+    fn code_editor_changed(
         &mut self,
-        pos: gpui::Point<gpui::Pixels>,
-        clicks: usize,
-        shift: bool,
+        key: &str,
+        target: Target,
+        text: &str,
         cx: &mut Context<Self>,
     ) {
-        let Some(key) = self.active_key() else { return };
-        let target = self.scope.target;
-        let bounds = self.editor_bounds.get();
-        let Some(doc) = self.scope.workspace.as_mut().and_then(|p| p.doc_mut(&key)) else {
+        let Some(doc) = self.scope.workspace.as_mut().and_then(|p| p.doc_mut(key)) else {
             return;
         };
-        let text = doc.target_text(target);
-        let off = EditorState::offset_for_click(&text, bounds, pos);
-        doc.editors
-            .entry(target)
-            .or_default()
-            .mouse_down(&text, off, clicks, shift);
-        cx.notify();
+        let refused = target == Target::Docs
+            && text != doc.target_text(target)
+            && crate::docs_edit::apply(&doc.parsed, &doc.target_text(target), text).is_err();
+        if text != doc.target_text(target) {
+            doc.set_target_text(target, text);
+        }
+        if refused {
+            self.notice =
+                Some("That would create a request block; use the Add block buttons.".into());
+        }
+        self.after_edit(key, cx);
     }
 
-    /// Extend the selection while the left button is held over the editor.
-    pub fn drag_editor(&mut self, pos: gpui::Point<gpui::Pixels>, cx: &mut Context<Self>) {
-        let Some(key) = self.active_key() else { return };
-        let target = self.scope.target;
-        let bounds = self.editor_bounds.get();
-        let Some(doc) = self.scope.workspace.as_mut().and_then(|p| p.doc_mut(&key)) else {
+    /// Moves the caret of an editor (creating it from the document's text when needed) and
+    /// focuses it.
+    pub(crate) fn focus_code_editor(
+        &mut self,
+        key: &str,
+        target: Target,
+        offset: Option<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(doc) = self.scope.workspace.as_ref().and_then(|p| p.doc(key)) else {
             return;
         };
         let text = doc.target_text(target);
-        let off = EditorState::offset_for_click(&text, bounds, pos);
-        doc.editors.entry(target).or_default().drag_to(&text, off);
-        cx.notify();
+        let lang = if target == Target::Text {
+            Lang::FluxMd
+        } else {
+            Lang::Plain
+        };
+        let ed = self.code_editor(key, target, lang, &text, cx);
+        ed.update(cx, |e, cx| {
+            if let Some(o) = offset {
+                e.set_cursor(o, cx);
+            }
+            e.focus(window);
+        });
     }
 
     /// Add `kind` block (e.g. a pre script) through the span editor and focus it. New scripts
@@ -902,14 +1077,8 @@ impl WorkspaceView {
         };
         doc.text_mode = true;
         let off = p.span.start.min(doc.text.len());
-        doc.editors.entry(Target::Text).or_default().set_cursor(off);
         self.scope.target = Target::Text;
-        let line = crate::editor::line_col(&doc.text, off).0;
-        window.focus(&self.root_focus);
-        self.editor_scroll.set_offset(gpui::point(
-            gpui::px(0.),
-            -gpui::px((line.saturating_sub(3)) as f32 * crate::editor::LINE_HEIGHT),
-        ));
+        self.focus_code_editor(&p.key, Target::Text, Some(off), window, cx);
         cx.notify();
     }
 
@@ -1055,6 +1224,76 @@ impl WorkspaceView {
         // Pre-fill with the current display name.
         let current = self.display_name(&key);
         self.prefill_modal(&current, cx);
+    }
+
+    /// `editor: go to line…` for the editor the user last focused.
+    pub fn start_go_to_line(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(key) = self.active_key() else { return };
+        let target = self.scope.target;
+        if !self
+            .scope
+            .code_editors
+            .borrow()
+            .contains_key(&(key.clone(), target))
+        {
+            return;
+        }
+        self.prompt = Some(PromptPurpose::GoToLine { key, target });
+        self.open_modal_keep_prompt(window, cx);
+    }
+
+    /// `request: format body`: pretty-prints a JSON or XML body as one undo step. An invalid
+    /// body is left alone and the notice says where it stops being valid.
+    pub fn format_body(&mut self, cx: &mut Context<Self>) {
+        let Some(key) = self.active_key() else { return };
+        let Some(doc) = self.scope.workspace.as_ref().and_then(|p| p.doc(&key)) else {
+            return;
+        };
+        let text = doc.target_text(Target::Body);
+        let lang = crate::center::body_lang(doc, &text);
+        let cfg = self
+            .scope
+            .envs
+            .settings
+            .editor
+            .for_language(crate::code_editor::settings_key(lang));
+        let indent = if cfg.hard_tabs {
+            "\t".to_string()
+        } else {
+            " ".repeat(cfg.tab_size)
+        };
+        let result = match lang {
+            Lang::Json => fmt::format_json(&text, &indent),
+            Lang::Xml => fmt::format_xml(&text, &indent),
+            _ => {
+                self.notice = Some("Format body works on JSON and XML bodies.".into());
+                return;
+            }
+        };
+        match result {
+            Err(e) => self.notice = Some(e.message()),
+            Ok(new) if new == text => {}
+            Ok(new) => {
+                let ed = self
+                    .scope
+                    .code_editors
+                    .borrow()
+                    .get(&(key.clone(), Target::Body))
+                    .cloned();
+                match ed {
+                    Some(ed) => ed.update(cx, |e, cx| e.replace_all(&new, cx)),
+                    None => {
+                        if let Some(doc) =
+                            self.scope.workspace.as_mut().and_then(|p| p.doc_mut(&key))
+                        {
+                            doc.set_target_text(Target::Body, &new);
+                        }
+                        self.after_edit(&key, cx);
+                    }
+                }
+            }
+        }
+        cx.notify();
     }
 
     fn collection_name(&self, key: &str) -> Option<String> {
@@ -1232,9 +1471,25 @@ impl WorkspaceView {
         if name.is_empty() {
             return;
         }
+        if let PromptPurpose::GoToLine { key, target } = purpose {
+            self.focus_code_editor(&key, target, None, window, cx);
+            let ed = self
+                .scope
+                .code_editors
+                .borrow()
+                .get(&(key, target))
+                .cloned();
+            if let Some(ed) = ed
+                && !ed.update(cx, |e, cx| e.go_to(&name, cx))
+            {
+                self.notice = Some(format!("\"{name}\" is not a line number."));
+            }
+            return;
+        }
         let result: std::io::Result<Option<String>> = match purpose {
             PromptPurpose::Rename { key } => self.do_rename(&key, &name),
             PromptPurpose::RenameCollection { key } => self.do_rename_collection(&key, &name),
+            PromptPurpose::GoToLine { .. } => return,
             p @ PromptPurpose::RenameEnvironment { .. } => {
                 self.finish_env_prompt(p, &name);
                 cx.notify();

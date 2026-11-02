@@ -18,10 +18,7 @@ use fluxwire_model::{
 use fluxwire_protocol::ProtocolRegistry;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    editor::EditorState,
-    highlight::{Spans, highlight_flux},
-};
+use crate::highlight::{Spans, highlight_flux};
 
 /// What an editor surface edits inside a document.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -32,6 +29,8 @@ pub enum Target {
     Body,
     /// Content of block `n`.
     Block(usize),
+    /// The prose of the file, after the front matter (the Docs editor).
+    Docs,
 }
 
 pub struct OpenDoc {
@@ -47,7 +46,6 @@ pub struct OpenDoc {
     pub missing: bool,
     pub text_mode: bool,
     pub highlight: Spans,
-    pub editors: HashMap<Target, EditorState>,
 }
 
 impl OpenDoc {
@@ -69,7 +67,6 @@ impl OpenDoc {
             conflict: None,
             missing: false,
             text_mode: false,
-            editors: HashMap::new(),
         };
         d.highlight = highlight_flux(&d.parsed);
         d
@@ -83,10 +80,6 @@ impl OpenDoc {
         self.text = text;
         self.parsed = parse_with(&self.text, self.kind, &ProtocolRegistry::builtin());
         self.highlight = highlight_flux(&self.parsed);
-        let t = &self.text;
-        for e in self.editors.values_mut() {
-            e.clamp(t);
-        }
     }
 
     /// Apply span edits to the document. Returns false if the edits were invalid.
@@ -144,6 +137,7 @@ impl OpenDoc {
     pub fn target_text(&self, t: Target) -> String {
         match t {
             Target::Text => self.text.clone(),
+            Target::Docs => self.text[crate::docs_edit::base_of(&self.parsed)..].to_string(),
             Target::Body => match self.parsed.request().map(|r| &r.body) {
                 Some(fluxwire_model::Body::Raw(s)) => strip_one_eol(s.slice(&self.text)),
                 Some(fluxwire_model::Body::File { span, .. }) => {
@@ -164,6 +158,12 @@ impl OpenDoc {
     pub fn set_target_text(&mut self, t: Target, new: &str) {
         match t {
             Target::Text => self.set_text(new.to_string()),
+            Target::Docs => {
+                let old = self.target_text(Target::Docs);
+                if let Ok(src) = crate::docs_edit::apply(&self.parsed, &old, new) {
+                    self.set_text(src);
+                }
+            }
             Target::Body => {
                 let edits = fluxwire_format::set_body(&self.parsed, new);
                 self.apply(&edits);

@@ -51,10 +51,19 @@ pub struct OpenWorkspace {
     pub watcher: Option<fluxwire_format::WatchHandle>,
     /// URL bar input of each request, by key; created when its tab is first drawn.
     pub url_inputs: std::cell::RefCell<HashMap<String, gpui::Entity<crate::text_input::TextInput>>>,
+    /// Code editors by (request key, surface); created when first drawn.
+    pub code_editors:
+        std::cell::RefCell<HashMap<(String, Target), gpui::Entity<crate::code_editor::CodeEditor>>>,
+    /// Environment bulk-edit editors by (document, pane: 0 `.env`, 1 `.local.env`).
+    pub env_bulk_editors: std::cell::RefCell<
+        HashMap<(crate::env_editor::DocKey, usize), gpui::Entity<crate::code_editor::CodeEditor>>,
+    >,
     pub method_menu: bool,
     /// WebSocket composers by tab id.
     pub composers: HashMap<u64, crate::session::Composer>,
-    pub composer_active: bool,
+    /// WebSocket composer editors by tab id.
+    pub composer_editors:
+        std::cell::RefCell<HashMap<u64, gpui::Entity<crate::code_editor::CodeEditor>>>,
     /// Transcripts of WebSocket History entries opened this session.
     pub history_logs: HashMap<i64, crate::session_log::SessionLog>,
     /// Folder run tabs by tab id (SPEC §12).
@@ -91,9 +100,11 @@ impl Default for OpenWorkspace {
             target: Target::Body,
             watcher: None,
             url_inputs: Default::default(),
+            code_editors: Default::default(),
+            env_bulk_editors: Default::default(),
             method_menu: false,
             composers: HashMap::new(),
-            composer_active: false,
+            composer_editors: Default::default(),
             history_logs: HashMap::new(),
             runs: HashMap::new(),
         }

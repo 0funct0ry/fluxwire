@@ -63,6 +63,10 @@ struct RawUi {
     error: Option<String>,
     title_bar: Option<String>,
     gutter: Option<String>,
+    editor_active_line: Option<String>,
+    editor_indent_guide: Option<String>,
+    editor_invisible: Option<String>,
+    editor_bracket_match: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -155,7 +159,27 @@ pub fn parse_toml_theme(src: &str) -> Result<ThemeTokens, ThemeError> {
         comment: sp("comment", &s.comment, ansi[8])?,
     };
 
+    let element_hover = pick("element_hover", &o.element_hover, shift(bg, fg, 0.07))?;
+    let border_variant = pick("border_variant", &o.border_variant, shift(bg, fg, 0.07))?;
+    let text_placeholder = pick("text_placeholder", &o.text_placeholder, fg.mix(bg, 0.5))?;
+    let accent = pick("accent", &o.accent, ansi[4])?;
     Ok(ThemeTokens {
+        editor_active_line: pick("editor_active_line", &o.editor_active_line, element_hover)?,
+        editor_indent_guide: pick(
+            "editor_indent_guide",
+            &o.editor_indent_guide,
+            border_variant,
+        )?,
+        editor_invisible: pick(
+            "editor_invisible",
+            &o.editor_invisible,
+            text_placeholder.mix(bg, 0.4),
+        )?,
+        editor_bracket_match: pick(
+            "editor_bracket_match",
+            &o.editor_bracket_match,
+            accent.with_alpha(0x40),
+        )?,
         name: raw.name,
         appearance: raw.appearance,
         author: raw.author,
@@ -165,13 +189,13 @@ pub fn parse_toml_theme(src: &str) -> Result<ThemeTokens, ThemeError> {
         editor: bg,
         elevated: pick("elevated_surface", &o.elevated_surface, surface)?,
         border: pick("border", &o.border, shift(bg, fg, 0.12))?,
-        border_variant: pick("border_variant", &o.border_variant, shift(bg, fg, 0.07))?,
+        border_variant,
         text,
         text_muted,
-        text_placeholder: pick("text_placeholder", &o.text_placeholder, fg.mix(bg, 0.5))?,
-        element_hover: pick("element_hover", &o.element_hover, shift(bg, fg, 0.07))?,
+        text_placeholder,
+        element_hover,
         element_selected: pick("element_selected", &o.element_selected, shift(bg, fg, 0.11))?,
-        accent: pick("accent", &o.accent, ansi[4])?,
+        accent,
         gutter: pick("gutter", &o.gutter, fg.mix(bg, 0.6))?,
         created: success,
         modified: warning,
@@ -287,5 +311,26 @@ brights = ["#525561", "#de8f94", "#bad6a1", "#e9d4a1", "#a3c8ef", "#cba2dd", "#9
         assert_eq!(a.string, b.string);
         assert_eq!(a.property, b.property);
         assert_eq!(a.punctuation, b.punctuation);
+    }
+
+    #[test]
+    fn editor_tokens_derive_and_accept_ui_overrides() {
+        let t = parse_toml_theme(MINI).unwrap();
+        assert_eq!(t.editor_active_line, t.element_hover);
+        assert_eq!(t.editor_indent_guide, t.border_variant);
+        assert_eq!(t.editor_bracket_match, t.accent.with_alpha(0x40));
+        let term = t.terminal.unwrap();
+        assert_eq!(
+            t.editor_invisible,
+            t.text_placeholder.mix(term.background, 0.4)
+        );
+        let o = parse_toml_theme(&format!(
+            "{MINI}\n[ui]\neditor_active_line = \"#010203\"\neditor_indent_guide = \"#040506\"\neditor_invisible = \"#070809\"\neditor_bracket_match = \"#0a0b0c\"\n"
+        ))
+        .unwrap();
+        assert_eq!(o.editor_active_line.to_string(), "#010203");
+        assert_eq!(o.editor_indent_guide.to_string(), "#040506");
+        assert_eq!(o.editor_invisible.to_string(), "#070809");
+        assert_eq!(o.editor_bracket_match.to_string(), "#0a0b0c");
     }
 }

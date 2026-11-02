@@ -2,15 +2,14 @@
 
 use fluxwire_model::BlockKind;
 use gpui::{
-    AnyElement, Context, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
-    ParentElement, StatefulInteractiveElement, Styled, deferred, div, prelude::*, px,
+    AnyElement, Context, InteractiveElement, IntoElement, MouseButton, ParentElement,
+    StatefulInteractiveElement, Styled, deferred, div, prelude::*, px,
 };
 
 use crate::{
     actions::ACTIONS,
     assets::BUFFER_FONT,
-    editor::{Lang, code_view, editor_content},
-    highlight::{Spans, highlight},
+    editor::{Lang, code_view},
     tabs::{Tab, TabKind},
     theme::Theme,
     ui::{icon, kbd_label, row, with_variables},
@@ -653,57 +652,26 @@ impl WorkspaceView {
         out
     }
 
-    /// An editable, highlighted code surface bound to `target` of the active document.
+    /// An editable, highlighted code surface bound to `target` of document `key`.
     #[allow(clippy::too_many_arguments)]
     fn editor_surface(
         &self,
-        t: &Theme,
         id: &'static str,
-        text: String,
-        spans: Spans,
+        key: &str,
+        text: &str,
+        lang: Lang,
         target: Target,
-        cursor: (usize, (usize, usize)),
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let (cursor, selection) = cursor;
-        let content = editor_content(
-            &text,
-            &spans,
-            (self.scope.target == target).then_some(cursor),
-            selection,
-            Some(self.editor_bounds.clone()),
-            t,
-        );
+        let ed = self.code_editor(key, target, lang, text, cx);
         div()
             .id(id)
             .flex_1()
             .min_h_0()
-            .overflow_y_scroll()
-            .track_scroll(&self.editor_scroll)
-            .track_focus(&self.editor_focus)
-            .key_context("Editor")
-            .on_key_down(cx.listener(|this, ev, _, cx| this.on_editor_key(ev, cx)))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, ev: &MouseDownEvent, w, cx| {
-                    this.scope.target = target;
-                    w.focus(&this.editor_focus);
-                    this.click_editor(ev.position, ev.click_count, ev.modifiers.shift, cx);
-                }),
-            )
-            .on_mouse_move(cx.listener(|this, ev: &gpui::MouseMoveEvent, _, cx| {
-                if ev.pressed_button == Some(MouseButton::Left) {
-                    this.drag_editor(ev.position, cx);
-                }
-            }))
-            .child(content)
+            .px_2()
+            .py_1()
+            .child(ed)
             .into_any_element()
-    }
-
-    fn cursor_of(doc: &OpenDoc, target: Target) -> (usize, (usize, usize)) {
-        doc.editors
-            .get(&target)
-            .map_or((0, (0, 0)), |e| (e.cursor, e.selection()))
     }
 
     fn render_request(
@@ -774,12 +742,11 @@ impl WorkspaceView {
                 )
                 .children(self.doc_banners(t, doc, cx))
                 .child(self.editor_surface(
-                    t,
                     "text-editor",
-                    doc.text.clone(),
-                    doc.highlight.clone(),
+                    &doc.key,
+                    &doc.text,
+                    Lang::FluxMd,
                     Target::Text,
-                    Self::cursor_of(doc, Target::Text),
                     cx,
                 ));
         } else {
@@ -1032,16 +999,7 @@ impl WorkspaceView {
                     Lang::Ts
                 };
                 let text = doc.target_text(Target::Block(i));
-                let spans = highlight(&text, lang);
-                self.editor_surface(
-                    t,
-                    id,
-                    text,
-                    spans,
-                    Target::Block(i),
-                    Self::cursor_of(doc, Target::Block(i)),
-                    cx,
-                )
+                self.editor_surface(id, &doc.key, &text, lang, Target::Block(i), cx)
             }
             None => div()
                 .p_3()
@@ -1059,6 +1017,58 @@ impl WorkspaceView {
     }
 
     /// Tests tab: the declarative `http expect` block, or the `test` script (SPEC §7.7, §11).
+    /// Docs sub-tab: *Preview* (rendered Markdown, read-only, the default) or *Source* (the
+    /// Markdown editor).
+    fn render_docs_tab(
+        &self,
+        t: &Theme,
+        doc: &OpenDoc,
+        ui: &TabUi,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let source = ui.docs_source;
+        let toggle =
+            row()
+                .gap_2()
+                .p_2()
+                .flex_none()
+                .children([("Preview", false), ("Source", true)].map(|(l, s)| {
+                    button(
+                        t,
+                        if s { "docs-source" } else { "docs-preview" },
+                        l,
+                        source == s,
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(ui) = this.active_ui() {
+                            ui.docs_source = s;
+                        }
+                        cx.notify();
+                    }))
+                }));
+        let text = doc.target_text(Target::Docs);
+        let body: AnyElement = if source {
+            self.editor_surface(
+                "docs-editor",
+                &doc.key,
+                &text,
+                Lang::FluxMd,
+                Target::Docs,
+                cx,
+            )
+        } else {
+            self.render_docs_preview(t, &doc.key, &text, cx)
+        };
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .child(toggle)
+            .child(body)
+            .into_any_element()
+    }
+
     fn render_tests_tab(
         &self,
         t: &Theme,
@@ -1160,21 +1170,8 @@ impl WorkspaceView {
             1 => self.editable_table(t, Table::Headers, key, "headers", cx),
             2 => {
                 let text = doc.target_text(Target::Body);
-                let lang = if text.trim_start().starts_with(['{', '[']) {
-                    Lang::Json
-                } else {
-                    Lang::Plain
-                };
-                let spans = highlight(&text, lang);
-                self.editor_surface(
-                    t,
-                    "body-editor",
-                    text,
-                    spans,
-                    Target::Body,
-                    Self::cursor_of(doc, Target::Body),
-                    cx,
-                )
+                let lang = body_lang(doc, &text);
+                self.editor_surface("body-editor", &doc.key, &text, lang, Target::Body, cx)
             }
             3 => self.render_auth_tab(t, key, cx),
             4 => {
@@ -1234,18 +1231,7 @@ impl WorkspaceView {
                     .into_any_element()
             }
             5 => self.render_tests_tab(t, doc, ui, cx),
-            6 => {
-                let prose = prose_of(doc);
-                div()
-                    .p_3()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .text_color(t.text_muted)
-                    .child(prose)
-                    .child(div().text_size(px(12.)).text_color(t.text_placeholder).child("Docs are the prose of the file. Edit them with Open as text; the Docs editor arrives in M13."))
-                    .into_any_element()
-            }
+            6 => self.render_docs_tab(t, doc, ui, cx),
             _ => {
                 let rows: Vec<(String, String)> =
                     match doc.parsed.front.get("settings").map(|e| &e.value) {
@@ -1594,27 +1580,23 @@ impl WorkspaceView {
 }
 
 /// Prose of a document: everything outside front matter and fenced blocks.
-fn prose_of(doc: &OpenDoc) -> String {
-    let src = &doc.text;
-    let mut skip: Vec<(usize, usize)> = doc
+/// Language of a request body: the `Content-Type` header, then the first character.
+pub(crate) fn body_lang(doc: &OpenDoc, text: &str) -> Lang {
+    let ct = doc
         .parsed
-        .front
-        .span
-        .map(|s| (s.start, s.end))
-        .into_iter()
-        .collect();
-    skip.extend(doc.parsed.blocks.iter().map(|b| (b.span.start, b.span.end)));
-    fluxwire_format::lines(src, fluxwire_model::Span::new(0, src.len()))
-        .into_iter()
-        .filter(|l| {
-            !skip.iter().any(|(s, e)| {
-                l.start >= *s && l.start < *e
-                    || (l.start == l.end && l.start >= *s && l.start <= *e)
-            })
+        .request()
+        .and_then(|r| {
+            r.headers
+                .iter()
+                .find(|h| h.enabled && h.name.eq_ignore_ascii_case("content-type"))
         })
-        .map(|l| l.text(src).to_string())
-        .collect::<Vec<_>>()
-        .join("\n")
-        .trim()
-        .to_string()
+        .map(|h| h.value.to_ascii_lowercase());
+    match ct.as_deref() {
+        Some(c) if c.contains("json") => Lang::Json,
+        Some(c) if c.contains("xml") => Lang::Xml,
+        Some(c) if c.contains("yaml") => Lang::Yaml,
+        _ if text.trim_start().starts_with(['{', '[']) => Lang::Json,
+        _ if text.trim_start().starts_with('<') => Lang::Xml,
+        _ => Lang::Plain,
+    }
 }

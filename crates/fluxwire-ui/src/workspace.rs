@@ -53,9 +53,21 @@ pub enum ModalKind {
 
 #[derive(Clone, Debug)]
 pub enum PromptPurpose {
-    Rename { key: String },
-    RenameCollection { key: String },
-    RenameEnvironment { root: PathBuf, name: String },
+    Rename {
+        key: String,
+    },
+    RenameCollection {
+        key: String,
+    },
+    RenameEnvironment {
+        root: PathBuf,
+        name: String,
+    },
+    /// `editor: go to line…` in the editor of `target` of request `key`.
+    GoToLine {
+        key: String,
+        target: crate::workspace_model::Target,
+    },
 }
 
 /// A request or folder being named in place, as a row in the tree.
@@ -185,6 +197,8 @@ pub struct TabUi {
     pub post_script: bool,
     /// Tests tab: false shows the Expect editor, true the `test` script.
     pub tests_script: bool,
+    /// Docs tab: false shows the rendered Preview, true the Markdown Source editor.
+    pub docs_source: bool,
     /// Selected saved message of a WebSocket tab (the one Cmd/Ctrl+Enter sends).
     pub msg_sel: usize,
     /// Saved scroll offset of the editor area while this tab is not showing.
@@ -199,6 +213,7 @@ impl TabUi {
             method: 0,
             post_script: false,
             tests_script: false,
+            docs_source: false,
             msg_sel: 0,
             scroll: 0.0,
         }
@@ -252,8 +267,6 @@ pub struct WorkspaceView {
     pub session_dirty: bool,
     pub editor_bounds: Rc<Cell<Bounds<Pixels>>>,
     /// Focus handles and active pane of the Environment bulk-edit editors.
-    pub env_bulk_focus: [FocusHandle; 2],
-    pub env_bulk_active: Cell<usize>,
     pub editor_scroll: ScrollHandle,
     pub resizing: bool,
     pub root_focus: FocusHandle,
@@ -262,8 +275,6 @@ pub struct WorkspaceView {
     pub editor_focus: FocusHandle,
     pub filter_focus: FocusHandle,
     pub find_focus: FocusHandle,
-    pub composer_focus: FocusHandle,
-    pub composer_bounds: Rc<Cell<Bounds<Pixels>>>,
     pub log_focus: FocusHandle,
 }
 
@@ -331,8 +342,6 @@ impl WorkspaceView {
             state_dir,
             session_dirty: false,
             editor_bounds: Rc::new(Cell::new(Bounds::default())),
-            env_bulk_focus: [cx.focus_handle(), cx.focus_handle()],
-            env_bulk_active: Cell::new(0),
             editor_scroll: ScrollHandle::new(),
             resizing: false,
             root_focus,
@@ -341,8 +350,6 @@ impl WorkspaceView {
             editor_focus: cx.focus_handle(),
             filter_focus: cx.focus_handle(),
             find_focus: cx.focus_handle(),
-            composer_focus: cx.focus_handle(),
-            composer_bounds: Rc::new(Cell::new(Bounds::default())),
             log_focus: cx.focus_handle(),
         };
         this.scope.envs.settings = settings;
@@ -1608,6 +1615,8 @@ impl Render for WorkspaceView {
             Save => |this, _w, c| this.save_active(c),
             Import => |this, _w, _c| this.notice = Some("Import arrives in a later milestone (M11).".into()),
             OpenAsText => |this, _w, c| this.toggle_text_mode(c),
+            EditorGoToLine => |this, w, c| this.start_go_to_line(w, c),
+            RequestFormatBody => |this, _w, c| this.format_body(c),
             Quit => |this, w, c| this.request_close(crate::dialogs::AfterClose::Quit, w, c),
             Send => |this, w, c| if this.is_ws_tab() { this.ws_send_action(w, c) } else { this.send_or_cancel(c) },
             CancelRequest => |this, _w, c| if !this.cancel_request(c) { this.scope.method_menu = false },

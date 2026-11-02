@@ -3,8 +3,10 @@
 //! The parser keeps the source text byte for byte and records spans; every change is a
 //! replacement of the spans it owns, so prose, bodies, scripts and unknown content survive.
 
+mod body_format;
 mod collection;
 mod edit;
+mod editor_settings;
 mod environments;
 mod fence;
 mod fmt;
@@ -14,6 +16,7 @@ mod head;
 mod keymap;
 mod lines;
 mod parse;
+mod prose;
 mod schema;
 mod scope;
 mod settings;
@@ -22,8 +25,10 @@ pub mod theme;
 mod trust;
 mod watch;
 
+pub use body_format::{FormatError, format_json, format_xml};
 pub use collection::*;
 pub use edit::*;
+pub use editor_settings::{EditorConfig, EditorSettings, SoftWrap, Whitespace};
 pub use environments::*;
 pub use fence::parse_info;
 pub use fmt::{format, is_canonical};
@@ -35,6 +40,7 @@ pub use keymap::{
 };
 pub use lines::{Line, lines};
 pub use parse::{parse, parse_with};
+pub use prose::{ProseEditError, edit_prose, prose_regions};
 pub use schema::front_matter_schema_json;
 pub use scope::{ScopeInputs, ancestor_docs, build_scope};
 pub use settings::{UserSettings, load_settings, parse_settings, save_theme};

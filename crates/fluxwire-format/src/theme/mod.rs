@@ -81,6 +81,14 @@ pub struct ThemeTokens {
     pub element_selected: Rgba,
     pub accent: Rgba,
     pub gutter: Rgba,
+    /// Background of the caret's line in code editors (Zed `editor.active_line.background`).
+    pub editor_active_line: Rgba,
+    /// Indent guide lines (Zed `editor.indent_guide`).
+    pub editor_indent_guide: Rgba,
+    /// Whitespace markers (Zed `editor.invisible`).
+    pub editor_invisible: Rgba,
+    /// Box around a matching bracket pair (Zed `editor.document_highlight.bracket_background`).
+    pub editor_bracket_match: Rgba,
     pub created: Rgba,
     pub modified: Rgba,
     pub deleted: Rgba,

@@ -10,8 +10,6 @@ use fluxwire_format::{
 };
 use fluxwire_vars::{parse_dotenv, write_dotenv_value};
 
-use crate::editor::EditorState;
-
 const UNDO_LIMIT: usize = 200;
 
 /// Which cell of a row an edit touches; consecutive edits of one cell are one undo step.
@@ -26,8 +24,6 @@ pub enum Cell {
 pub struct Bulk {
     pub public: String,
     pub local: String,
-    pub public_ed: EditorState,
-    pub local_ed: EditorState,
 }
 
 #[derive(Clone, Debug)]
@@ -336,7 +332,6 @@ impl EnvDoc {
         self.bulk = Some(Bulk {
             public: self.dotenv_text(false),
             local: self.dotenv_text(true),
-            ..Bulk::default()
         });
     }
 
