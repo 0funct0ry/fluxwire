@@ -105,6 +105,7 @@ pub fn run_step(env: &Env, step: &Step) -> Result<(), String> {
         Step::Invoke { name } => call(ui, UiRequest::InvokeAction { name: name.clone() }).map(drop),
         Step::Key { keys } => call(ui, UiRequest::Key { keys: keys.clone() }).map(drop),
         Step::Type { text } => call(ui, UiRequest::TypeText { text: text.clone() }).map(drop),
+        Step::Click { id } => call(ui, UiRequest::ClickElement { id: id.clone() }).map(drop),
         Step::Command { command } => call(
             ui,
             UiRequest::Command {
@@ -173,12 +174,13 @@ pub fn run_steps(env: &Env, steps: &[Step]) -> Result<(), String> {
     Ok(())
 }
 
-fn step_name(s: &Step) -> &'static str {
+pub fn step_name(s: &Step) -> &'static str {
     match s {
         Step::Open { .. } => "open",
         Step::Invoke { .. } => "invoke",
         Step::Key { .. } => "key",
         Step::Type { .. } => "type",
+        Step::Click { .. } => "click",
         Step::Command { .. } => "command",
         Step::SetTheme { .. } => "set_theme",
         Step::Resize { .. } => "resize",

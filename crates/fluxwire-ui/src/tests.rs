@@ -4185,3 +4185,124 @@ mod semantic_tree {
         assert_eq!(active.as_deref(), Some(CREATE));
     }
 }
+
+#[cfg(feature = "dev-mcp")]
+mod audit {
+    use super::*;
+
+    fn run(
+        view: &Entity<WorkspaceView>,
+        cx: &mut VisualTestContext,
+        theme: Option<&str>,
+    ) -> serde_json::Value {
+        let theme = theme.map(String::from);
+        view.update_in(cx, |ws, window, cx| {
+            ws.handle_ui_request(
+                fluxwire_agent::bridge::UiRequest::Audit {
+                    rules: vec![],
+                    subtree: None,
+                    theme,
+                    fixtures: vec![],
+                },
+                window,
+                cx,
+            )
+            .unwrap()
+        })
+    }
+
+    #[gpui::test]
+    fn the_live_ui_is_audited_deterministically_in_both_themes(cx: &mut TestAppContext) {
+        let (view, cx) = setup(cx);
+        cx.run_until_parked();
+        for theme in ["one-dark", "one-light"] {
+            let a = run(&view, cx, Some(theme));
+            let b = run(&view, cx, Some(theme));
+            assert!(a["findings"].is_array());
+            assert_eq!(a["findings"], b["findings"], "{theme}");
+        }
+        assert!(
+            view.update_in(cx, |ws, window, cx| {
+                ws.handle_ui_request(
+                    fluxwire_agent::bridge::UiRequest::Audit {
+                        rules: vec![],
+                        subtree: None,
+                        theme: Some("nope".into()),
+                        fixtures: vec![],
+                    },
+                    window,
+                    cx,
+                )
+            })
+            .is_err()
+        );
+    }
+
+    /// Every state fixture, in both themes and at the default and minimum size, audited twice:
+    /// the output is identical (timing-based UX150 aside) and the whole sweep is fast.
+    #[gpui::test]
+    fn the_fixture_sweep_is_fast_and_deterministic(cx: &mut TestAppContext) {
+        use fluxwire_agent::bridge::UiRequest as R;
+        use fluxwire_agent::state::{self, Size, Step};
+        let dir = state::find_state_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")))
+            .expect("fixtures/ui-states");
+        let names = state::list_names(&dir);
+        assert!(names.len() >= 9, "{names:?}");
+        let (view, cx) = setup(cx);
+        let started = std::time::Instant::now();
+        for name in &names {
+            let file = state::load_named(&dir, name).unwrap();
+            for step in file.all_steps() {
+                let req = match step {
+                    Step::Open { key, permanent } => R::OpenRequest { key, permanent },
+                    Step::Invoke { name } => R::InvokeAction { name },
+                    Step::Key { keys } => R::Key { keys },
+                    Step::Type { text } => R::TypeText { text },
+                    Step::Command { command } => R::Command { command },
+                    Step::SetTheme { name } => R::SetTheme { name: Some(name) },
+                    Step::Resize { size } => {
+                        let s = Size::parse(&size).unwrap();
+                        R::Resize {
+                            width: s.w,
+                            height: s.h,
+                        }
+                    }
+                    Step::Click { .. } | Step::WaitFor { .. } | Step::WaitIdle => continue,
+                };
+                // A step that needs the sample API may fail here; the audit still runs.
+                view.update_in(cx, |ws, w, c| ws.handle_ui_request(req, w, c))
+                    .ok();
+                cx.run_until_parked();
+            }
+            for theme in ["one-dark", "one-light"] {
+                for (w, h) in [(1280., 800.), (640., 400.)] {
+                    view.update_in(cx, |ws, w2, c| {
+                        ws.handle_ui_request(
+                            R::Resize {
+                                width: w,
+                                height: h,
+                            },
+                            w2,
+                            c,
+                        )
+                    })
+                    .unwrap();
+                    cx.run_until_parked();
+                    let a = run(&view, cx, Some(theme));
+                    let b = run(&view, cx, Some(theme));
+                    let strip = |v: &serde_json::Value| -> Vec<serde_json::Value> {
+                        v["findings"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .filter(|f| f["rule"] != "UX150")
+                            .cloned()
+                            .collect()
+                    };
+                    assert_eq!(strip(&a), strip(&b), "{name} {theme} {w}x{h}");
+                }
+            }
+        }
+        assert!(started.elapsed().as_secs() < 30, "{:?}", started.elapsed());
+    }
+}

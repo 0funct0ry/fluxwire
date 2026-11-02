@@ -26,6 +26,8 @@ pub enum Step {
     Key { keys: String },
     /// Type text into the focused input.
     Type { text: String },
+    /// Click an element by its `ui.tree` id.
+    Click { id: String },
     /// A typed `ui.command` (open_file, set_url, select_tab, choose_environment).
     Command {
         #[serde(flatten)]

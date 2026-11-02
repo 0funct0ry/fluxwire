@@ -149,6 +149,7 @@ impl WorkspaceView {
         if parsed.is_empty() {
             return Err("no keystroke given".into());
         }
+        crate::dev_id::note_input(cx);
         for k in parsed {
             window.dispatch_keystroke(k, cx);
         }

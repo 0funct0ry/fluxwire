@@ -130,6 +130,7 @@ mod tests {
             clip,
             focused: false,
             parent: None,
+            meta: Default::default(),
         }
     }
 

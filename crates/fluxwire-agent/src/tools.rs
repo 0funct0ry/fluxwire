@@ -234,6 +234,30 @@ pub struct FindIn {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct AuditIn {
+    /// Rule ids to run, such as `UX101`; empty runs all.
+    #[serde(default)]
+    pub rules: Vec<String>,
+    /// Audit only the subtree rooted at this element id.
+    pub subtree: Option<String>,
+    /// State names from `fixtures/ui-states` to audit; empty audits the current state.
+    #[serde(default)]
+    pub states: Vec<String>,
+    /// Themes such as `one-dark`, `one-light`; empty keeps the current theme.
+    #[serde(default)]
+    pub themes: Vec<String>,
+    /// Sizes: `default`, `compact`, `min` or `WxH`; empty keeps the size.
+    #[serde(default)]
+    pub sizes: Vec<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct WalkthroughIn {
+    /// Steps as for `ui.screenshot` `state`, plus `{"step": "click", "id": "..."}`.
+    pub steps: Vec<crate::state::Step>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct ClickElementIn {
     /// An element id from `ui.tree` or `ui.find`.
     pub id: String,
@@ -521,6 +545,35 @@ pub fn ui_tools(r: &mut Registry) {
         |ctx, args| {
             let a: ClickElementIn = parse(args)?;
             forward(ctx, UiRequest::ClickElement { id: a.id })
+        },
+    ));
+    r.register(def_in::<AuditIn, UiOut>(
+        ToolClass::Ui,
+        "ui.audit",
+        "Lint the live UI. Rules: UX101 clipped text without tooltip, UX102 overlapping siblings, UX103 small target, UX110 contrast, UX120 hard-coded colour, UX130 unreachable action, UX131 keyboard reachability and focus, UX140 missing empty/loading/error state, UX150 latency. Each finding has a rule, severity, message, element ids, bounds and a suggested fix. `states`, `themes` and `sizes` sweep a matrix and restore the theme and size afterwards.",
+        |ctx, args| {
+            let a: AuditIn = parse(args)?;
+            with_env(ctx, |env| {
+                crate::audit::audit(
+                    env,
+                    &crate::audit::AuditArgs {
+                        rules: a.rules,
+                        subtree: a.subtree,
+                        states: a.states,
+                        themes: a.themes,
+                        sizes: a.sizes,
+                    },
+                )
+            })
+        },
+    ));
+    r.register(def_in::<WalkthroughIn, UiOut>(
+        ToolClass::Ui,
+        "ui.walkthrough",
+        "Run a task as a list of steps and report each step's time, keystrokes, clicks and notices plus totals, to compare the cost of a task over time. Stops at the first failing step.",
+        |ctx, args| {
+            let a: WalkthroughIn = parse(args)?;
+            with_env(ctx, |env| crate::audit::walkthrough(env, &a.steps))
         },
     ));
     r.register(def_in::<WaitIdleIn, UiOut>(

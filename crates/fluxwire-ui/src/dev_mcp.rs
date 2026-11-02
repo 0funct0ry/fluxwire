@@ -136,6 +136,12 @@ impl WorkspaceView {
                 let found = crate::dev_tree::find(&crate::dev_id::last_frame(cx).tree(), &q);
                 Ok(serde_json::json!({"elements": found}))
             }
+            UiRequest::Audit {
+                rules,
+                subtree,
+                theme,
+                fixtures,
+            } => self.audit_request(rules, subtree, theme, fixtures, window, cx),
             UiRequest::ClickElement { id } => {
                 // Runs outside the entity lease in the drain loop (`click_element`); reaching
                 // this arm means the request skipped it.
@@ -144,6 +150,78 @@ impl WorkspaceView {
             _ => Err("unsupported request".into()),
         }
     }
+}
+
+impl WorkspaceView {
+    fn audit_request(
+        &mut self,
+        rules: Vec<String>,
+        subtree: Option<String>,
+        theme: Option<String>,
+        fixtures: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<serde_json::Value, String> {
+        use crate::dev_audit::{ActionRow, Inputs, audit};
+        let reg = crate::theme::registry();
+        let tokens = match &theme {
+            Some(n) => reg
+                .get(n)
+                .or_else(|| reg.get(&n.replace(['-', '_'], " ")))
+                .cloned()
+                .ok_or_else(|| format!("unknown theme {n:?}"))?,
+            None => reg
+                .get(&crate::theme::theme(cx).name)
+                .cloned()
+                .ok_or("the active theme is not a bundled theme")?,
+        };
+        let f = crate::dev_tree::TreeFilter {
+            subtree,
+            ..Default::default()
+        };
+        let roots = crate::dev_tree::filter(&crate::dev_id::last_frame(cx).tree(), &f)?;
+        let actions: Vec<ActionRow> = serde_json::from_value(
+            serde_json::to_value(self.list_actions(window, cx)).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        let sources = scan_sources();
+        let findings = audit(
+            &roots,
+            &tokens,
+            &Inputs {
+                actions: &actions,
+                fixtures: &fixtures,
+                latency: crate::dev_id::latency(cx),
+                sources: &sources,
+            },
+            &rules,
+        );
+        Ok(serde_json::json!({
+            "findings": findings,
+            "theme": tokens.name,
+            "generation": self.generation,
+        }))
+    }
+}
+
+/// The view sources the hard-coded colour rule scans, read from the source tree this build came
+/// from. Empty when it is not on disk (an installed binary), which skips the rule.
+fn scan_sources() -> Vec<(String, String)> {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let skip = ["theme.rs", "dev_audit.rs", "tests.rs", "assets.rs"];
+    let mut out: Vec<(String, String)> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let p = e.path();
+            let name = p.file_name()?.to_str()?.to_string();
+            (name.ends_with(".rs") && !skip.contains(&name.as_str()))
+                .then(|| std::fs::read_to_string(&p).ok().map(|s| (name, s)))?
+        })
+        .collect();
+    out.sort();
+    out
 }
 
 fn parse_role(role: Option<String>) -> Result<Option<crate::dev_tree::Role>, String> {

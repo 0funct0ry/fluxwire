@@ -1,6 +1,7 @@
 //! MCP server hosting Fluxwire for agents (ADR-009): transports, tool registry and tool
 //! classes. No GPUI; the GUI hosts the same layer behind `dev-mcp` through a `UiBridge`.
 
+pub mod audit;
 pub mod bridge;
 pub mod class;
 pub mod config;

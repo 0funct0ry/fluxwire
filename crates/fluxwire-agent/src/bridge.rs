@@ -53,6 +53,14 @@ pub enum UiRequest {
     },
     /// Click the centre of an element's visible bounds.
     ClickElement { id: String },
+    /// Run the UI audit rules over the current tree (M9.7). `theme` audits against that theme's
+    /// tokens (the app's own when `None`); `fixtures` are the state fixture names that exist.
+    Audit {
+        rules: Vec<String>,
+        subtree: Option<String>,
+        theme: Option<String>,
+        fixtures: Vec<String>,
+    },
 }
 
 /// Operations that need arguments; they call the same Workspace methods the UI uses.

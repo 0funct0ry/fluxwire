@@ -60,6 +60,35 @@ impl Rect {
     }
 }
 
+/// Optional facts about an element that the audit (M9.7) needs and bounds alone cannot give.
+/// Every field defaults to "unknown or no"; views fill in what they know through
+/// `dev_tag_meta`/`dev_click_meta`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Meta {
+    /// The text is shown truncated (ellipsis) or cut off by its container.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub overflow: bool,
+    /// A tooltip shows the full text or purpose on hover.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub tooltip: bool,
+    /// Reachable with the keyboard (has a focus handle and tab stop); `None` when the view has
+    /// not said, which the audit does not report.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focusable: Option<bool>,
+    /// Draws a visible focus indicator while focused; `None` when unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focus_visible: Option<bool>,
+    /// Theme token names of the text and the surface behind it, e.g. `text_muted` on `surface`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fg: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bg: Option<String>,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
 /// One tagged element as recorded during a frame's prepaint.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Record {
@@ -74,6 +103,7 @@ pub struct Record {
     pub focused: bool,
     /// Index of the parent record in the same frame.
     pub parent: Option<usize>,
+    pub meta: Meta,
 }
 
 /// The records of one frame, in prepaint (paint) order, which is also the z-order.
@@ -120,6 +150,7 @@ impl Frame {
             visible: !visible_area.is_empty(),
             clipped: !r.bounds.is_empty() && visible_area != r.bounds,
             focused: r.focused,
+            meta: r.meta.clone(),
             z: i as u32,
             children: children[i]
                 .iter()
@@ -179,6 +210,8 @@ pub struct Node {
     /// Partly hidden by an ancestor's clip.
     pub clipped: bool,
     pub focused: bool,
+    #[serde(default)]
+    pub meta: Meta,
     /// Paint order; higher is in front.
     pub z: u32,
     pub children: Vec<Node>,
@@ -293,6 +326,7 @@ mod tests {
             clip: Rect::new(0., 0., 1000., 800.),
             focused: false,
             parent,
+            meta: Meta::default(),
         }
     }
 
