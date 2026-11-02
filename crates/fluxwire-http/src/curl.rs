@@ -197,6 +197,7 @@ pub fn parse_curl_ex(text: &str) -> Option<(Parsed, Vec<String>)> {
     let mut data: Vec<String> = Vec::new();
     let mut get = false;
     let mut head = false;
+    let mut json = false;
     let mut args: Vec<String> = it.collect();
     args.reverse();
     while let Some(a) = args.pop() {
@@ -227,6 +228,14 @@ pub fn parse_curl_ex(text: &str) -> Option<(Parsed, Vec<String>)> {
                 if d.starts_with('@') {
                     return None; // `-d @file` is not supported
                 }
+                data.push(d)
+            }
+            "--json" => {
+                let d = value(&mut args)?;
+                if d.starts_with('@') {
+                    return None; // `--json @file` is not supported
+                }
+                json = true;
                 data.push(d)
             }
             "-u" | "--user" => {
@@ -265,6 +274,17 @@ pub fn parse_curl_ex(text: &str) -> Option<(Parsed, Vec<String>)> {
     }
     if p.url.is_empty() {
         return None;
+    }
+    if json {
+        // `--json` implies both headers unless the command set them explicitly
+        for (name, value) in [
+            ("Content-Type", "application/json"),
+            ("Accept", "application/json"),
+        ] {
+            if !p.headers.iter().any(|(k, _)| k.eq_ignore_ascii_case(name)) {
+                p.headers.push((name.into(), value.into()));
+            }
+        }
     }
     if !data.is_empty() {
         let joined = data.join("&");
@@ -349,6 +369,34 @@ mod tests {
     fn tokenizes_quotes_and_continuations() {
         let t = tokenize("curl -X POST 'http://a/b c' \\\n -H \"X: y\\\"z\"").unwrap();
         assert_eq!(t, ["curl", "-X", "POST", "http://a/b c", "-H", "X: y\"z"]);
+    }
+
+    #[test]
+    fn json_flag_sets_body_and_headers() {
+        let p = parse_curl(
+            "curl -X POST https://x.test/v1 -H 'Authorization: Bearer t' --json '{\"a\": 1}'",
+        )
+        .unwrap();
+        assert_eq!(p.method, "POST");
+        assert_eq!(p.body.as_deref(), Some("{\"a\": 1}"));
+        assert_eq!(
+            p.headers,
+            [
+                ("Authorization".into(), "Bearer t".into()),
+                ("Content-Type".into(), "application/json".into()),
+                ("Accept".into(), "application/json".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn json_flag_keeps_explicit_headers() {
+        let p = parse_curl(
+            "curl https://x.test -H 'content-type: application/vnd.api+json' -H 'Accept: */*' --json '{}'",
+        )
+        .unwrap();
+        assert_eq!(p.headers.len(), 2);
+        assert_eq!(p.method, "POST");
     }
 
     #[test]
