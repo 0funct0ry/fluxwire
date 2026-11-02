@@ -81,7 +81,12 @@ impl ServerHandler for FluxwireServer {
                 None,
             ));
         }
-        let result = match (def.handler)(&self.ctx, request.arguments) {
+        // Handlers are synchronous and may wait on runner events, so they run on the blocking pool.
+        let (handler, ctx, args) = (def.handler.clone(), self.ctx.clone(), request.arguments);
+        let out = tokio::task::spawn_blocking(move || handler(&ctx, args))
+            .await
+            .map_err(|e| McpError::internal_error(format!("tool panicked: {e}"), None))?;
+        let result = match out {
             Ok(v) => CallToolResult::structured(v),
             Err(e) => CallToolResult::error(vec![ContentBlock::text(e)]),
         };

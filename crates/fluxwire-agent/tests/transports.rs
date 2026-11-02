@@ -37,6 +37,16 @@ async fn names(client: &rmcp::service::RunningService<rmcp::RoleClient, ()>) -> 
     v
 }
 
+/// The default `read,execute` classes: base and engine tools, no write tools.
+fn assert_default_tools(n: &[String]) {
+    for t in ["ping", "server_info", "list_requests", "send_request"] {
+        assert!(n.contains(&t.to_string()), "{t} missing");
+    }
+    for t in ["write_request", "fmt", "scribble"] {
+        assert!(!n.contains(&t.to_string()), "{t} listed");
+    }
+}
+
 #[tokio::test]
 async fn lists_and_pings_over_a_stream() {
     let (a, b) = tokio::io::duplex(8192);
@@ -49,7 +59,7 @@ async fn lists_and_pings_over_a_stream() {
             .await;
     });
     let client = ().serve(b).await.unwrap();
-    assert_eq!(names(&client).await, ["ping", "server_info"]);
+    assert_default_tools(&names(&client).await);
     let r = client
         .peer()
         .call_tool(CallToolRequestParams::new("ping"))
@@ -121,7 +131,7 @@ async fn unix_socket_is_private_serves_and_is_removed() {
     }));
 
     let client = ().serve(tokio::net::UnixStream::connect(&path).await.unwrap()).await.unwrap();
-    assert_eq!(names(&client).await, ["ping", "server_info"]);
+    assert_default_tools(&names(&client).await);
     let r = client
         .peer()
         .call_tool(CallToolRequestParams::new("ping"))

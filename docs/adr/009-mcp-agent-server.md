@@ -51,3 +51,12 @@ The app brings its window to the front and waits for idle (no pending run events
 - A refused class returns a protocol error (`invalid_params`), not a tool error, so an agent cannot mistake it for a failed run.
 - With `--transport both`, stdin closing ends only the stdio session; the socket keeps serving until SIGINT/SIGTERM.
 - Not yet: any `ui.*` tool, `fluxwire --mcp-stdio` in the GUI, named pipes on Windows.
+
+## M9.2 notes
+
+- Engine setup moved to `fluxwire_runner::prepare` (`Prep`, `limits_from`, `has_scripts`, `collection_root_of`) rather than a new crate: the runner already depends on format, vars and script. `fluxwire-agent` now depends on the runner and the store.
+- Tool handlers stay synchronous; the server runs each on the blocking pool (`spawn_blocking`) so a send or run can wait on runner events. `cancel` addresses a live send or run by a caller-chosen `cancel_key` (default: the run id).
+- Untrusted Collections: the runner refuses a request that has scripts when `trusted` is false (`RunError::Untrusted`), so the request is not sent and the result says `scripts: not run…`. Requests without scripts run normally. MCP never calls `set_trusted`.
+- MCP runs are stateless: no persisted cookies and no unsaved-editor overlay; environment files come from the allowed root that contains the request.
+- WebSocket requests are not sent through `send_request` (sessions need the M10 transcript flow).
+- History rows written by the app have `origin = NULL`; MCP rows have `origin = 'agent'`.

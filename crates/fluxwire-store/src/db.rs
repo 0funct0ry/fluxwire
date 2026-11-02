@@ -62,6 +62,9 @@ CREATE INDEX entries_ws_run ON entries (workspace, run_id);
 ALTER TABLE entries ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE entries ADD COLUMN note TEXT;
 ",
+    "
+ALTER TABLE entries ADD COLUMN origin TEXT;
+",
 ];
 
 /// Milliseconds in a day (timeline buckets).
@@ -69,7 +72,7 @@ pub const DAY_MS: i64 = 86_400_000;
 
 const SUMMARY_COLS: &str =
     "id, ts_ms, collection, request_path, request_name, protocol, method, url,
-                    status, total_ms, env, dirty, summary, run_id, pinned, note";
+                    status, total_ms, env, dirty, summary, run_id, pinned, note, origin";
 
 /// The user data dir (`FLUXWIRE_DATA_DIR` overrides it, for tests and demos).
 pub fn data_dir() -> Option<PathBuf> {
@@ -158,8 +161,8 @@ impl Store {
         let conn = self.lock();
         conn.execute(
             "INSERT INTO entries (workspace, ts_ms, collection, request_path, request_name,
-                protocol, method, url, status, total_ms, env, dirty, run_id, summary, truncated, payload)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+                protocol, method, url, status, total_ms, env, dirty, run_id, summary, truncated, payload, origin)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
             params![
                 workspace,
                 e.ts_ms,
@@ -176,7 +179,8 @@ impl Store {
                 e.run_id,
                 red.redact_str(&e.summary),
                 truncated,
-                payload
+                payload,
+                e.origin
             ],
         )?;
         Ok(conn.last_insert_rowid())
@@ -339,10 +343,10 @@ impl Store {
         ))?;
         let mut rows = st.query_map([id], |r| {
             let summary = row_summary(r)?;
-            let payload: String = r.get(17)?;
+            let payload: String = r.get(18)?;
             Ok(Entry {
                 summary,
-                truncated: r.get(16)?,
+                truncated: r.get(17)?,
                 payload: serde_json::from_str(&payload).unwrap_or_default(),
             })
         })?;
@@ -429,6 +433,7 @@ fn row_summary(r: &rusqlite::Row<'_>) -> rusqlite::Result<Summary> {
         run_id: r.get(13)?,
         pinned: r.get(14)?,
         note: r.get(15)?,
+        origin: r.get(16)?,
     })
 }
 
@@ -476,6 +481,7 @@ fn build_where(workspace: &str, f: &Filter, paging: bool) -> (String, Vec<Sql>) 
         ("env", &f.env),
         ("protocol", &f.protocol),
         ("collection", &f.collection),
+        ("origin", &f.origin),
     ] {
         if let Some(v) = v {
             sql += &format!(" AND {col} = ?");
@@ -533,6 +539,7 @@ mod tests {
             env: Some("staging".into()),
             dirty: false,
             run_id: None,
+            origin: None,
             summary: "s".into(),
             payload: json!({"request": {"headers": []}}),
         }
@@ -757,10 +764,31 @@ mod tests {
             .unwrap();
         }
         let s = Store::open(&p).unwrap();
-        assert_eq!(s.schema_version().unwrap(), 3);
+        assert_eq!(s.schema_version().unwrap(), MIGRATIONS.len() as i64);
         let rows = s.list("w", &Filter::default()).unwrap();
         assert_eq!(rows.len(), 1);
-        assert!(!rows[0].pinned && rows[0].note.is_none());
+        assert!(!rows[0].pinned && rows[0].note.is_none() && rows[0].origin.is_none());
+    }
+
+    #[test]
+    fn origin_is_stored_and_filterable() {
+        let s = Store::open_in_memory().unwrap();
+        let r = Redactor::default();
+        let mut a = entry("a", "GET", Some(200), 1);
+        a.origin = Some("agent".into());
+        let a = s.insert("w", a, &r).unwrap();
+        s.insert("w", entry("b", "GET", Some(200), 2), &r).unwrap();
+        let rows = s
+            .list(
+                "w",
+                &Filter {
+                    origin: Some("agent".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(rows.iter().map(|r| r.id).collect::<Vec<_>>(), vec![a]);
+        assert_eq!(rows[0].origin.as_deref(), Some("agent"));
     }
 
     #[test]

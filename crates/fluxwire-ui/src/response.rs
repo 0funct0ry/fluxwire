@@ -291,46 +291,13 @@ impl WorkspaceView {
             return;
         }
         let limits = coll
-            .map(|c| {
-                let s = &c.collection.config.scripts;
-                let mut l = fluxwire_runner::Limits::default();
-                if let Some(ms) = s.timeout_ms {
-                    l.timeout_ms = ms;
-                }
-                if let Some(mb) = s.memory_mb {
-                    l.memory_mb = mb as usize;
-                }
-                l
-            })
+            .map(|c| fluxwire_runner::prepare::limits_from(&c.collection.config))
             .unwrap_or_default();
 
         let env = root.as_deref().and_then(|r| self.env_state(r));
 
         // Scripts run only in trusted collections (SPEC §21); the first send asks.
-        let has_scripts = {
-            let own = parsed.blocks.iter().any(|b| {
-                matches!(
-                    b.kind,
-                    fluxwire_model::BlockKind::Pre
-                        | fluxwire_model::BlockKind::Post
-                        | fluxwire_model::BlockKind::Test
-                )
-            });
-            own || root.as_deref().is_some_and(|r| {
-                fluxwire_format::ancestor_docs(r, &abs)
-                    .iter()
-                    .any(|(_, d)| {
-                        d.blocks.iter().any(|b| {
-                            matches!(
-                                b.kind,
-                                fluxwire_model::BlockKind::Pre
-                                    | fluxwire_model::BlockKind::Post
-                                    | fluxwire_model::BlockKind::Test
-                            )
-                        })
-                    })
-            })
-        };
+        let has_scripts = fluxwire_runner::prepare::has_scripts(&parsed, root.as_deref(), &abs);
         let trusted = root
             .as_deref()
             .is_some_and(|r| self.collection_trusted(r, cx));

@@ -2390,11 +2390,20 @@ name = "fluxwire-agent"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum",
+ "directories",
  "fluxwire-format",
+ "fluxwire-model",
+ "fluxwire-protocol",
+ "fluxwire-runner",
+ "fluxwire-store",
+ "fluxwire-vars",
  "rmcp",
  "schemars",
  "serde",
  "serde_json",
+ "similar",
+ "tempfile",
  "tokio",
 ]
 

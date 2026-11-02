@@ -298,17 +298,7 @@ impl WorkspaceView {
             .unwrap_or_default();
         let default_conc = coll.and_then(|c| c.collection.config.defaults.concurrency);
         let limits = coll
-            .map(|c| {
-                let s = &c.collection.config.scripts;
-                let mut l = fluxwire_runner::Limits::default();
-                if let Some(ms) = s.timeout_ms {
-                    l.timeout_ms = ms;
-                }
-                if let Some(mb) = s.memory_mb {
-                    l.memory_mb = mb as usize;
-                }
-                l
-            })
+            .map(|c| fluxwire_runner::prepare::limits_from(&c.collection.config))
             .unwrap_or_default();
         let trusted = self.collection_trusted(&root, cx);
         let env_state = self.env_state(&root);
@@ -576,6 +566,7 @@ impl WorkspaceView {
             env: self.active_env_name(),
             dirty: false,
             run_id: Some(run_id.to_string()),
+            origin: None,
             summary: rec.summary.clone(),
             payload: rec.payload.clone(),
         };

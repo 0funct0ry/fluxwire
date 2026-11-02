@@ -1686,6 +1686,7 @@ fn seed_history(view: &Entity<WorkspaceView>, cx: &mut VisualTestContext, n: usi
                         env: Some("staging".into()),
                         dirty: false,
                         run_id: None,
+                        origin: None,
                         summary: "s".into(),
                         payload: serde_json::json!({"request": {"headers": [], "method": "GET"},
                             "response": {"headers": [], "body": {"text": "{\"ok\":true}"}}}),

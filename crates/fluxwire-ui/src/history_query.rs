@@ -442,6 +442,7 @@ mod tests {
             run_id: run.map(String::from),
             pinned: false,
             note: None,
+            origin: None,
         }
     }
 

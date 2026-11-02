@@ -103,6 +103,7 @@ mod tests {
             run_id: None,
             pinned: true,
             note: Some("n".into()),
+            origin: None,
         }
     }
 

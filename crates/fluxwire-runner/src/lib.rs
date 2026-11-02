@@ -10,6 +10,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::SystemTime;
 
 mod folder;
+pub mod prepare;
 mod report;
 pub use folder::*;
 pub use report::{to_json, to_junit};

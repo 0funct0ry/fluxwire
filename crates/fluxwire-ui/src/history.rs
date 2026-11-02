@@ -466,6 +466,7 @@ impl WorkspaceView {
             env: self.active_env_name(),
             dirty: doc.dirty(),
             run_id: None,
+            origin: None,
             summary: rec.summary.clone(),
             payload: rec.payload.clone(),
         };

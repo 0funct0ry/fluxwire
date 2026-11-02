@@ -29,7 +29,13 @@ pub struct ServerInfoOut {
 pub struct NoParams {}
 
 pub fn builtin() -> Registry {
+    builtin_with(crate::engine::Engine::from_environment())
+}
+
+/// The built-in tools with engine tools bound to `engine` (tests pass temp directories).
+pub fn builtin_with(engine: Arc<crate::engine::Engine>) -> Registry {
     let mut r = Registry::default();
+    crate::engine::register(&mut r, engine);
     r.register(def::<NoParams, PingOut>(
         "ping",
         "Check the server is alive. Returns `pong`.",

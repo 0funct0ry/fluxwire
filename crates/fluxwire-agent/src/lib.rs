@@ -4,6 +4,7 @@
 pub mod bridge;
 pub mod class;
 pub mod config;
+pub mod engine;
 pub mod paths;
 pub mod registry;
 pub mod serve;

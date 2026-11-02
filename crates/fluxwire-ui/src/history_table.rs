@@ -300,6 +300,16 @@ impl WorkspaceView {
                             row()
                                 .gap_1()
                                 .child(div().truncate().child(e.request_name.clone()))
+                                .when(is_agent(&e), |d| {
+                                    d.child(
+                                        div()
+                                            .px_1()
+                                            .rounded_sm()
+                                            .text_xs()
+                                            .text_color(t.accent)
+                                            .child(AGENT_TAG),
+                                    )
+                                })
                                 .when(e.pinned, |d| d.child(icon("pin", 11., t.accent)))
                                 .when(e.note.is_some(), |d| {
                                     d.child(icon("pencil", 11., t.text_muted))
@@ -481,5 +491,43 @@ mod tests {
         assert_eq!(relative_time(now - 5 * 60_000, now), "5 m ago");
         assert_eq!(relative_time(now - 3 * 3_600_000, now), "3 h ago");
         assert_eq!(relative_time(now + 5000, now), "just now");
+    }
+}
+
+/// Tag shown on rows written through MCP (ADR-009).
+pub(crate) const AGENT_TAG: &str = "agent";
+
+pub(crate) fn is_agent(e: &fluxwire_store::Summary) -> bool {
+    e.origin.as_deref() == Some(AGENT_TAG)
+}
+
+#[cfg(test)]
+mod agent_tag_tests {
+    use super::*;
+
+    #[test]
+    fn only_agent_origin_is_tagged() {
+        let mut e = fluxwire_store::Summary {
+            id: 1,
+            ts_ms: 0,
+            collection: String::new(),
+            request_path: String::new(),
+            request_name: String::new(),
+            protocol: "http".into(),
+            method: "GET".into(),
+            url: String::new(),
+            status: None,
+            total_ms: 0.0,
+            env: None,
+            dirty: false,
+            summary: String::new(),
+            run_id: None,
+            pinned: false,
+            note: None,
+            origin: None,
+        };
+        assert!(!is_agent(&e));
+        e.origin = Some("agent".into());
+        assert!(is_agent(&e));
     }
 }

@@ -15,6 +15,8 @@ pub struct NewEntry {
     pub env: Option<String>,
     pub dirty: bool,
     pub run_id: Option<String>,
+    /// Who wrote the row: `None` for the app, `agent` for MCP sends (ADR-009).
+    pub origin: Option<String>,
     pub summary: String,
     pub payload: Value,
 }
@@ -39,6 +41,8 @@ pub struct Summary {
     /// Kept by retention and Clear (SPEC §13).
     pub pinned: bool,
     pub note: Option<String>,
+    /// `agent` for rows written through MCP, `None` for the app.
+    pub origin: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -84,6 +88,7 @@ pub struct Filter {
     pub env: Option<String>,
     pub protocol: Option<String>,
     pub collection: Option<String>,
+    pub origin: Option<String>,
     /// Only pinned entries.
     pub pinned: bool,
     /// Only sends made from an unsaved (dirty) document.
