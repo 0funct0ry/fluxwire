@@ -3853,3 +3853,106 @@ fn clipboard_hint_only_for_curl_commands() {
     assert!(c(Some("curlish".into())).is_none());
     assert!(c(None).is_none());
 }
+
+#[gpui::test]
+fn ui_state_matches_the_view_after_a_sequence_of_operations(cx: &mut TestAppContext) {
+    let (view, cx) = setup(cx);
+    view.update_in(cx, |w, window, cx| {
+        w.open_request(GET, false, window, cx);
+    });
+    cx.dispatch_action(crate::actions::ShowProblems);
+    cx.run_until_parked();
+    let (s, tabs, active, bottom_open) = view.update_in(cx, |w, window, cx| {
+        (
+            w.ui_state(window, cx),
+            w.scope.tabs.all().to_vec(),
+            w.scope.tabs.active().cloned(),
+            w.scope.bottom_open,
+        )
+    });
+    assert_eq!(s.tabs.len(), tabs.len());
+    for (a, b) in s.tabs.iter().zip(&tabs) {
+        assert_eq!(
+            (
+                a.key.as_str(),
+                a.title.as_str(),
+                a.preview,
+                a.pinned,
+                a.dirty
+            ),
+            (
+                b.key.as_str(),
+                b.title.as_str(),
+                b.preview,
+                b.pinned,
+                b.dirty
+            )
+        );
+    }
+    assert_eq!(s.active_tab, active.map(|t| t.key));
+    assert!(s.bottom_open && bottom_open);
+    assert_eq!(s.bottom_tab, "problems");
+    assert_eq!(s.panel, "workspace");
+    assert!(s.workspace_path.is_some());
+    assert!(s.window.width > 0.0 && s.window.scale > 0.0);
+    assert!(!s.theme.name.is_empty());
+    let json = serde_json::to_string(&s).unwrap();
+    let back: crate::state_snapshot::UiState = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, s);
+}
+
+#[gpui::test]
+fn ui_state_generation_increases_only_on_change(cx: &mut TestAppContext) {
+    let (view, cx) = setup(cx);
+    cx.run_until_parked();
+    let g0 = view.read_with(cx, |w, _| w.generation);
+    view.update(cx, |_, cx| cx.notify());
+    cx.run_until_parked();
+    assert_eq!(view.read_with(cx, |w, _| w.generation), g0);
+    cx.dispatch_action(crate::actions::ShowProblems);
+    cx.run_until_parked();
+    let g1 = view.read_with(cx, |w, _| w.generation);
+    assert!(g1 > g0);
+    view.update_in(cx, |w, window, cx| w.open_request(GET, true, window, cx));
+    cx.run_until_parked();
+    let g2 = view.read_with(cx, |w, _| w.generation);
+    assert!(g2 > g1);
+}
+
+#[cfg(feature = "dev-mcp")]
+#[gpui::test]
+fn ui_requests_run_on_the_view(cx: &mut TestAppContext) {
+    use fluxwire_agent::bridge::UiRequest;
+    let (view, cx) = setup(cx);
+    let opened = view
+        .update_in(cx, |w, window, cx| {
+            w.handle_ui_request(
+                UiRequest::OpenRequest {
+                    key: GET.into(),
+                    permanent: true,
+                },
+                window,
+                cx,
+            )
+        })
+        .unwrap();
+    assert_eq!(opened["opened"], true);
+    let missing = view.update_in(cx, |w, window, cx| {
+        w.handle_ui_request(
+            UiRequest::OpenRequest {
+                key: "nope.flux.md".into(),
+                permanent: false,
+            },
+            window,
+            cx,
+        )
+    });
+    assert!(missing.is_err());
+    let state = view
+        .update_in(cx, |w, window, cx| {
+            w.handle_ui_request(UiRequest::State, window, cx)
+        })
+        .unwrap();
+    assert_eq!(state["active_tab"], GET);
+    assert_eq!(state["tabs"][0]["pinned"], false);
+}

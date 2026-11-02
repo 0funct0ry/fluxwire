@@ -14,6 +14,7 @@ workspace = true
 default = ["gui"]
 gui = ["dep:fluxwire-ui"]
 runtime-shaders = ["fluxwire-ui/runtime-shaders"]
+dev-mcp = ["gui", "fluxwire-ui/dev-mcp"]
 
 [dependencies]
 fluxwire-cli.workspace = true

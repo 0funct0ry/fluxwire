@@ -276,6 +276,9 @@ pub struct WorkspaceView {
     pub filter_focus: FocusHandle,
     pub find_focus: FocusHandle,
     pub log_focus: FocusHandle,
+    /// Counts observable state changes for `ui.state`.
+    pub generation: u64,
+    pub(crate) last_state: Option<crate::state_snapshot::UiState>,
 }
 
 impl WorkspaceView {
@@ -351,6 +354,8 @@ impl WorkspaceView {
             filter_focus: cx.focus_handle(),
             find_focus: cx.focus_handle(),
             log_focus: cx.focus_handle(),
+            generation: 0,
+            last_state: None,
         };
         this.scope.envs.settings = settings;
         this.recent_ids = this
@@ -1407,6 +1412,7 @@ macro_rules! handlers {
 impl Render for WorkspaceView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.focused = window.focused(cx);
+        self.track_generation(window, cx);
         self.sync_scroll();
         let t = theme(cx).clone();
         let body = if self.scope.workspace.is_some() {
@@ -1701,9 +1707,29 @@ pub fn install_theme(configured: Option<String>, cx: &mut gpui::App) {
 
 /// Launches the application and blocks until the last window closes.
 pub fn run() {
+    let path = std::env::args()
+        .nth(1)
+        .map(PathBuf::from)
+        .filter(|p| p.is_dir());
+    #[cfg(feature = "dev-mcp")]
+    run_with(path, HostOpts::default());
+    #[cfg(not(feature = "dev-mcp"))]
+    run_with(path, ());
+}
+
+/// What `run_with` hosts besides the window: the in-process MCP server under `dev-mcp`.
+#[cfg(feature = "dev-mcp")]
+pub type HostOpts = crate::dev_mcp::HostOpts;
+#[cfg(not(feature = "dev-mcp"))]
+pub type HostOpts = ();
+
+/// Like [`run`], opening `path` as the Workspace and starting the host in `host`.
+pub fn run_with(path: Option<PathBuf>, host: HostOpts) {
+    #[cfg(not(feature = "dev-mcp"))]
+    let () = host;
     gpui::Application::new()
         .with_assets(crate::assets::Assets)
-        .run(|cx: &mut gpui::App| {
+        .run(move |cx: &mut gpui::App| {
             crate::assets::load_fonts(cx).expect("bundled fonts load");
             crate::actions::install(cx);
             let dirs = directories::ProjectDirs::from("dev", "fluxwire", "fluxwire");
@@ -1723,15 +1749,13 @@ pub fn run() {
             .detach();
             let handle = open_window(cx).expect("open main window");
             // `fluxwire [PATH]` opens PATH; the full CLI arrives in M10.
-            if let Some(path) = std::env::args()
-                .nth(1)
-                .map(PathBuf::from)
-                .filter(|p| p.is_dir())
-            {
+            if let Some(path) = &path {
                 handle
-                    .update(cx, |ws, window, cx| ws.open_workspace(&path, window, cx))
+                    .update(cx, |ws, window, cx| ws.open_workspace(path, window, cx))
                     .ok();
             }
+            #[cfg(feature = "dev-mcp")]
+            crate::dev_mcp::start(cx, handle, host, path.as_deref());
             cx.activate(true);
         });
 }

@@ -1,10 +1,11 @@
-//! The M9.1 tools. Engine tools arrive in M9.2 and `ui.*` in M9.3.
+//! The built-in tools, plus the `ui.*` tools a GUI host adds with [`ui_tools`].
 
 use crate::ToolClass;
+use crate::bridge::UiRequest;
 use crate::registry::{Registry, ToolCtx, ToolDef};
 use rmcp::model::{JsonObject, Tool};
 use schemars::JsonSchema;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 #[derive(Serialize, JsonSchema)]
@@ -77,6 +78,86 @@ pub fn builtin_with(engine: Arc<crate::engine::Engine>) -> Registry {
         },
     ));
     r
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct OpenWorkspaceIn {
+    /// Absolute path of the Workspace directory.
+    pub path: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct OpenRequestIn {
+    /// Workspace-relative key, such as `payments/create-payment.flux.md`.
+    pub key: String,
+    /// Open as a permanent tab instead of a preview.
+    #[serde(default)]
+    pub permanent: bool,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct CaptureIn {
+    /// Where to write the PNG.
+    pub path: String,
+}
+
+/// Free-form JSON result of a `ui.*` tool.
+#[derive(Serialize, JsonSchema)]
+pub struct UiOut {}
+
+fn forward(ctx: &ToolCtx, req: UiRequest) -> Result<serde_json::Value, String> {
+    ctx.ui
+        .as_ref()
+        .ok_or_else(|| "no UI bridge in this host".to_string())?
+        .call(req)
+}
+
+fn parse<T: serde::de::DeserializeOwned>(args: Option<JsonObject>) -> Result<T, String> {
+    serde_json::from_value(serde_json::Value::Object(args.unwrap_or_default()))
+        .map_err(|e| format!("invalid arguments: {e}"))
+}
+
+/// The `ui.*` tools; a GUI host registers them next to [`builtin`] and supplies a `UiBridge`.
+pub fn ui_tools(r: &mut Registry) {
+    r.register(def_in::<NoParams, UiOut>(
+        ToolClass::Ui,
+        "ui.state",
+        "Serializable snapshot of the running app: Workspace, tabs, docks, Problems, Console, active response, runs, modal, notice, focus, window, theme and a `generation` that increases on every change.",
+        |ctx, _| forward(ctx, UiRequest::State),
+    ));
+    r.register(def_in::<OpenWorkspaceIn, UiOut>(
+        ToolClass::Ui,
+        "ui.open_workspace",
+        "Open a Workspace directory in the running app.",
+        |ctx, args| {
+            let a: OpenWorkspaceIn = parse(args)?;
+            forward(ctx, UiRequest::OpenWorkspace { path: a.path })
+        },
+    ));
+    r.register(def_in::<OpenRequestIn, UiOut>(
+        ToolClass::Ui,
+        "ui.open_request",
+        "Open a Request tab by key; `permanent` pins it instead of previewing.",
+        |ctx, args| {
+            let a: OpenRequestIn = parse(args)?;
+            forward(
+                ctx,
+                UiRequest::OpenRequest {
+                    key: a.key,
+                    permanent: a.permanent,
+                },
+            )
+        },
+    ));
+    r.register(def_in::<CaptureIn, UiOut>(
+        ToolClass::Ui,
+        "ui.capture_prototype",
+        "Prototype: write a PNG of the app window with `screencapture` (macOS; needs Screen Recording permission). Superseded by `ui.screenshot`.",
+        |ctx, args| {
+            let a: CaptureIn = parse(args)?;
+            forward(ctx, UiRequest::CapturePrototype { path: a.path })
+        },
+    ));
 }
 
 /// Builds a read-class definition whose input and output schemas come from the types.

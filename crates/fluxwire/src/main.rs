@@ -16,7 +16,32 @@ fn main() -> ExitCode {
         }
         return fluxwire_cli::run(args);
     }
-    #[cfg(feature = "gui")]
+    #[cfg(all(feature = "gui", not(feature = "dev-mcp")))]
     fluxwire_ui::run();
+    #[cfg(feature = "dev-mcp")]
+    run_dev(&args);
     ExitCode::SUCCESS
+}
+
+/// `fluxwire [--mcp-socket [PATH]] [--mcp-stdio] [WORKSPACE]` in `dev-mcp` builds.
+#[cfg(feature = "dev-mcp")]
+fn run_dev(args: &[std::ffi::OsString]) {
+    let mut host = fluxwire_ui::HostOpts::default();
+    let mut path = None;
+    let mut it = args.iter().skip(1).peekable();
+    while let Some(a) = it.next() {
+        match a.to_str() {
+            Some("--mcp-stdio") => host.stdio = true,
+            Some("--mcp-socket") => {
+                let given = it
+                    .next_if(|n| {
+                        !n.to_string_lossy().starts_with("--") && !std::path::Path::new(n).is_dir()
+                    })
+                    .map(std::path::PathBuf::from);
+                host.socket = Some(given);
+            }
+            _ => path = Some(std::path::PathBuf::from(a)).filter(|p| p.is_dir()),
+        }
+    }
+    fluxwire_ui::run_with(path, host);
 }

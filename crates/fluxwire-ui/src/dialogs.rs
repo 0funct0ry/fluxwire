@@ -118,6 +118,20 @@ pub enum Dialog {
     Confirm(Confirm),
 }
 
+impl Dialog {
+    /// A short stable name for `ui.state`.
+    pub fn name(&self) -> String {
+        match self {
+            Dialog::NewWorkspace(_) => "new_workspace",
+            Dialog::NewCollection(_) => "new_collection",
+            Dialog::NewEnvironment(_) => "new_environment",
+            Dialog::NewRequest(_) => "new_request",
+            Dialog::Confirm(c) => return format!("confirm:{}", c.title),
+        }
+        .into()
+    }
+}
+
 fn home_dir() -> PathBuf {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))

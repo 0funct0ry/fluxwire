@@ -2,6 +2,8 @@
 
 pub mod actions;
 pub mod assets;
+#[cfg(feature = "dev-mcp")]
+pub mod capture;
 pub mod center;
 pub mod code_editor;
 pub mod code_editor_element;
@@ -9,6 +11,8 @@ pub mod code_editor_ops;
 pub mod completion;
 pub mod completion_providers;
 pub mod containment;
+#[cfg(feature = "dev-mcp")]
+pub mod dev_mcp;
 pub mod dialogs;
 pub mod display_map;
 pub mod dock;
@@ -47,6 +51,7 @@ pub mod runs;
 pub mod segmented;
 pub mod session;
 pub mod session_log;
+pub mod state_snapshot;
 pub mod tabs;
 pub mod text_input;
 pub mod theme;
@@ -56,7 +61,7 @@ pub mod viewer;
 pub mod workspace;
 pub mod workspace_model;
 
-pub use workspace::run;
+pub use workspace::{HostOpts, run, run_with};
 
 #[cfg(test)]
 mod tests;

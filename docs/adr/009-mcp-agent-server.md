@@ -60,3 +60,10 @@ The app brings its window to the front and waits for idle (no pending run events
 - MCP runs are stateless: no persisted cookies and no unsaved-editor overlay; environment files come from the allowed root that contains the request.
 - WebSocket requests are not sent through `send_request` (sessions need the M10 transcript flow).
 - History rows written by the app have `origin = NULL`; MCP rows have `origin = 'agent'`.
+
+## M9.3 notes
+
+- **Host.** `dev-mcp` on `fluxwire-ui` (and `fluxwire`, which implies `gui`) starts a thread with its own Tokio runtime serving `fluxwire-agent` over stdio and/or a unix socket (`fluxwire --mcp-stdio`, `--mcp-socket [PATH]`). The flags exist only in `dev-mcp` builds. The Workspace given on the command line becomes the `--root`; `ui.open_workspace` does not widen the allow-list.
+- **Bridge.** `UiBridge::call(UiRequest)` sends `(request, reply)` over an unbounded channel drained by a `cx.spawn` loop that runs `WindowHandle::update`; the caller waits 5 s and then reports "ui thread busy". Tool handlers are synchronous, so the Tokio worker blocks for that time.
+- **State.** `ui.state` is built by `WorkspaceView::ui_state` (`state_snapshot.rs`, always compiled, tested with `TestAppContext`). `generation` increments in `render` when the snapshot differs from the previous one, so it counts changes, not redraws.
+- **Capture.** gpui 0.2.2 exposes no render-to-image (no readback on `Window`/`App`; only the video-oriented `scap` feature), so offscreen tier 0 is not available. `capture.rs` implements tier 1: window bounds in screen coordinates and scale from `state.window`, then `screencapture -x -R x,y,w,h`. A failing or near-empty result is reported with the Screen Recording permission to grant. Linux and Windows capture remain M9.6.
