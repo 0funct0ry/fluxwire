@@ -20,3 +20,6 @@ rustc-ice-*.txt
 internal-docs/
 
 
+
+# Release archives produced by `make dist`
+dist
