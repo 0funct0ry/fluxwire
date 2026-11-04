@@ -798,26 +798,17 @@ impl WorkspaceView {
     // ---- key/value tables -----------------------------------------------------------------
 
     pub fn table_rows(&self, key: &str, table: Table) -> Vec<(bool, String, String)> {
-        let Some(req) = self
-            .scope
-            .workspace
-            .as_ref()
-            .and_then(|p| p.doc(key))
-            .and_then(|d| d.parsed.request())
-        else {
+        let Some(doc) = self.scope.workspace.as_ref().and_then(|p| p.doc(key)) else {
+            return vec![];
+        };
+        let Some(req) = doc.parsed.request() else {
             return vec![];
         };
         match table {
-            Table::Params => req
-                .query
-                .iter()
-                .map(|q| {
-                    (
-                        q.enabled,
-                        q.name.clone(),
-                        q.value.clone().unwrap_or_default(),
-                    )
-                })
+            // URL parameters first, then continuation lines (`fmt::query_rows`).
+            Table::Params => fmt::query_rows(&doc.parsed)
+                .into_iter()
+                .map(|q| (q.enabled, q.name, q.value.unwrap_or_default()))
                 .collect(),
             Table::Headers => req
                 .headers
@@ -866,7 +857,7 @@ impl WorkspaceView {
         cx.notify();
     }
 
-    fn apply_row(
+    pub(crate) fn apply_row(
         &mut self,
         key: &str,
         table: Table,

@@ -220,8 +220,14 @@ pub fn time_label(ts_ms: i64) -> String {
     local(ts_ms).format("%H:%M:%S").to_string()
 }
 
+/// Compact verb for narrow columns (tree rows, history table, filter chips).
 pub(crate) fn short_method(m: &str) -> &str {
-    if m == "DELETE" { "DEL" } else { m }
+    match m {
+        "DELETE" => "DEL",
+        "OPTIONS" => "OPT",
+        "PATCH" => "PTCH",
+        _ => m,
+    }
 }
 
 pub(crate) fn blocking<T: Send + 'static>(

@@ -344,3 +344,52 @@ fn saved_messages_are_typed_with_labels_and_file_refs() {
     assert_eq!(m[0].frame_kind(), "text");
     assert_eq!(m[2].frame_kind(), "binary");
 }
+
+#[test]
+fn query_rows_cover_url_and_continuation_lines() {
+    let src = "---\nname: A\n---\n\n```http\nGET /a?x=1&y=2#top\n    &z=3\n    # &off=4\n```\n";
+    let d = parse(src);
+    let rows = query_rows(&d);
+    let names: Vec<_> = rows
+        .iter()
+        .map(|r| (r.name.as_str(), r.enabled, r.in_url))
+        .collect();
+    assert_eq!(
+        names,
+        [
+            ("x", true, true),
+            ("y", true, true),
+            ("z", true, false),
+            ("off", false, false)
+        ]
+    );
+
+    // Editing a URL row rewrites only that pair of the target.
+    let out = apply_edits(src, &set_query(&d, 0, true, "x", Some("9"))).unwrap();
+    assert!(out.contains("GET /a?x=9&y=2#top\n    &z=3\n"), "{out}");
+    // Disabling a URL row moves it to a commented continuation line, after the existing ones.
+    let out = apply_edits(src, &set_query(&d, 1, false, "y", Some("2"))).unwrap();
+    assert!(
+        out.contains("GET /a?x=1#top\n    &z=3\n    # &off=4\n    # &y=2\n```"),
+        "{out}"
+    );
+    // Removing the only URL pair drops the `?`.
+    let one = "---\nname: A\n---\n\n```http\nGET /a?x=1\n```\n";
+    let d1 = parse(one);
+    let out = apply_edits(one, &remove_query(&d1, 0)).unwrap();
+    assert!(out.contains("GET /a\n```"), "{out}");
+    // A continuation row keeps working with the shifted index.
+    let out = apply_edits(src, &remove_query(&d, 2)).unwrap();
+    assert!(!out.contains("&z=3") && out.contains("# &off=4"), "{out}");
+    let out = apply_edits(src, &set_query(&d, 2, true, "z", Some("7"))).unwrap();
+    assert!(out.contains("    &z=7\n"), "{out}");
+    // Adding appends a continuation line with `&` because the URL already has a query.
+    let out = apply_edits(src, &add_query(&d, "n", Some("1"))).unwrap();
+    assert!(out.contains("# &off=4\n    &n=1\n```"), "{out}");
+    // Variables are opaque, and an untouched target stays byte for byte.
+    let v = "---\nname: A\n---\n\n```http\nGET {{base}}/a?q={{a&b}}&t=1\n```\n";
+    let dv = parse(v);
+    assert_eq!(query_rows(&dv).len(), 2);
+    let out = apply_edits(v, &set_query(&dv, 1, true, "t", Some("2"))).unwrap();
+    assert!(out.contains("GET {{base}}/a?q={{a&b}}&t=2\n"), "{out}");
+}

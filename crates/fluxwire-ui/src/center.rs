@@ -307,7 +307,11 @@ impl WorkspaceView {
                                 "center.render_tab_bar",
                                 true,
                                 cx.listener(move |this, _, w, cx| {
-                                    if this.is_env_tab(id) {
+                                    // A pinned tab shows a pin here: clicking it unpins.
+                                    if this.scope.tabs.get(id).is_some_and(|t| t.pinned) {
+                                        this.scope.tabs.toggle_pin(id);
+                                        this.session_dirty = true;
+                                    } else if this.is_env_tab(id) {
                                         this.close_env_tab(id, w, cx);
                                     } else {
                                         this.scope.tabs.close(id);
@@ -465,12 +469,7 @@ impl WorkspaceView {
                             true,
                             cx.listener(move |this, _, _, cx| {
                                 this.scope.method_menu = false;
-                                if let Some(ui) = this.active_ui() {
-                                    ui.method = i;
-                                }
-                                if let Some(id) = this.scope.tabs.active_id() {
-                                    this.scope.tabs.set_dirty(id, true);
-                                }
+                                this.set_method(i, cx);
                                 cx.notify();
                             }),
                         )
@@ -746,7 +745,10 @@ impl WorkspaceView {
         let req = doc.parsed.request();
         let method = req.map_or("GET".to_string(), |r| r.method.clone());
         let url = req.map_or(String::new(), |r| r.target.clone());
-        let params_on = req.map_or(0, |r| r.query.iter().filter(|q| q.enabled).count());
+        let params_on = fluxwire_format::query_rows(&doc.parsed)
+            .iter()
+            .filter(|q| q.enabled)
+            .count();
         let headers = req.map_or(0, |r| r.headers.len());
         let has_body = !doc.target_text(Target::Body).is_empty();
         let count_of = |k: BlockKind| doc.parsed.blocks_of(k).count();

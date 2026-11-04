@@ -570,11 +570,7 @@ impl WorkspaceView {
                     key: path.clone(),
                     name: name.clone(),
                 };
-                let label = if method == "DELETE" {
-                    "DEL".to_string()
-                } else {
-                    method.clone()
-                };
+                let label = crate::history::short_method(method).to_string();
                 let color = match kind {
                     RequestKind::WebSocket => t.method_color("WS"),
                     RequestKind::Other => t.text_placeholder,
@@ -612,6 +608,7 @@ impl WorkspaceView {
                         div()
                             .w(px(34.))
                             .flex_none()
+                            .whitespace_nowrap()
                             .text_right()
                             .text_size(px(10.))
                             .font_family(BUFFER_FONT)

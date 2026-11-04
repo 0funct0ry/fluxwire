@@ -246,6 +246,47 @@ fn doc_text(view: &Entity<WorkspaceView>, cx: &mut VisualTestContext, key: &str)
     })
 }
 
+#[gpui::test]
+fn params_table_lists_url_query_and_edits_it_in_place(cx: &mut TestAppContext) {
+    let (view, cx) = setup(cx);
+    view.update(cx, |w, cx| {
+        w.set_url_text(CREATE, "{{baseUrl}}/p?delay=100&fail=500", cx)
+    });
+    let rows = |view: &Entity<WorkspaceView>, cx: &mut VisualTestContext| {
+        view.read_with(cx, |w, _| {
+            w.table_rows(CREATE, crate::workspace::Table::Params)
+        })
+    };
+    // The URL's parameters come first, then the fixture's continuation lines.
+    let names = |view: &Entity<WorkspaceView>, cx: &mut VisualTestContext| {
+        rows(view, cx).into_iter().map(|r| r.1).collect::<Vec<_>>()
+    };
+    assert_eq!(names(&view, cx), ["delay", "fail", "expand", "debug"]);
+    // Editing the second row rewrites that pair of the URL, not a continuation line.
+    view.update(cx, |w, _| {
+        assert!(w.apply_row(
+            CREATE,
+            crate::workspace::Table::Params,
+            1,
+            true,
+            "fail",
+            "503"
+        ))
+    });
+    let text = doc_text(&view, cx, CREATE);
+    assert!(
+        text.contains("{{baseUrl}}/p?delay=100&fail=503\n"),
+        "{text}"
+    );
+    // Removing the first leaves the other in the URL.
+    view.update(cx, |w, cx| {
+        w.delete_row(crate::workspace::Table::Params, 0, cx)
+    });
+    assert_eq!(names(&view, cx), ["fail", "expand", "debug"]);
+    let text = doc_text(&view, cx, CREATE);
+    assert!(text.contains("{{baseUrl}}/p?fail=503\n"), "{text}");
+}
+
 fn dirty(view: &Entity<WorkspaceView>, cx: &mut VisualTestContext, key: &str) -> bool {
     view.read_with(cx, |w, _| {
         w.scope

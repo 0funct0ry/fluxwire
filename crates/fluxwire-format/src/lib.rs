@@ -17,6 +17,7 @@ mod keymap;
 mod lines;
 mod parse;
 mod prose;
+mod query;
 mod schema;
 mod scope;
 mod settings;
@@ -41,6 +42,7 @@ pub use keymap::{
 pub use lines::{Line, lines};
 pub use parse::{parse, parse_with};
 pub use prose::{ProseEditError, edit_prose, prose_regions};
+pub use query::{Pair, rewrite_url_query, url_query};
 pub use schema::front_matter_schema_json;
 pub use scope::{ScopeInputs, ancestor_docs, build_scope};
 pub use settings::{

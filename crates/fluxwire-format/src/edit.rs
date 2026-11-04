@@ -2,6 +2,7 @@
 //! Functions return `Vec<Edit>`; apply them with `fluxwire_model::apply_edits` and reparse.
 
 use crate::frontmatter::encode_scalar;
+use crate::query::{rewrite_url_query, url_query};
 use fluxwire_model::{Block, BlockData, BlockKind, Body, Edit, FluxDoc, FmValue, Span};
 
 pub const FRONT_MATTER_ORDER: &[&str] = &[
@@ -202,6 +203,51 @@ pub fn remove_header(doc: &FluxDoc, idx: usize) -> Vec<Edit> {
         .unwrap_or_default()
 }
 
+/// A row of the Params table: a parameter written in the target (`in_url`) or on a
+/// continuation line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueryRow {
+    pub enabled: bool,
+    pub name: String,
+    pub value: Option<String>,
+    pub in_url: bool,
+}
+
+/// The Params table rows: the target's parameters first (always enabled, a URL cannot hold a
+/// disabled one), then the continuation lines in order. Row `i` is what `set_query` and
+/// `remove_query` mean by index `i`.
+pub fn query_rows(doc: &FluxDoc) -> Vec<QueryRow> {
+    let Some((_, r)) = req(doc) else {
+        return vec![];
+    };
+    let url = url_query(&r.target)
+        .into_iter()
+        .map(|(name, value)| QueryRow {
+            enabled: true,
+            name,
+            value,
+            in_url: true,
+        });
+    let lines = r.query.iter().map(|q| QueryRow {
+        enabled: q.enabled,
+        name: q.name.clone(),
+        value: q.value.clone(),
+        in_url: false,
+    });
+    url.chain(lines).collect()
+}
+
+/// Where a new continuation line goes: after the last one, else after the request line.
+fn query_line_end(r: &fluxwire_model::HttpRequest) -> usize {
+    r.query
+        .last()
+        .map(|q| q.span.end)
+        .unwrap_or(r.request_line.end)
+}
+
+/// Change row `idx` of the Params table (see `query_rows`). A target parameter is rewritten
+/// inside the target, touching nothing else there; disabling one moves it to a commented
+/// continuation line. A row past the end appends a continuation line.
 pub fn set_query(
     doc: &FluxDoc,
     idx: usize,
@@ -212,7 +258,23 @@ pub fn set_query(
     let Some((_, r)) = req(doc) else {
         return vec![];
     };
-    match r.query.get(idx) {
+    let n_url = url_query(&r.target).len();
+    if idx < n_url {
+        let with = enabled.then(|| (name.to_string(), value.map(str::to_string)));
+        let Some(target) = rewrite_url_query(&r.target, idx, with) else {
+            return vec![];
+        };
+        let mut edits = vec![Edit::replace(r.target_span, target)];
+        if !enabled {
+            let line = query_line(false, '&', name, value);
+            edits.push(Edit::insert(
+                query_line_end(r),
+                format!("{}{line}", eol(doc)),
+            ));
+        }
+        return edits;
+    }
+    match r.query.get(idx - n_url) {
         Some(q) => {
             let marker = if q.span.slice(&doc.source).contains('?') {
                 '?'
@@ -238,20 +300,26 @@ pub fn add_query(doc: &FluxDoc, name: &str, value: Option<&str>) -> Vec<Edit> {
         '&'
     };
     let line = query_line(true, marker, name, value);
-    let after = r
-        .query
-        .last()
-        .map(|q| q.span.end)
-        .unwrap_or(r.request_line.end);
-    vec![Edit::insert(after, format!("{}{line}", eol(doc)))]
+    vec![Edit::insert(
+        query_line_end(r),
+        format!("{}{line}", eol(doc)),
+    )]
 }
 
+/// Remove row `idx` of the Params table: a parameter is cut out of the target (the `?` goes
+/// with the last one), a continuation line is deleted whole.
 pub fn remove_query(doc: &FluxDoc, idx: usize) -> Vec<Edit> {
     let Some((_, r)) = req(doc) else {
         return vec![];
     };
+    let n_url = url_query(&r.target).len();
+    if idx < n_url {
+        return rewrite_url_query(&r.target, idx, None)
+            .map(|t| vec![Edit::replace(r.target_span, t)])
+            .unwrap_or_default();
+    }
     r.query
-        .get(idx)
+        .get(idx - n_url)
         .map(|q| vec![Edit::delete(full_line(&doc.source, q.span))])
         .unwrap_or_default()
 }
