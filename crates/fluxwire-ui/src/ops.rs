@@ -846,6 +846,9 @@ impl WorkspaceView {
         });
         input.update(cx, |i, cx| i.set_text(&text, cx));
         window.focus(&gpui::Focusable::focus_handle(input.read(cx), cx));
+        // Entering a Value cell of a known header offers its common values at once.
+        let name = rows.get(row).map(|r| r.1.clone()).unwrap_or_default();
+        let offer = col == Col::Value && text.is_empty();
         self.scope.cell = Some(CellEdit {
             key,
             table,
@@ -854,6 +857,11 @@ impl WorkspaceView {
             text,
             input,
         });
+        if offer {
+            self.refresh_cell_completion(table, col, &name, "");
+        } else {
+            self.scope.envs.completion = None;
+        }
         cx.notify();
     }
 
@@ -922,18 +930,65 @@ impl WorkspaceView {
             }
             "tab" => {
                 self.scope.envs.completion = None;
-                if cell.col == Col::Key {
-                    self.start_cell(cell.table, cell.row, Col::Value, window, cx);
-                } else {
-                    self.scope.cell = None;
-                    window.focus(&self.root_focus);
-                }
+                self.tab_cell(&cell, ks.modifiers.shift, window, cx);
                 cx.notify();
                 return;
             }
             _ => return,
         }
         self.commit_cell(cell, cx);
+    }
+
+    /// Tab / Shift-Tab: move to the next / previous cell, walking Key → Value → next row's
+    /// Key. Tab past the last row opens a new one when this row has a name; at either end of
+    /// the table the edit simply ends.
+    fn tab_cell(
+        &mut self,
+        cell: &CellEdit,
+        back: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let len = self.table_rows_len(&cell.key, cell.table);
+        let target = match (back, cell.col) {
+            (false, Col::Key) => Some((cell.row, Col::Value)),
+            (false, Col::Value) => {
+                // A new row only exists once it has a name, so only a named row can be
+                // followed by another.
+                let named = cell.row < len;
+                (cell.row + 1 < len || named).then_some((cell.row + 1, Col::Key))
+            }
+            (true, Col::Value) => Some((cell.row, Col::Key)),
+            (true, Col::Key) => cell
+                .row
+                .checked_sub(1)
+                .map(|r| (r.min(len.saturating_sub(1)), Col::Value)),
+        };
+        match target {
+            Some((row, col)) => self.start_cell(cell.table, row, col, window, cx),
+            None => self.end_cell_edit(window, cx),
+        }
+    }
+
+    /// Ends the cell edit. Text is applied to the document as it is typed, so nothing is
+    /// lost; an unnamed new row never reached the document and simply disappears.
+    pub fn end_cell_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(cell) = self.scope.cell.take() else {
+            return;
+        };
+        self.scope.envs.completion = None;
+        if gpui::Focusable::focus_handle(cell.input.read(cx), cx).is_focused(window) {
+            window.focus(&self.root_focus);
+        }
+        cx.notify();
+    }
+
+    /// A press outside the edited cell ends the edit, unless a completion popup is open (the
+    /// popup lies outside the cell and its rows must still receive the click).
+    pub fn on_cell_outside_press(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.scope.envs.completion.is_none() {
+            self.end_cell_edit(window, cx);
+        }
     }
 
     /// Apply the edited cell text to the document (after typing or accepting a completion).
@@ -964,15 +1019,17 @@ impl WorkspaceView {
                 }
                 let key = cell.key.clone();
                 let text = cell.text.clone();
+                let (table, col) = (cell.table, cell.col);
                 self.scope.cell = Some(cell);
                 self.after_edit(&key, cx);
-                self.refresh_completion(CompleteTarget::Cell, &text);
+                self.refresh_cell_completion(table, col, &name, &text);
                 return;
             }
         }
         let text = cell.text.clone();
+        let (table, col) = (cell.table, cell.col);
         self.scope.cell = Some(cell);
-        self.refresh_completion(CompleteTarget::Cell, &text);
+        self.refresh_cell_completion(table, col, &name, &text);
         cx.notify();
     }
 

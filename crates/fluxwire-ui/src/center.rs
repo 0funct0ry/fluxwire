@@ -6,6 +6,7 @@ use gpui::{
     StatefulInteractiveElement, Styled, deferred, div, prelude::*, px,
 };
 
+use crate::envs::CompleteTarget;
 use crate::{
     actions::ACTIONS,
     assets::BUFFER_FONT,
@@ -818,7 +819,16 @@ impl WorkspaceView {
         } else {
             editor = editor
                 .child(self.url_bar(t, ui, &method, &url, doc.parsed.runnable(), cx))
-                .children(self.completion_strip(t, cx))
+                .children(
+                    self.completion_popup_for(t, CompleteTarget::Url, cx)
+                        .map(|p| {
+                            div()
+                                .relative()
+                                .flex_none()
+                                .h(px(0.))
+                                .child(div().absolute().top(px(0.)).left(px(120.)).child(p))
+                        }),
+                )
                 .children(self.doc_banners(t, doc, cx))
                 .child(self.tab_strip(t, "sub", labels, ui.sub, |u, i| u.sub = i, cx))
                 .child(
@@ -937,6 +947,9 @@ impl WorkspaceView {
                     });
                 }
                 base.on_key_down(cx.listener(|this, ev, w, cx| this.on_cell_key(ev, w, cx)))
+                    .on_mouse_down_out(
+                        cx.listener(|this, _, w, cx| this.on_cell_outside_press(w, cx)),
+                    )
                     .children(input)
             } else {
                 base.dev_click(
@@ -988,7 +1001,22 @@ impl WorkspaceView {
             )
             .children(all.into_iter().enumerate().map(|(i, (enabled, k, v))| {
                 let id_off = i + usize::from(table == Table::Headers) * 1000;
+                let popup = editing
+                    .as_ref()
+                    .filter(|c| c.row == i)
+                    .and_then(|c| {
+                        self.completion_popup_for(t, CompleteTarget::Cell, cx)
+                            .map(|p| (c.col, p))
+                    })
+                    .map(|(col, p)| {
+                        div()
+                            .absolute()
+                            .top(px(28.))
+                            .left(px(if col == Col::Key { 40. } else { 260. }))
+                            .child(p)
+                    });
                 row()
+                    .relative()
                     .h(px(28.))
                     .px_3()
                     .gap_3()
@@ -996,6 +1024,7 @@ impl WorkspaceView {
                     .border_color(t.border_variant)
                     .font_family(BUFFER_FONT)
                     .text_size(px(12.))
+                    .children(popup)
                     .child(
                         div()
                             .id(("row-check", id_off))

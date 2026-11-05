@@ -58,12 +58,81 @@ pub enum CompleteTarget {
     Cell,
 }
 
-/// `{{` completion state: the names offered and the highlighted one.
+/// Built-in dynamic values offered after `{{`, with a one-line description.
+pub const DYNAMIC_VARS: &[(&str, &str)] = &[
+    ("$uuid", "Random UUID v4, new on every send."),
+    ("$timestamp", "Unix time in seconds."),
+    ("$isoTimestamp", "Current time as an ISO 8601 string."),
+    ("$randomInt", "Random integer."),
+    (
+        "$randomString(16)",
+        "Random alphanumeric string of the given length.",
+    ),
+    ("$base64()", "Base64 encoding of the argument."),
+];
+
+/// What a completion list offers: variables finish an open `{{`, header suggestions replace
+/// the whole cell text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompleteKind {
+    Var,
+    Header,
+}
+
+/// Suggestions for a Headers cell: standard names while typing a Key, common values for the
+/// header while typing a Value. Matching is a case-insensitive substring, best prefix first.
+pub fn header_suggestions(
+    col: crate::workspace::Col,
+    name: &str,
+    text: &str,
+) -> Vec<crate::completion::Ranked> {
+    use crate::completion::{CompletionItem, Kind, rank};
+    use crate::header_catalog::{HEADERS, values_for};
+    let items: Vec<CompletionItem> = match col {
+        crate::workspace::Col::Key => {
+            if text.trim().is_empty() {
+                return vec![];
+            }
+            HEADERS
+                .iter()
+                .map(|(n, d)| CompletionItem::new(*n, Kind::Property, 0..0).detail(*d))
+                .collect()
+        }
+        crate::workspace::Col::Value => values_for(name)
+            .iter()
+            .map(|v| CompletionItem::new(*v, Kind::Value, 0..0))
+            .collect(),
+    };
+    let q = text.trim().to_lowercase();
+    let mut v: Vec<_> = rank(items, text.trim())
+        .into_iter()
+        .filter(|r| r.item.label.to_lowercase().contains(&q))
+        .collect();
+    v.sort_by_key(|r| !r.item.label.to_lowercase().starts_with(&q));
+    v.truncate(MAX_SUGGESTIONS);
+    if v.len() == 1 && v[0].item.label == text.trim() {
+        return vec![];
+    }
+    v
+}
+
+/// Most suggestions the popup lists; the rest are reachable by typing more.
+pub const MAX_SUGGESTIONS: usize = 50;
+
+/// `{{` completion state: the grouped suggestions offered and the highlighted one (an index
+/// into `items`, so headers are never selectable).
 #[derive(Clone, Debug)]
 pub struct Completion {
     pub target: CompleteTarget,
-    pub names: Vec<String>,
+    pub kind: CompleteKind,
+    pub items: Vec<crate::completion::Ranked>,
     pub selected: usize,
+}
+
+impl Completion {
+    pub fn labels(&self) -> Vec<&str> {
+        self.items.iter().map(|r| r.item.label.as_str()).collect()
+    }
 }
 
 pub enum CompleteKey {
@@ -108,6 +177,9 @@ type CacheKey = (String, Option<String>, u64, String);
 pub struct EnvStore {
     /// Active environment of the Workspace, remembered in the session.
     pub active: Option<String>,
+    /// Text of a header suggestion just accepted; no header suggestions reopen while the cell
+    /// still holds exactly this text.
+    pub header_accepted: Option<String>,
     pub settings: UserSettings,
     /// One jar and token cache per (collection, environment).
     pub states: HashMap<(PathBuf, String), EnvState>,
@@ -633,37 +705,77 @@ impl WorkspaceView {
     /// Names that resolve in `scope`, for `{{` completion.
     pub fn var_names(&self, scope: &VarScope) -> Vec<String> {
         let mut n: Vec<String> = scope.vars.keys().cloned().collect();
-        n.extend(
-            [
-                "$uuid",
-                "$timestamp",
-                "$isoTimestamp",
-                "$randomInt",
-                "$randomString(16)",
-                "$base64()",
-            ]
-            .map(String::from),
-        );
+        n.extend(DYNAMIC_VARS.iter().map(|(n, _)| (*n).to_string()));
         n
+    }
+
+    /// Suggestions for `{{`: variables of `scope` (Environment) and built-in dynamic values.
+    pub fn var_items(&self, scope: &VarScope) -> Vec<crate::completion::CompletionItem> {
+        use crate::completion::{CompletionItem, GROUP_DYNAMIC, GROUP_ENVIRONMENT, Kind};
+        let mut out: Vec<CompletionItem> = scope
+            .vars
+            .iter()
+            .map(|(n, v)| {
+                let detail = if v.secret {
+                    format!("secret · {}", v.source.describe())
+                } else {
+                    v.source.describe()
+                };
+                CompletionItem::new(n.clone(), Kind::Variable, 0..0)
+                    .detail(detail)
+                    .group(GROUP_ENVIRONMENT)
+            })
+            .collect();
+        for (name, doc) in DYNAMIC_VARS {
+            out.push(
+                CompletionItem::new(*name, Kind::Function, 0..0)
+                    .detail("dynamic")
+                    .doc(*doc)
+                    .group(GROUP_DYNAMIC),
+            );
+        }
+        out
     }
 
     /// Recompute `{{` suggestions after the edited text of `target` changed.
     pub fn refresh_completion(&mut self, target: CompleteTarget, text: &str) {
-        let prefix = open_var_prefix(text).map(str::to_lowercase);
-        let names = prefix.as_ref().and_then(|p| {
+        let items = open_var_prefix(text).and_then(|p| {
             let scope = self.active_key().and_then(|k| self.scope_for(&k))?;
-            let mut v: Vec<String> = self
-                .var_names(&scope)
-                .into_iter()
-                .filter(|n| n.to_lowercase().contains(p.as_str()))
-                .collect();
-            v.sort_by_key(|n| (!n.to_lowercase().starts_with(p.as_str()), n.clone()));
-            v.truncate(8);
+            let ranked = crate::completion::rank(self.var_items(&scope), p);
+            let v = crate::completion::group_sorted(ranked, MAX_SUGGESTIONS);
             (!v.is_empty()).then_some(v)
         });
-        self.scope.envs.completion = names.map(|names| Completion {
+        self.scope.envs.completion = items.map(|items| Completion {
             target,
-            names,
+            kind: CompleteKind::Var,
+            items,
+            selected: 0,
+        });
+    }
+
+    /// Suggestions for the edited Params/Headers cell: `{{` variables win; otherwise, in the
+    /// Headers table, standard header names and values. `name` is the row's header name.
+    pub fn refresh_cell_completion(
+        &mut self,
+        table: crate::workspace::Table,
+        col: crate::workspace::Col,
+        name: &str,
+        text: &str,
+    ) {
+        self.refresh_completion(CompleteTarget::Cell, text);
+        if self.scope.envs.completion.is_some() || table != crate::workspace::Table::Headers {
+            return;
+        }
+        match self.scope.envs.header_accepted.as_deref() {
+            Some(a) if a == text => return,
+            Some(_) => self.scope.envs.header_accepted = None,
+            None => {}
+        }
+        let items = header_suggestions(col, name, text);
+        self.scope.envs.completion = (!items.is_empty()).then_some(Completion {
+            target: CompleteTarget::Cell,
+            kind: CompleteKind::Header,
+            items,
             selected: 0,
         });
     }
@@ -685,13 +797,20 @@ impl WorkspaceView {
             return CompleteKey::Pass;
         };
         match ev.keystroke.key.as_str() {
-            "down" => c.selected = (c.selected + 1).min(c.names.len() - 1),
+            "down" => c.selected = (c.selected + 1).min(c.items.len() - 1),
             "up" => c.selected = c.selected.saturating_sub(1),
             "escape" => self.scope.envs.completion = None,
             "tab" | "enter" => {
-                let name = c.names[c.selected].clone();
+                let name = c.items[c.selected].item.label.clone();
+                let kind = c.kind;
                 self.scope.envs.completion = None;
-                return CompleteKey::Accept(complete_text(text, &name));
+                return CompleteKey::Accept(match kind {
+                    CompleteKind::Var => complete_text(text, &name),
+                    CompleteKind::Header => {
+                        self.scope.envs.header_accepted = Some(name.clone());
+                        name
+                    }
+                });
             }
             _ => return CompleteKey::Pass,
         }
@@ -705,7 +824,12 @@ impl WorkspaceView {
         name: &str,
         cx: &mut Context<Self>,
     ) {
-        self.scope.envs.completion = None;
+        let kind = self
+            .scope
+            .envs
+            .completion
+            .take()
+            .map_or(CompleteKind::Var, |c| c.kind);
         match target {
             CompleteTarget::Url => {
                 let Some(key) = self.active_key() else { return };
@@ -720,7 +844,13 @@ impl WorkspaceView {
             }
             CompleteTarget::Cell => {
                 if let Some(c) = self.scope.cell.as_mut() {
-                    c.text = complete_text(&c.text, name);
+                    c.text = match kind {
+                        CompleteKind::Var => complete_text(&c.text, name),
+                        CompleteKind::Header => name.to_string(),
+                    };
+                    if kind == CompleteKind::Header {
+                        self.scope.envs.header_accepted = Some(name.to_string());
+                    }
                     let (input, text) = (c.input.clone(), c.text.clone());
                     input.update(cx, |i, cx| i.set_text(&text, cx));
                     self.apply_cell_text(cx);

@@ -145,45 +145,6 @@ impl WorkspaceView {
         }
     }
 
-    /// `{{` suggestions under the URL bar while one is being typed.
-    pub(crate) fn completion_strip(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let c = self.scope.envs.completion.as_ref()?;
-        Some(
-            row()
-                .id("var-completion")
-                .flex_none()
-                .gap_1()
-                .px_2()
-                .py_1()
-                .border_b_1()
-                .border_color(t.border_variant)
-                .text_size(px(12.))
-                .font_family(BUFFER_FONT)
-                .child(div().text_color(t.text_placeholder).child("variables"))
-                .children(c.names.iter().enumerate().map(|(i, n)| {
-                    let on = i == c.selected;
-                    row()
-                        .id(("var-choice", i))
-                        .px_2()
-                        .h(px(20.))
-                        .rounded(px(3.))
-                        .cursor_pointer()
-                        .border_1()
-                        .border_color(if on { t.accent } else { t.border_variant })
-                        .text_color(if on { t.accent } else { t.text_muted })
-                        .dev_click("var-completion", Role::Button, "var-completion", true, {
-                            let n = n.clone();
-                            let target = c.target;
-                            cx.listener(move |this, _, _, cx| {
-                                this.accept_completion_click(target, &n, cx)
-                            })
-                        })
-                        .child(n.clone())
-                }))
-                .into_any_element(),
-        )
-    }
-
     // ---- Environment tab ---------------------------------------------------------------------
 
     pub(crate) fn render_cookies_section(

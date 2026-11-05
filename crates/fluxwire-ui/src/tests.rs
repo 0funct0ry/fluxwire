@@ -407,6 +407,179 @@ fn header_cell_edit_goes_through_the_span_editor(cx: &mut TestAppContext) {
     );
 }
 
+fn cell_pos(view: &Entity<WorkspaceView>, cx: &mut VisualTestContext) -> Option<(usize, bool)> {
+    view.read_with(cx, |w, _| {
+        w.scope
+            .cell
+            .as_ref()
+            .map(|c| (c.row, c.col == crate::workspace::Col::Value))
+    })
+}
+
+#[gpui::test]
+fn tab_in_header_cells_walks_across_rows_and_back(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "cell-tab");
+    let len = view.read_with(cx, |w, _| {
+        w.table_rows(CREATE, crate::workspace::Table::Headers).len()
+    });
+    assert!(len >= 2);
+    view.update_in(cx, |w, window, cx| {
+        w.active_ui().unwrap().sub = 1;
+        w.start_cell(
+            crate::workspace::Table::Headers,
+            0,
+            crate::workspace::Col::Key,
+            window,
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    cx.simulate_keystrokes("tab");
+    assert_eq!(cell_pos(&view, cx), Some((0, true)), "Key -> Value");
+    cx.simulate_keystrokes("tab");
+    assert_eq!(
+        cell_pos(&view, cx),
+        Some((1, false)),
+        "Value -> next row Key"
+    );
+    cx.simulate_keystrokes("shift-tab");
+    assert_eq!(cell_pos(&view, cx), Some((0, true)), "Shift-Tab goes back");
+}
+
+#[gpui::test]
+fn tab_past_the_last_header_opens_a_new_row_and_blank_row_ends_edit(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "cell-tab-new");
+    let len = view.read_with(cx, |w, _| {
+        w.table_rows(CREATE, crate::workspace::Table::Headers).len()
+    });
+    view.update_in(cx, |w, window, cx| {
+        w.active_ui().unwrap().sub = 1;
+        w.start_cell(
+            crate::workspace::Table::Headers,
+            len - 1,
+            crate::workspace::Col::Value,
+            window,
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    cx.simulate_keystrokes("tab");
+    assert_eq!(cell_pos(&view, cx), Some((len, false)), "new row");
+    cx.simulate_keystrokes("tab");
+    cx.simulate_keystrokes("tab");
+    assert_eq!(
+        cell_pos(&view, cx),
+        None,
+        "an unnamed new row ends the edit"
+    );
+    let after = view.read_with(cx, |w, _| {
+        w.table_rows(CREATE, crate::workspace::Table::Headers).len()
+    });
+    assert_eq!(after, len, "no blank header was written");
+}
+
+#[gpui::test]
+fn pressing_outside_the_cell_ends_the_edit(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "cell-outside");
+    view.update_in(cx, |w, window, cx| {
+        w.active_ui().unwrap().sub = 1;
+        w.start_cell(
+            crate::workspace::Table::Headers,
+            0,
+            crate::workspace::Col::Key,
+            window,
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    assert!(cell_pos(&view, cx).is_some());
+    view.update_in(cx, |w, window, cx| w.on_cell_outside_press(window, cx));
+    assert_eq!(cell_pos(&view, cx), None);
+}
+
+#[test]
+fn header_suggestions_filter_names_and_values() {
+    use crate::envs::header_suggestions;
+    use crate::workspace::Col;
+    let labels = |v: Vec<crate::completion::Ranked>| -> Vec<String> {
+        v.into_iter().map(|r| r.item.label).collect()
+    };
+    let k = labels(header_suggestions(Col::Key, "", "content-t"));
+    assert_eq!(k.first().map(String::as_str), Some("Content-Type"));
+    assert!(
+        header_suggestions(Col::Key, "", "").is_empty(),
+        "empty key: no popup"
+    );
+    assert!(header_suggestions(Col::Key, "", "X-Totally-Custom").is_empty());
+    let v = labels(header_suggestions(Col::Value, "content-type", "app"));
+    assert!(v.contains(&"application/json".to_string()));
+    assert!(!v.contains(&"text/plain".to_string()));
+    assert!(header_suggestions(Col::Value, "X-Unknown", "a").is_empty());
+    assert!(
+        header_suggestions(Col::Value, "Connection", "close").is_empty(),
+        "an exact lone match closes the popup"
+    );
+    assert!(!header_suggestions(Col::Value, "Content-Type", "").is_empty());
+}
+
+#[gpui::test]
+fn typing_a_header_key_offers_names_and_accepting_inserts_canonical_casing(
+    cx: &mut TestAppContext,
+) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "header-suggest");
+    let len = view.read_with(cx, |w, _| {
+        w.table_rows(CREATE, crate::workspace::Table::Headers).len()
+    });
+    view.update_in(cx, |w, window, cx| {
+        w.active_ui().unwrap().sub = 1;
+        w.start_cell(
+            crate::workspace::Table::Headers,
+            len,
+            crate::workspace::Col::Key,
+            window,
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    cx.simulate_input("cache-c");
+    view.read_with(cx, |w, _| {
+        let c = w.scope.envs.completion.as_ref().expect("popup");
+        assert_eq!(c.kind, crate::envs::CompleteKind::Header);
+        assert_eq!(c.labels(), ["Cache-Control"]);
+    });
+    cx.simulate_keystrokes("tab");
+    let text = doc_text(&view, cx, CREATE);
+    assert!(text.contains("Cache-Control:"), "{text}");
+    assert_eq!(
+        cell_pos(&view, cx),
+        Some((len, false)),
+        "Tab accepts, stays put"
+    );
+    view.read_with(cx, |w, _| {
+        assert!(
+            w.scope.envs.completion.is_none(),
+            "popup closes after accepting"
+        );
+    });
+    cx.simulate_keystrokes("tab");
+    assert_eq!(cell_pos(&view, cx), Some((len, true)));
+    view.read_with(cx, |w, _| {
+        let c = w.scope.envs.completion.as_ref().expect("value suggestions");
+        assert!(c.labels().contains(&"no-cache"));
+    });
+    // Accepting a value whose text is also a prefix of another must still close the popup.
+    cx.simulate_input("no-");
+    cx.simulate_keystrokes("tab");
+    view.read_with(cx, |w, _| {
+        assert!(
+            w.scope.envs.completion.is_none(),
+            "closed after accepting a value"
+        );
+    });
+    let text = doc_text(&view, cx, CREATE);
+    assert!(text.contains("Cache-Control: no-cache"), "{text}");
+}
+
 #[gpui::test]
 fn new_request_prompt_creates_file_and_opens_tab(cx: &mut TestAppContext) {
     let (view, cx, root) = setup_with(cx, "payments-api", "new");
@@ -1448,7 +1621,7 @@ fn typing_open_braces_offers_variables_and_tab_completes(cx: &mut TestAppContext
     cx.simulate_input("{{cust");
     view.read_with(cx, |w, _| {
         let c = w.scope.envs.completion.as_ref().expect("suggestions");
-        assert_eq!(c.names, ["customerId"]);
+        assert_eq!(c.labels(), ["customerId"]);
     });
     cx.simulate_keystrokes("tab");
     assert_eq!(
@@ -1459,6 +1632,32 @@ fn typing_open_braces_offers_variables_and_tab_completes(cx: &mut TestAppContext
         "GET http://x.test/{{customerId}}"
     );
     view.read_with(cx, |w, _| assert!(w.scope.envs.completion.is_none()));
+}
+
+#[gpui::test]
+fn open_braces_lists_environment_then_dynamic_and_filters(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "complete-groups");
+    set_doc_text(
+        &view,
+        cx,
+        CREATE,
+        "---\nname: X\n---\n\n```http\nGET http://x.test/\n```\n".into(),
+    );
+    view.update(cx, |w, cx| w.set_active_env(Some("local".into()), cx));
+    cx.simulate_keystrokes("secondary-l");
+    cx.simulate_input("{{");
+    view.read_with(cx, |w, _| {
+        let c = w.scope.envs.completion.as_ref().expect("suggestions");
+        let groups: Vec<_> = c.items.iter().map(|r| r.item.group).collect();
+        let first_dynamic = groups.iter().position(|g| *g == "Dynamic").unwrap();
+        assert!(groups[..first_dynamic].iter().all(|g| *g == "Environment"));
+        assert!(groups[first_dynamic..].iter().all(|g| *g == "Dynamic"));
+    });
+    cx.simulate_input("$ra");
+    view.read_with(cx, |w, _| {
+        let c = w.scope.envs.completion.as_ref().expect("suggestions");
+        assert_eq!(c.labels(), ["$randomInt", "$randomString(16)"]);
+    });
 }
 
 #[gpui::test]

@@ -49,7 +49,14 @@ pub struct CompletionItem {
     pub insert_text: String,
     /// Bytes of the document replaced on accept.
     pub replace: Range<usize>,
+    /// Section header the popup lists the item under; empty for no header.
+    pub group: &'static str,
 }
+
+/// Group of variables that resolve from the active environment, collection or request.
+pub const GROUP_ENVIRONMENT: &str = "Environment";
+/// Group of built-in dynamic values such as `$uuid`.
+pub const GROUP_DYNAMIC: &str = "Dynamic";
 
 impl CompletionItem {
     pub fn new(label: impl Into<String>, kind: Kind, replace: Range<usize>) -> Self {
@@ -61,7 +68,12 @@ impl CompletionItem {
             detail: String::new(),
             documentation: String::new(),
             replace,
+            group: "",
         }
+    }
+    pub fn group(mut self, g: &'static str) -> Self {
+        self.group = g;
+        self
     }
     pub fn detail(mut self, d: impl Into<String>) -> Self {
         self.detail = d.into();
@@ -156,6 +168,45 @@ pub fn rank(items: Vec<CompletionItem>, query: &str) -> Vec<Ranked> {
     }
     scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
     scored.into_iter().map(|s| s.2).collect()
+}
+
+/// One line of the grouped popup: a section header or the item at this index.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Row {
+    Header(&'static str),
+    Item(usize),
+}
+
+fn group_order(g: &str) -> u8 {
+    match g {
+        GROUP_ENVIRONMENT => 0,
+        GROUP_DYNAMIC => 1,
+        "" => 3,
+        _ => 2,
+    }
+}
+
+/// Orders `items` Environment, Dynamic, other groups, then ungrouped; rank is kept within a
+/// group. Truncates to `cap` items first so a large catalogue stays cheap to render.
+pub fn group_sorted(mut items: Vec<Ranked>, cap: usize) -> Vec<Ranked> {
+    items.sort_by_key(|r| group_order(r.item.group));
+    items.truncate(cap);
+    items
+}
+
+/// Popup rows for `items` (already group-sorted): a header before each run of one group.
+pub fn rows(items: &[Ranked]) -> Vec<Row> {
+    let mut out = Vec::with_capacity(items.len() + 3);
+    let mut last: Option<&str> = None;
+    for (i, r) in items.iter().enumerate() {
+        let g = r.item.group;
+        if !g.is_empty() && last != Some(g) {
+            out.push(Row::Header(g));
+        }
+        last = Some(g);
+        out.push(Row::Item(i));
+    }
+    out
 }
 
 /// Result of expanding an item's insert text: the text and where the caret (or selection)
@@ -298,6 +349,52 @@ mod tests {
             .collect();
         assert_eq!(l, ["a", "b", "c"]);
         assert!(c.is_trigger_char('.') && !c.is_trigger_char('x'));
+    }
+
+    fn ranked(l: &str, g: &'static str) -> Ranked {
+        Ranked {
+            item: item(l).group(g),
+            matched: vec![],
+        }
+    }
+
+    #[test]
+    fn group_sorted_puts_environment_first_and_keeps_rank() {
+        let v = group_sorted(
+            vec![
+                ranked("$uuid", GROUP_DYNAMIC),
+                ranked("B", GROUP_ENVIRONMENT),
+                ranked("$now", GROUP_DYNAMIC),
+                ranked("A", GROUP_ENVIRONMENT),
+            ],
+            50,
+        );
+        let l: Vec<_> = v.iter().map(|r| r.item.label.as_str()).collect();
+        assert_eq!(l, ["B", "A", "$uuid", "$now"]);
+        assert_eq!(group_sorted(v, 3).len(), 3);
+    }
+
+    #[test]
+    fn rows_insert_one_header_per_group() {
+        let v = group_sorted(
+            vec![
+                ranked("A", GROUP_ENVIRONMENT),
+                ranked("$uuid", GROUP_DYNAMIC),
+                ranked("$now", GROUP_DYNAMIC),
+            ],
+            50,
+        );
+        assert_eq!(
+            rows(&v),
+            [
+                Row::Header(GROUP_ENVIRONMENT),
+                Row::Item(0),
+                Row::Header(GROUP_DYNAMIC),
+                Row::Item(1),
+                Row::Item(2)
+            ]
+        );
+        assert_eq!(rows(&[ranked("x", "")]), [Row::Item(0)]);
     }
 
     #[test]

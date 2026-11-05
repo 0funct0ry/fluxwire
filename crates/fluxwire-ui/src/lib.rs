@@ -10,6 +10,7 @@ pub mod code_editor;
 pub mod code_editor_element;
 pub mod code_editor_ops;
 pub mod completion;
+pub mod completion_popup;
 pub mod completion_providers;
 pub mod containment;
 #[cfg(feature = "dev-mcp")]
@@ -33,6 +34,7 @@ pub mod env_doc;
 pub mod env_editor;
 pub mod envs;
 pub mod envs_view;
+pub mod header_catalog;
 pub mod highlight;
 pub mod history;
 pub mod history_detail;
