@@ -41,6 +41,33 @@ fn kind_of(name: &str) -> VarRefKind {
     }
 }
 
+/// Index of the `}}` that closes the `{{` at `open`. A reference that starts with `$` (a
+/// dynamic variable) may contain nested `{{…}}` in its arguments, as in
+/// `{{$sha256({{body}})}}`; every other reference ends at the first `}}`.
+fn close_of(text: &str, open: usize) -> Option<usize> {
+    let inner = &text[open + 2..];
+    if !inner.trim_start().starts_with('$') {
+        return inner.find("}}").map(|j| j + open + 2);
+    }
+    let b = text.as_bytes();
+    let (mut i, mut depth) = (open + 2, 0usize);
+    while i + 1 < b.len() {
+        if b[i] == b'{' && b[i + 1] == b'{' {
+            depth += 1;
+            i += 2;
+        } else if b[i] == b'}' && b[i + 1] == b'}' {
+            if depth == 0 {
+                return Some(i);
+            }
+            depth -= 1;
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    None
+}
+
 /// Find every unescaped `{{…}}` in `text`.
 pub fn refs(text: &str) -> Vec<VarRef> {
     let mut out = Vec::new();
@@ -50,7 +77,7 @@ pub fn refs(text: &str) -> Vec<VarRef> {
             at = i + 2;
             continue;
         }
-        let Some(j) = text[i + 2..].find("}}").map(|j| j + i + 2) else {
+        let Some(j) = close_of(text, i) else {
             break;
         };
         let name = text[i + 2..j].trim().to_string();
@@ -97,20 +124,30 @@ pub fn interpolate(text: &str, scope: &VarScope) -> Interp {
             at = i + 2;
             continue;
         }
-        let Some(j) = text[i + 2..].find("}}").map(|j| j + i + 2) else {
+        let Some(j) = close_of(text, i) else {
             break;
         };
         out.push_str(&text[last..i]);
         let name = text[i + 2..j].trim();
         let raw = &text[i..j + 2];
         match kind_of(name) {
-            VarRefKind::Dynamic => match dynamic::resolve(name) {
-                Some(v) => out.push_str(&v),
-                None => {
-                    r.missing.push(name.to_string());
-                    out.push_str(raw);
+            VarRefKind::Dynamic => {
+                // Nested references in the arguments resolve first (`{{$sha256({{body}})}}`).
+                let inner = name.contains("{{").then(|| interpolate(name, scope));
+                let expr = inner.as_ref().map_or(name, |i| i.text.as_str());
+                let unresolved = inner.as_ref().is_some_and(|i| !i.missing.is_empty());
+                match (!unresolved).then(|| dynamic::resolve(expr)).flatten() {
+                    Some(v) => out.push_str(&v),
+                    None => {
+                        r.missing.push(name.to_string());
+                        out.push_str(raw);
+                    }
                 }
-            },
+                if let Some(i) = inner {
+                    r.used.extend(i.used);
+                    r.schemes.extend(i.schemes);
+                }
+            }
             VarRefKind::ProcessEnv => {
                 let key = &name["process.env.".len()..];
                 match scope
@@ -224,5 +261,26 @@ mod tests {
     fn provenance_recorded() {
         let r = interpolate("{{baseUrl}}", &scope());
         assert_eq!(r.used[0].1.describe(), "staging.env, line 2");
+    }
+
+    #[test]
+    fn dynamic_arguments_may_contain_variables() {
+        let sc = scope();
+        let r = interpolate("{{$hex({{baseUrl}})}}", &sc);
+        assert_eq!(r.text, "687474703a2f2f78");
+        assert_eq!(r.used.len(), 1, "the inner variable is recorded as used");
+        let r = interpolate("a {{$sha256(x)}} b {{baseUrl}}", &sc);
+        assert!(r.text.ends_with(" b http://x") && r.missing.is_empty());
+        let r = interpolate("{{$hex({{nope}})}}", &sc);
+        assert_eq!(r.text, "{{$hex({{nope}})}}");
+        assert_eq!(r.missing, ["$hex({{nope}})"]);
+        let r = interpolate("{{$base64({{$hex(a)}})}}", &sc);
+        assert_eq!(r.text, "NjE=");
+        let found = refs("{{$sha256({{baseUrl}})}} and {{baseUrl}}");
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].name, "$sha256({{baseUrl}})");
+        assert_eq!(found[0].kind, VarRefKind::Dynamic);
+        // Plain references still end at the first `}}`.
+        assert_eq!(refs("{{ a {{b}}").len(), 1);
     }
 }

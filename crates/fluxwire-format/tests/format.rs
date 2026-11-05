@@ -393,3 +393,40 @@ fn query_rows_cover_url_and_continuation_lines() {
     let out = apply_edits(v, &set_query(&dv, 1, true, "t", Some("2"))).unwrap();
     assert!(out.contains("GET {{base}}/a?q={{a&b}}&t=2\n"), "{out}");
 }
+
+#[test]
+fn path_param_names_follow_the_url_path_only() {
+    assert_eq!(
+        path_param_names("https://example.com/v1/users/:id/posts/:post_id?x=:no#:frag"),
+        ["id", "post_id"]
+    );
+    assert_eq!(
+        path_param_names("http://localhost:8080/a/:id/b/:id"),
+        ["id"]
+    );
+    assert!(path_param_names("http://localhost:8080").is_empty());
+    assert!(path_param_names("{{base}}/users/{{id}}").is_empty());
+    assert_eq!(path_param_names("{{base}}/users/:id"), ["id"]);
+    assert!(path_param_names("https://x.test/a/:/b/:a.b").is_empty());
+}
+
+#[test]
+fn set_path_param_edits_only_the_path_map() {
+    let src = "---\nname: X\nx-keep: 1\n---\n\n```http\nGET https://x.test/u/:id/p/:pid\n```\n";
+    let d = parse(src);
+    assert_eq!(path_values(&d), []);
+    let s1 = apply_edits(src, &set_path_param(&d, "id", "42")).unwrap();
+    assert!(s1.contains("path:\n  id: 42\n"), "{s1}");
+    assert!(s1.contains("x-keep: 1"));
+    let d1 = parse(&s1);
+    let s2 = apply_edits(&s1, &set_path_param(&d1, "pid", "{{p}}")).unwrap();
+    assert_eq!(
+        path_values(&parse(&s2)),
+        [("id".into(), "42".into()), ("pid".into(), "{{p}}".into())]
+    );
+    let s3 = apply_edits(&s2, &set_path_param(&parse(&s2), "id", "")).unwrap();
+    assert_eq!(path_values(&parse(&s3)), [("pid".into(), "{{p}}".into())]);
+    let s4 = apply_edits(&s3, &set_path_param(&parse(&s3), "pid", "")).unwrap();
+    assert!(!s4.contains("path:"), "{s4}");
+    assert_eq!(s4, src);
+}

@@ -815,6 +815,21 @@ impl WorkspaceView {
                 .iter()
                 .map(|h| (h.enabled, h.name.clone(), h.value.clone()))
                 .collect(),
+            // One row per `:name` in the URL path; the value is the `path` front matter entry.
+            Table::Path => {
+                let values = fmt::path_values(&doc.parsed);
+                fmt::path_param_names(&req.target)
+                    .into_iter()
+                    .map(|n| {
+                        let v = values
+                            .iter()
+                            .find(|(k, _)| *k == n)
+                            .map(|(_, v)| v.clone())
+                            .unwrap_or_default();
+                        (true, n, v)
+                    })
+                    .collect()
+            }
         }
     }
 
@@ -827,6 +842,9 @@ impl WorkspaceView {
         cx: &mut Context<Self>,
     ) {
         let Some(key) = self.active_key() else { return };
+        if table == Table::Path && col == Col::Key {
+            return;
+        }
         let rows = self.table_rows(&key, table);
         let text = rows
             .get(row)
@@ -879,6 +897,7 @@ impl WorkspaceView {
             return false;
         };
         let edits = match (table, row < len) {
+            (Table::Path, _) => fmt::set_path_param(&doc.parsed, name, value),
             (Table::Headers, true) => fmt::set_header(&doc.parsed, row, enabled, name, value),
             (Table::Headers, false) => fmt::add_header(&doc.parsed, name, value),
             (Table::Params, true) => fmt::set_query(
@@ -950,6 +969,19 @@ impl WorkspaceView {
         cx: &mut Context<Self>,
     ) {
         let len = self.table_rows_len(&cell.key, cell.table);
+        if cell.table == Table::Path {
+            // Only values are editable: walk them top to bottom, ending at either end.
+            let next = if back {
+                cell.row.checked_sub(1)
+            } else {
+                (cell.row + 1 < len).then_some(cell.row + 1)
+            };
+            match next {
+                Some(r) => self.start_cell(cell.table, r, Col::Value, window, cx),
+                None => self.end_cell_edit(window, cx),
+            }
+            return;
+        }
         let target = match (back, cell.col) {
             (false, Col::Key) => Some((cell.row, Col::Value)),
             (false, Col::Value) => {
@@ -1051,6 +1083,7 @@ impl WorkspaceView {
         let edits = match table {
             Table::Headers => fmt::remove_header(&doc.parsed, row),
             Table::Params => fmt::remove_query(&doc.parsed, row),
+            Table::Path => return,
         };
         if doc.apply(&edits) {
             self.scope.cell = None;

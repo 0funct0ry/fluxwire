@@ -749,7 +749,8 @@ impl WorkspaceView {
         let params_on = fluxwire_format::query_rows(&doc.parsed)
             .iter()
             .filter(|q| q.enabled)
-            .count();
+            .count()
+            + fluxwire_format::path_param_names(&url).len();
         let headers = req.map_or(0, |r| r.headers.len());
         let has_body = !doc.target_text(Target::Body).is_empty();
         let count_of = |k: BlockKind| doc.parsed.blocks_of(k).count();
@@ -921,7 +922,7 @@ impl WorkspaceView {
             let base = row()
                 .id((
                     if col == Col::Key { "cell-k" } else { "cell-v" },
-                    idx + usize::from(table == Table::Headers) * 1000,
+                    idx + table.id_offset(),
                 ))
                 .h(px(24.))
                 .px_1()
@@ -981,6 +982,7 @@ impl WorkspaceView {
             ));
         }
         let new_row_idx = n;
+        let is_path = table == Table::Path;
         div()
             .id(id)
             .flex()
@@ -995,12 +997,16 @@ impl WorkspaceView {
                     .text_size(px(11.))
                     .text_color(t.text_placeholder)
                     .child(div().w(px(16.)).flex_none())
-                    .child(div().w(px(200.)).flex_none().child("Key"))
+                    .child(div().w(px(200.)).flex_none().child(if is_path {
+                        "Path parameter"
+                    } else {
+                        "Key"
+                    }))
                     .child(div().flex_1().child("Value"))
                     .child(div().w(px(16.)).flex_none()),
             )
             .children(all.into_iter().enumerate().map(|(i, (enabled, k, v))| {
-                let id_off = i + usize::from(table == Table::Headers) * 1000;
+                let id_off = i + table.id_offset();
                 let popup = editing
                     .as_ref()
                     .filter(|c| c.row == i)
@@ -1025,7 +1031,8 @@ impl WorkspaceView {
                     .font_family(BUFFER_FONT)
                     .text_size(px(12.))
                     .children(popup)
-                    .child(
+                    .when(is_path, |d| d.child(div().w(px(14.)).flex_none()))
+                    .children((!is_path).then(|| {
                         div()
                             .id(("row-check", id_off))
                             .size(px(14.))
@@ -1041,9 +1048,19 @@ impl WorkspaceView {
                                 id,
                                 true,
                                 cx.listener(move |this, _, _, cx| this.toggle_row(table, i, cx)),
-                            ),
-                    )
-                    .child(cell_el(i, Col::Key, &k, enabled, cx))
+                            )
+                    }))
+                    .child(if is_path {
+                        div()
+                            .w(px(200.))
+                            .flex_none()
+                            .px_1()
+                            .text_color(t.syntax_function)
+                            .child(format!(":{k}"))
+                            .into_any_element()
+                    } else {
+                        cell_el(i, Col::Key, &k, enabled, cx).into_any_element()
+                    })
                     .child(cell_el(i, Col::Value, &v, enabled, cx))
                     .child(
                         div()
@@ -1058,10 +1075,10 @@ impl WorkspaceView {
                                 true,
                                 cx.listener(move |this, _, _, cx| this.delete_row(table, i, cx)),
                             )
-                            .child(icon("x", 12., t.text_placeholder)),
+                            .when(!is_path, |d| d.child(icon("x", 12., t.text_placeholder))),
                     )
             }))
-            .child(
+            .children((!is_path).then(|| {
                 row()
                     .id(("add-row", usize::from(table == Table::Headers)))
                     .h(px(28.))
@@ -1088,8 +1105,8 @@ impl WorkspaceView {
                         "Add header"
                     } else {
                         "Add parameter"
-                    }),
-            )
+                    })
+            }))
             .into_any_element()
     }
 
@@ -1300,7 +1317,37 @@ impl WorkspaceView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         match ui.sub {
-            0 => self.editable_table(t, Table::Params, key, "params", cx),
+            0 => {
+                let has_path = !self.table_rows(key, Table::Path).is_empty();
+                let section = |label: &'static str| {
+                    div()
+                        .px_3()
+                        .pt_2()
+                        .pb_1()
+                        .text_size(px(12.))
+                        .text_color(t.text_muted)
+                        .child(label)
+                };
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(section("Query"))
+                    .child(self.editable_table(t, Table::Params, key, "params", cx))
+                    .child(section("Path"))
+                    .child(if has_path {
+                        self.editable_table(t, Table::Path, key, "path-params", cx)
+                    } else {
+                        div()
+                            .id("path-params-empty")
+                            .px_3()
+                            .py_1()
+                            .text_size(px(12.))
+                            .text_color(t.text_placeholder)
+                            .child("Add :name to the URL path to define a path parameter.")
+                            .into_any_element()
+                    })
+                    .into_any_element()
+            }
             1 => self.editable_table(t, Table::Headers, key, "headers", cx),
             2 => {
                 let text = doc.target_text(Target::Body);

@@ -55,8 +55,12 @@ pub struct CompletionItem {
 
 /// Group of variables that resolve from the active environment, collection or request.
 pub const GROUP_ENVIRONMENT: &str = "Environment";
-/// Group of built-in dynamic values such as `$uuid`.
-pub const GROUP_DYNAMIC: &str = "Dynamic";
+/// Groups of the built-in dynamic values, listed in this order after Environment.
+pub const GROUP_DATETIME: &str = "Date & time";
+pub const GROUP_RANDOM: &str = "Random";
+pub const GROUP_IDS: &str = "Identifiers";
+pub const GROUP_ENCODING: &str = "Encoding & hashing";
+const DYNAMIC_GROUPS: [&str; 4] = [GROUP_DATETIME, GROUP_RANDOM, GROUP_IDS, GROUP_ENCODING];
 
 impl CompletionItem {
     pub fn new(label: impl Into<String>, kind: Kind, replace: Range<usize>) -> Self {
@@ -180,13 +184,15 @@ pub enum Row {
 fn group_order(g: &str) -> u8 {
     match g {
         GROUP_ENVIRONMENT => 0,
-        GROUP_DYNAMIC => 1,
-        "" => 3,
-        _ => 2,
+        "" => 20,
+        _ => DYNAMIC_GROUPS
+            .iter()
+            .position(|d| *d == g)
+            .map_or(10, |i| i as u8 + 1),
     }
 }
 
-/// Orders `items` Environment, Dynamic, other groups, then ungrouped; rank is kept within a
+/// Orders `items` Environment, the dynamic groups, other groups, then ungrouped; rank is kept within a
 /// group. Truncates to `cap` items first so a large catalogue stays cheap to render.
 pub fn group_sorted(mut items: Vec<Ranked>, cap: usize) -> Vec<Ranked> {
     items.sort_by_key(|r| group_order(r.item.group));
@@ -362,9 +368,9 @@ mod tests {
     fn group_sorted_puts_environment_first_and_keeps_rank() {
         let v = group_sorted(
             vec![
-                ranked("$uuid", GROUP_DYNAMIC),
+                ranked("$uuid", GROUP_DATETIME),
                 ranked("B", GROUP_ENVIRONMENT),
-                ranked("$now", GROUP_DYNAMIC),
+                ranked("$now", GROUP_DATETIME),
                 ranked("A", GROUP_ENVIRONMENT),
             ],
             50,
@@ -379,8 +385,8 @@ mod tests {
         let v = group_sorted(
             vec![
                 ranked("A", GROUP_ENVIRONMENT),
-                ranked("$uuid", GROUP_DYNAMIC),
-                ranked("$now", GROUP_DYNAMIC),
+                ranked("$uuid", GROUP_DATETIME),
+                ranked("$now", GROUP_DATETIME),
             ],
             50,
         );
@@ -389,7 +395,7 @@ mod tests {
             [
                 Row::Header(GROUP_ENVIRONMENT),
                 Row::Item(0),
-                Row::Header(GROUP_DYNAMIC),
+                Row::Header(GROUP_DATETIME),
                 Row::Item(1),
                 Row::Item(2)
             ]

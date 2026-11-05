@@ -105,6 +105,19 @@ pub struct TreeMenu {
 pub enum Table {
     Params,
     Headers,
+    /// `:name` path parameters of the URL; only the Value cell is editable.
+    Path,
+}
+
+impl Table {
+    /// Offset that keeps element ids of the tables apart.
+    pub fn id_offset(self) -> usize {
+        match self {
+            Table::Params => 0,
+            Table::Headers => 1000,
+            Table::Path => 2000,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

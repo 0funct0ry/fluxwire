@@ -19,6 +19,7 @@ use fluxwire_protocol::EnvState;
 use fluxwire_vars::{VarScope, refs};
 use gpui::{Context, Window};
 
+use crate::completion::{GROUP_DATETIME, GROUP_ENCODING, GROUP_IDS, GROUP_RANDOM};
 use crate::workspace::{ItemRun, ModalItem, ModalKind, PromptPurpose, WorkspaceView, fuzzy};
 
 /// How long a revealed secret stays visible (SPEC §8.3).
@@ -58,17 +59,77 @@ pub enum CompleteTarget {
     Cell,
 }
 
-/// Built-in dynamic values offered after `{{`, with a one-line description.
-pub const DYNAMIC_VARS: &[(&str, &str)] = &[
-    ("$uuid", "Random UUID v4, new on every send."),
-    ("$timestamp", "Unix time in seconds."),
-    ("$isoTimestamp", "Current time as an ISO 8601 string."),
-    ("$randomInt", "Random integer."),
+/// Built-in dynamic values offered after `{{`: (label, group, description). Labels carry an
+/// example argument where the function takes one; the arguments are SPEC §8.1 text.
+pub const DYNAMIC_VARS: &[(&str, &str, &str)] = &[
+    ("$timestamp", GROUP_DATETIME, "Unix time in seconds"),
+    (
+        "$timestamp(+1h)",
+        GROUP_DATETIME,
+        "Unix seconds with an offset",
+    ),
+    ("$timestampMs", GROUP_DATETIME, "Unix time in milliseconds"),
+    (
+        "$isoTimestamp",
+        GROUP_DATETIME,
+        "ISO 8601 date and time, UTC",
+    ),
+    (
+        "$isoTimestamp(+1d)",
+        GROUP_DATETIME,
+        "ISO 8601 with an offset",
+    ),
+    ("$today", GROUP_DATETIME, "Date, 2026-11-05"),
+    ("$now", GROUP_DATETIME, "Time, 14:03:22 UTC"),
+    (
+        "$httpDate",
+        GROUP_DATETIME,
+        "RFC 7231 date for the Date header",
+    ),
+    ("$randomInt", GROUP_RANDOM, "Integer from 0 to 1000000"),
+    ("$randomInt(1,100)", GROUP_RANDOM, "Integer in a range"),
+    ("$randomFloat(0,1)", GROUP_RANDOM, "Decimal in a range"),
+    ("$randomBool", GROUP_RANDOM, "true or false"),
+    (
+        "$randomChoice(a,b,c)",
+        GROUP_RANDOM,
+        "One of the listed values",
+    ),
     (
         "$randomString(16)",
-        "Random alphanumeric string of the given length.",
+        GROUP_RANDOM,
+        "Alphanumeric string of a length",
     ),
-    ("$base64()", "Base64 encoding of the argument."),
+    ("$randomHex(16)", GROUP_RANDOM, "Hex characters of a length"),
+    ("$randomBytes(16)", GROUP_RANDOM, "Random bytes, base64"),
+    ("$randomIp", GROUP_RANDOM, "IPv4 from a documentation range"),
+    ("$uuid", GROUP_IDS, "UUID v4"),
+    ("$nanoid(21)", GROUP_IDS, "URL-safe ID of a length"),
+    ("$shortId", GROUP_IDS, "8-character base-62 ID"),
+    ("$ulid", GROUP_IDS, "Sortable ID, 26 characters"),
+    ("$ksuid", GROUP_IDS, "K-sortable ID, 27 characters"),
+    ("$snowflakeId", GROUP_IDS, "Sortable 64-bit integer"),
+    ("$cuid", GROUP_IDS, "CUID v1 (deprecated by its author)"),
+    ("$cuid2", GROUP_IDS, "CUID2, 24 characters"),
+    ("$base64(value)", GROUP_ENCODING, "Base64 of the text"),
+    (
+        "$base64url(value)",
+        GROUP_ENCODING,
+        "URL-safe base64, no padding",
+    ),
+    ("$hex(value)", GROUP_ENCODING, "Hex of the text"),
+    ("$urlencode(value)", GROUP_ENCODING, "Percent-encoded text"),
+    ("$sha256(value)", GROUP_ENCODING, "SHA-256 digest, hex"),
+    (
+        "$md5(value)",
+        GROUP_ENCODING,
+        "MD5 digest, hex (not for security)",
+    ),
+    (
+        "$hmacSha256(key,value)",
+        GROUP_ENCODING,
+        "HMAC-SHA-256, hex",
+    ),
 ];
 
 /// What a completion list offers: variables finish an open `{{`, header suggestions replace
@@ -705,13 +766,13 @@ impl WorkspaceView {
     /// Names that resolve in `scope`, for `{{` completion.
     pub fn var_names(&self, scope: &VarScope) -> Vec<String> {
         let mut n: Vec<String> = scope.vars.keys().cloned().collect();
-        n.extend(DYNAMIC_VARS.iter().map(|(n, _)| (*n).to_string()));
+        n.extend(DYNAMIC_VARS.iter().map(|(n, _, _)| (*n).to_string()));
         n
     }
 
     /// Suggestions for `{{`: variables of `scope` (Environment) and built-in dynamic values.
     pub fn var_items(&self, scope: &VarScope) -> Vec<crate::completion::CompletionItem> {
-        use crate::completion::{CompletionItem, GROUP_DYNAMIC, GROUP_ENVIRONMENT, Kind};
+        use crate::completion::{CompletionItem, GROUP_ENVIRONMENT, Kind};
         let mut out: Vec<CompletionItem> = scope
             .vars
             .iter()
@@ -726,12 +787,11 @@ impl WorkspaceView {
                     .group(GROUP_ENVIRONMENT)
             })
             .collect();
-        for (name, doc) in DYNAMIC_VARS {
+        for (name, group, doc) in DYNAMIC_VARS {
             out.push(
                 CompletionItem::new(*name, Kind::Function, 0..0)
-                    .detail("dynamic")
-                    .doc(*doc)
-                    .group(GROUP_DYNAMIC),
+                    .detail(*doc)
+                    .group(group),
             );
         }
         out

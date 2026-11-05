@@ -581,6 +581,62 @@ fn typing_a_header_key_offers_names_and_accepting_inserts_canonical_casing(
 }
 
 #[gpui::test]
+fn path_params_in_the_url_get_rows_and_values_go_to_front_matter(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "path-params");
+    set_doc_text(
+        &view,
+        cx,
+        CREATE,
+        "---\nname: X\n---\n\n```http\nGET http://x.test/u/:id/p/:pid?q=1\n```\n".into(),
+    );
+    let rows = |w: &WorkspaceView| w.table_rows(CREATE, crate::workspace::Table::Path);
+    view.read_with(cx, |w, _| {
+        let names: Vec<_> = rows(w).into_iter().map(|r| r.1).collect();
+        assert_eq!(names, ["id", "pid"]);
+    });
+    view.update_in(cx, |w, window, cx| {
+        w.active_ui().unwrap().sub = 0;
+        // Path keys are read-only.
+        w.start_cell(
+            crate::workspace::Table::Path,
+            0,
+            crate::workspace::Col::Key,
+            window,
+            cx,
+        );
+        assert!(w.scope.cell.is_none());
+        w.start_cell(
+            crate::workspace::Table::Path,
+            0,
+            crate::workspace::Col::Value,
+            window,
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    cx.simulate_input("42");
+    let text = doc_text(&view, cx, CREATE);
+    assert!(text.contains("path:\n  id: 42"), "{text}");
+    assert!(
+        text.contains("GET http://x.test/u/:id/p/:pid?q=1"),
+        "URL untouched"
+    );
+    cx.simulate_keystrokes("tab");
+    assert_eq!(
+        cell_pos(&view, cx),
+        Some((1, true)),
+        "Tab goes to the next value"
+    );
+    cx.simulate_input("{{pid}}");
+    cx.simulate_keystrokes("tab");
+    assert_eq!(cell_pos(&view, cx), None, "last value ends the edit");
+    view.read_with(cx, |w, _| {
+        let v: Vec<_> = rows(w).into_iter().map(|r| r.2).collect();
+        assert_eq!(v, ["42", "{{pid}}"]);
+    });
+}
+
+#[gpui::test]
 fn new_request_prompt_creates_file_and_opens_tab(cx: &mut TestAppContext) {
     let (view, cx, root) = setup_with(cx, "payments-api", "new");
     let count = view.read_with(cx, |w, _| {
@@ -1649,14 +1705,25 @@ fn open_braces_lists_environment_then_dynamic_and_filters(cx: &mut TestAppContex
     view.read_with(cx, |w, _| {
         let c = w.scope.envs.completion.as_ref().expect("suggestions");
         let groups: Vec<_> = c.items.iter().map(|r| r.item.group).collect();
-        let first_dynamic = groups.iter().position(|g| *g == "Dynamic").unwrap();
+        let first_dynamic = groups.iter().position(|g| *g != "Environment").unwrap();
         assert!(groups[..first_dynamic].iter().all(|g| *g == "Environment"));
-        assert!(groups[first_dynamic..].iter().all(|g| *g == "Dynamic"));
+        assert_eq!(
+            groups[first_dynamic], "Date & time",
+            "dynamic groups follow"
+        );
+        for g in ["Date & time", "Random", "Identifiers", "Encoding & hashing"] {
+            assert!(groups.contains(&g), "{g} listed");
+        }
     });
     cx.simulate_input("$ra");
     view.read_with(cx, |w, _| {
         let c = w.scope.envs.completion.as_ref().expect("suggestions");
-        assert_eq!(c.labels(), ["$randomInt", "$randomString(16)"]);
+        let l = c.labels();
+        assert!(l.contains(&"$randomInt") && l.contains(&"$randomString(16)"));
+        assert!(
+            l.iter().all(|n| n.contains('r') && n.contains('a')),
+            "{l:?}"
+        );
     });
 }
 
@@ -4649,4 +4716,15 @@ fn import_without_a_workspace_only_shows_a_notice(cx: &mut TestAppContext) {
         assert!(w.dialog.is_none());
         assert!(w.notice.as_deref().unwrap().contains("Open a workspace"));
     });
+}
+
+#[test]
+fn every_offered_dynamic_value_resolves() {
+    let scope = fluxwire_vars::VarScope::default();
+    for (label, _, detail) in crate::envs::DYNAMIC_VARS {
+        let r = fluxwire_vars::interpolate(&format!("{{{{{label}}}}}"), &scope);
+        assert!(r.missing.is_empty(), "{label} does not resolve");
+        assert!(!r.text.is_empty() && !r.text.contains("{{"), "{label}");
+        assert!(!detail.is_empty());
+    }
 }

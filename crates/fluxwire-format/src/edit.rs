@@ -98,6 +98,59 @@ pub fn remove_front_matter(doc: &FluxDoc, key: &str) -> Vec<Edit> {
     }
 }
 
+/// Names of the `:name` path parameters in the path of `target`, in order, without repeats
+/// (SPEC §7.4). A `:` inside the scheme or port is not a parameter, and neither are `{{...}}`
+/// variables or segments with characters outside `[A-Za-z0-9_-]`.
+pub fn path_param_names(target: &str) -> Vec<String> {
+    let start = target.find("://").map_or(0, |i| i + 3);
+    let Some(path_start) = target[start..].find('/').map(|i| i + start) else {
+        return Vec::new();
+    };
+    let path_end = target[path_start..]
+        .find(['?', '#'])
+        .map_or(target.len(), |i| i + path_start);
+    let mut out: Vec<String> = Vec::new();
+    for seg in target[path_start..path_end].split('/') {
+        if let Some(n) = seg.strip_prefix(':')
+            && !n.is_empty()
+            && n.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            && !out.iter().any(|o| o == n)
+        {
+            out.push(n.to_string());
+        }
+    }
+    out
+}
+
+/// Value stored for each `path` front matter entry.
+pub fn path_values(doc: &FluxDoc) -> Vec<(String, String)> {
+    match doc.front.get("path").map(|e| &e.value) {
+        Some(FmValue::Map(m)) => m.clone(),
+        _ => Vec::new(),
+    }
+}
+
+/// Set the value of path parameter `name` in the `path` front matter map. An empty value
+/// removes the entry (the variable of the same name is then used), and an emptied map removes
+/// the key. Other entries and keys are untouched.
+pub fn set_path_param(doc: &FluxDoc, name: &str, value: &str) -> Vec<Edit> {
+    let mut m = path_values(doc);
+    match m.iter().position(|(k, _)| k == name) {
+        Some(i) if value.is_empty() => {
+            m.remove(i);
+        }
+        Some(i) => m[i].1 = value.to_string(),
+        None if value.is_empty() => return vec![],
+        None => m.push((name.to_string(), value.to_string())),
+    }
+    if m.is_empty() {
+        remove_front_matter(doc, "path")
+    } else {
+        set_front_matter(doc, "path", &FmValue::Map(m))
+    }
+}
+
 fn req(doc: &FluxDoc) -> Option<(usize, &fluxwire_model::HttpRequest)> {
     let i = doc.request_index()?;
     match &doc.data[i] {
