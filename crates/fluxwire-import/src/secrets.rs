@@ -62,6 +62,44 @@ pub fn var_name(n: &str) -> String {
 pub fn merge_config(old: &str, new: &str) -> Option<String> {
     let mut doc: DocumentMut = old.parse().ok()?;
     let newdoc: DocumentMut = new.parse().ok()?;
+    let secrets = merge_secrets(&mut doc, &newdoc);
+    let links = merge_openapi_links(&mut doc, &newdoc);
+    (secrets || links).then(|| doc.to_string())
+}
+
+/// Add `[[openapi]]` entries of `new` whose `name` the existing file does not have, so a Spec
+/// link imported into an existing Collection is actually recorded (SPEC §6.1).
+fn merge_openapi_links(doc: &mut DocumentMut, newdoc: &DocumentMut) -> bool {
+    let Some(wanted) = newdoc.get("openapi").and_then(|o| o.as_array_of_tables()) else {
+        return false;
+    };
+    let have: Vec<String> = doc
+        .get("openapi")
+        .and_then(|o| o.as_array_of_tables())
+        .map(|a| {
+            a.iter()
+                .filter_map(|t| t.get("name").and_then(|n| n.as_str()).map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut changed = false;
+    for t in wanted.iter() {
+        let name = t.get("name").and_then(|n| n.as_str()).unwrap_or("");
+        if have.iter().any(|h| h == name) {
+            continue;
+        }
+        if doc.get("openapi").is_none() {
+            doc["openapi"] = toml_edit::Item::ArrayOfTables(toml_edit::ArrayOfTables::new());
+        }
+        if let Some(arr) = doc["openapi"].as_array_of_tables_mut() {
+            arr.push(t.clone());
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn merge_secrets(doc: &mut DocumentMut, newdoc: &DocumentMut) -> bool {
     let wanted: Vec<String> = newdoc
         .get("secrets")
         .and_then(|s| s.get("names"))
@@ -73,7 +111,7 @@ pub fn merge_config(old: &str, new: &str) -> Option<String> {
         })
         .unwrap_or_default();
     if wanted.is_empty() {
-        return None;
+        return false;
     }
     let mut names: Vec<String> = doc
         .get("secrets")
@@ -92,7 +130,7 @@ pub fn merge_config(old: &str, new: &str) -> Option<String> {
         }
     }
     if names.len() == before {
-        return None;
+        return false;
     }
     let mut arr = toml_edit::Array::new();
     for n in names {
@@ -102,5 +140,23 @@ pub fn merge_config(old: &str, new: &str) -> Option<String> {
         doc["secrets"] = toml_edit::table();
     }
     doc["secrets"]["names"] = value(arr);
-    Some(doc.to_string())
+    true
+}
+
+#[cfg(test)]
+mod link_merge_tests {
+    use super::merge_config;
+
+    #[test]
+    fn spec_link_is_added_to_an_existing_config_once() {
+        let old = "[collection]\nname = \"x\"\nformat = 1\n";
+        let new = "[collection]\nname = \"n\"\nformat = 1\n\n[[openapi]]\nname = \"pets\"\nsource = \"openapi/pets.yaml\"\nfolder = \"pets\"\n";
+        let merged = merge_config(old, new).unwrap();
+        assert!(merged.starts_with(old) && merged.contains("[[openapi]]\nname = \"pets\""));
+        assert_eq!(
+            merge_config(&merged, new),
+            None,
+            "a second import adds nothing"
+        );
+    }
 }

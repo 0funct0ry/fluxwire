@@ -2453,6 +2453,7 @@ dependencies = [
  "fluxwire-format",
  "fluxwire-import",
  "fluxwire-model",
+ "fluxwire-openapi",
  "fluxwire-protocol",
  "fluxwire-runner",
  "serde_json",
@@ -2481,6 +2482,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "tempfile",
  "toml 0.8.23",
  "toml_edit 0.22.27",
  "trash",
@@ -2527,6 +2529,7 @@ dependencies = [
  "axum",
  "fluxwire-format",
  "fluxwire-model",
+ "fluxwire-openapi",
  "fluxwire-protocol",
  "fluxwire-runner",
  "insta",
@@ -2549,7 +2552,14 @@ dependencies = [
 name = "fluxwire-openapi"
 version = "0.1.0"
 dependencies = [
+ "fluxwire-format",
  "fluxwire-model",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "tempfile",
+ "tree-sitter",
+ "tree-sitter-yaml",
 ]
 
 [[package]]
@@ -2646,6 +2656,7 @@ dependencies = [
  "fluxwire-format",
  "fluxwire-import",
  "fluxwire-model",
+ "fluxwire-openapi",
  "fluxwire-protocol",
  "fluxwire-runner",
  "fluxwire-script",

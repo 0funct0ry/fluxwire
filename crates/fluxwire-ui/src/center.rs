@@ -85,7 +85,7 @@ impl WorkspaceView {
                 TabKind::Docs => self.render_docs(t).into_any_element(),
                 TabKind::Environment => self.render_environment(t, tab, cx).into_any_element(),
                 TabKind::History => self.render_history_tab(t, tab, cx),
-                TabKind::Sync => self.render_sync_tab(t).into_any_element(),
+                TabKind::Sync => self.render_sync_tab(t, cx).into_any_element(),
                 TabKind::Keybindings => self.render_keybindings(t, cx),
             },
             _ => self.render_empty(t, cx).into_any_element(),
@@ -1833,40 +1833,6 @@ impl WorkspaceView {
                     t,
                 )),
             )
-    }
-
-    fn render_sync_tab(&self, t: &Theme) -> impl IntoElement {
-        self.page(t, "openapi/payments.yaml", "Spec link → payments folder")
-            .child(
-                row()
-                    .gap_2()
-                    .child(button(t, "pull", "Pull", true))
-                    .child(button(t, "push", "Push", false)),
-            )
-            .children(self.mock.sync.iter().map(|c| {
-                row()
-                    .h(px(28.))
-                    .gap_3()
-                    .border_b_1()
-                    .border_color(t.border_variant)
-                    .child(
-                        div()
-                            .text_color(if c.arrow == "↓" {
-                                t.accent
-                            } else {
-                                t.modified
-                            })
-                            .child(c.arrow),
-                    )
-                    .child(
-                        div()
-                            .w(px(220.))
-                            .font_family(BUFFER_FONT)
-                            .text_size(px(12.))
-                            .child(c.operation),
-                    )
-                    .child(div().text_color(t.text_muted).child(c.field))
-            }))
     }
 
     fn render_bottom(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {

@@ -3,7 +3,8 @@
 use crate::build::{Builder, toml_string};
 use crate::plan::{ImportError, ImportPlan, Options, PlannedKind};
 use crate::render::{Body, Expect, FolderDraft, Kv, ReqDraft};
-use serde_json::{Map, Value, json};
+use fluxwire_openapi::spec::synth;
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -30,83 +31,6 @@ fn resolve<'a>(root: &'a Value, v: &'a Value) -> &'a Value {
         }
     }
     cur
-}
-
-/// A representative value for a schema: example, default, enum, or a synthesized one.
-fn synth(root: &Value, schema: &Value, depth: u8) -> Value {
-    let sc = resolve(root, schema);
-    if let Some(e) = sc.get("example").or_else(|| sc.get("default")) {
-        return e.clone();
-    }
-    if let Some(e) = sc
-        .get("enum")
-        .and_then(Value::as_array)
-        .and_then(|a| a.first())
-    {
-        return e.clone();
-    }
-    if depth > 6 {
-        return Value::Null;
-    }
-    for k in ["allOf"] {
-        if let Some(parts) = sc.get(k).and_then(Value::as_array) {
-            let mut m = Map::new();
-            for p in parts {
-                if let Value::Object(o) = synth(root, p, depth + 1) {
-                    m.extend(o);
-                }
-            }
-            return Value::Object(m);
-        }
-    }
-    for k in ["oneOf", "anyOf"] {
-        if let Some(p) = sc.get(k).and_then(Value::as_array).and_then(|a| a.first()) {
-            return synth(root, p, depth + 1);
-        }
-    }
-    let ty = match sc.get("type") {
-        Some(Value::String(t)) => t.clone(),
-        Some(Value::Array(a)) => a
-            .iter()
-            .filter_map(Value::as_str)
-            .find(|t| *t != "null")
-            .unwrap_or("null")
-            .to_string(),
-        _ => {
-            if sc.get("properties").is_some() {
-                "object".into()
-            } else {
-                String::new()
-            }
-        }
-    };
-    match ty.as_str() {
-        "object" => {
-            let mut m = Map::new();
-            if let Some(p) = sc.get("properties").and_then(Value::as_object) {
-                for (k, v) in p {
-                    m.insert(k.clone(), synth(root, v, depth + 1));
-                }
-            }
-            Value::Object(m)
-        }
-        "array" => match sc.get("items") {
-            Some(i) => json!([synth(root, i, depth + 1)]),
-            None => json!([]),
-        },
-        "integer" => json!(0),
-        "number" => json!(0.0),
-        "boolean" => json!(false),
-        "string" => match s(sc, "format").as_str() {
-            "date-time" => json!("2024-01-01T00:00:00Z"),
-            "date" => json!("2024-01-01"),
-            "uuid" => json!("00000000-0000-0000-0000-000000000000"),
-            "email" => json!("user@example.com"),
-            "uri" | "url" => json!("https://example.com"),
-            _ => json!("string"),
-        },
-        _ => Value::Null,
-    }
 }
 
 fn scalar_text(v: &Value) -> String {
@@ -563,7 +487,7 @@ fn convert_op(
     (d, OpOut { key, sync })
 }
 
-pub fn plan(src: &Path, text: &str, opts: &Options) -> Result<ImportPlan, ImportError> {
+pub fn plan(_src: &Path, text: &str, opts: &Options) -> Result<ImportPlan, ImportError> {
     let text = text.trim_start_matches('\u{feff}');
     let root: Value = if text.trim_start().starts_with('{') {
         serde_json::from_str(text)
@@ -622,18 +546,48 @@ pub fn plan(src: &Path, text: &str, opts: &Options) -> Result<ImportPlan, Import
     let mut made_dirs: BTreeMap<String, PathBuf> = BTreeMap::new();
     let mut seqs: BTreeMap<PathBuf, i64> = BTreeMap::new();
     let mut sync_ops: BTreeMap<String, Value> = BTreeMap::new();
+    let first_tag = |op: &Value| {
+        op.get("tags")
+            .and_then(Value::as_array)
+            .and_then(|a| a.first())
+            .and_then(Value::as_str)
+            .map(String::from)
+    };
+    let all_tags: Vec<String> = paths
+        .values()
+        .flat_map(|item| {
+            let item = resolve(&root, item);
+            METHODS
+                .iter()
+                .filter_map(|m| item.get(*m).and_then(first_tag))
+                .collect::<Vec<_>>()
+        })
+        .collect();
     for (path, item) in paths {
         let item = resolve(&root, item);
+        // An untagged operation joins the folder of its path: the tag another operation on
+        // the same path uses, else the tag named like the first path segment, else a folder
+        // named after that segment. Only operations on `/` stay at the top.
+        let path_tag = METHODS
+            .iter()
+            .find_map(|m| item.get(*m).and_then(first_tag))
+            .or_else(|| {
+                let seg = path
+                    .split('/')
+                    .find(|x| !x.is_empty() && !x.starts_with('{'))?;
+                Some(
+                    all_tags
+                        .iter()
+                        .find(|t| t.eq_ignore_ascii_case(seg))
+                        .cloned()
+                        .unwrap_or_else(|| seg.to_string()),
+                )
+            });
         for method in METHODS {
             let Some(op) = item.get(*method) else {
                 continue;
             };
-            let tag = op
-                .get("tags")
-                .and_then(Value::as_array)
-                .and_then(|a| a.first())
-                .and_then(Value::as_str)
-                .map(String::from);
+            let tag = first_tag(op).or_else(|| path_tag.clone());
             let dir = match &tag {
                 Some(t) => made_dirs
                     .entry(t.clone())
@@ -719,13 +673,15 @@ pub fn plan(src: &Path, text: &str, opts: &Options) -> Result<ImportPlan, Import
     b.add_collection(&col);
 
     if opts.spec_link {
-        let ext = src
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("yaml")
-            .to_string();
+        // By content, not by the source's extension, so `.yml` and `.yaml` sources both land
+        // in one predictable file name.
+        let ext = if text.trim_start().starts_with('{') {
+            "json"
+        } else {
+            "yaml"
+        };
         let stem = fluxwire_format::slug(&title);
-        let spec_rel = PathBuf::from("openapi").join(format!("{stem}.{ext}"));
+        let spec_rel = base.join(format!("{stem}.{ext}"));
         b.push(spec_rel.clone(), text.to_string(), PlannedKind::Support);
         b.extra_toml = format!(
             "[[openapi]]\nname = {}\nsource = {}\nfolder = {}\nmode = \"two-way\"\nbase_url_variable = \"baseUrl\"\n",
@@ -733,10 +689,19 @@ pub fn plan(src: &Path, text: &str, opts: &Options) -> Result<ImportPlan, Import
             toml_string(&spec_rel.to_string_lossy().replace('\\', "/")),
             toml_string(&base.to_string_lossy().replace('\\', "/")),
         );
-        let snapshot = json!({ "version": 1, "operations": sync_ops });
+        // The base is the SyncModel mapping M12 compares against (version 2). Swagger 2.0
+        // cannot be linked yet, so it keeps the legacy shape.
+        let snapshot = match fluxwire_openapi::spec::from_spec(&root) {
+            Ok(m) => m.to_base_json(),
+            Err(_) => {
+                serde_json::to_string_pretty(&json!({ "version": 1, "operations": sync_ops }))
+                    .unwrap_or_default()
+                    + "\n"
+            }
+        };
         b.push(
             PathBuf::from(".fluxwire/sync").join(format!("{stem}.base.json")),
-            serde_json::to_string_pretty(&snapshot).unwrap_or_default() + "\n",
+            snapshot,
             PlannedKind::Support,
         );
     }

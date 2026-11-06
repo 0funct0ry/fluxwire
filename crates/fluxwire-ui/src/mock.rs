@@ -1,4 +1,4 @@
-//! Mock data for views that later milestones replace: sync (M12).
+//! Mock data left for the response pane placeholder. M12 replaced the sync mock.
 //! M9 removed the folder-run mock. The tree, request and workspace mocks were removed in M2.
 
 #[derive(Clone, Debug)]
@@ -32,15 +32,8 @@ pub struct MockResponse {
     pub console: Vec<&'static str>,
 }
 
-pub struct SyncChange {
-    pub arrow: &'static str,
-    pub operation: &'static str,
-    pub field: &'static str,
-}
-
 pub struct Mock {
     pub response: MockResponse,
-    pub sync: Vec<SyncChange>,
 }
 
 const PAYMENT_JSON: &str = r#"{
@@ -102,28 +95,6 @@ fn response(status: u16, text: &'static str, ms: u32, body: &'static str) -> Moc
 pub fn payments_api() -> Mock {
     Mock {
         response: response(201, "Created", 142, PAYMENT_JSON),
-        sync: vec![
-            SyncChange {
-                arrow: "↓",
-                operation: "POST /v1/payments",
-                field: "description changed in spec",
-            },
-            SyncChange {
-                arrow: "↓",
-                operation: "GET /v1/payments/{id}",
-                field: "new query parameter: expand",
-            },
-            SyncChange {
-                arrow: "↓",
-                operation: "POST /v1/refunds",
-                field: "required field: reason",
-            },
-            SyncChange {
-                arrow: "↑",
-                operation: "PATCH /v1/payments/{id}",
-                field: "request renamed: Update payment",
-            },
-        ],
     }
 }
 

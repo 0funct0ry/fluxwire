@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 fluxwire-model.workspace = true
 fluxwire-format.workspace = true
+fluxwire-openapi.workspace = true
 serde.workspace = true
 # Keep the source document's key order (paths, tags, folders) in every build.
 serde_json = { workspace = true, features = ["preserve_order"] }

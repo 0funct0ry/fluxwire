@@ -1,0 +1,10 @@
+[collection]
+name = "Petstore"
+format = 1
+
+[[openapi]]
+name = "petstore"
+source = "petstore/petstore.yaml"
+folder = "petstore"
+mode = "two-way"
+base_url_variable = "baseUrl"

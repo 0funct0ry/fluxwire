@@ -147,6 +147,29 @@ impl ImportWizard {
 
     fn retarget(&self, mut p: ImportPlan, rel: &Path) -> ImportPlan {
         let root = self.target_is_collection_root();
+        // An import at the root of a Workspace that is not itself a collection makes a new
+        // collection folder, as New collection does, so it can be removed like any other
+        // collection and the Workspace folder does not become the collection.
+        let nested;
+        let rel =
+            if root && rel.as_os_str().is_empty() && !self.collection_roots.contains(&self.ws_root)
+            {
+                let name = p
+                    .files
+                    .iter()
+                    .find(|f| f.kind == PlannedKind::Collection)
+                    .and_then(|f| {
+                        fluxwire_format::parse(&f.contents)
+                            .front
+                            .str("name")
+                            .map(str::to_string)
+                    })
+                    .unwrap_or_else(|| "imported".into());
+                nested = PathBuf::from(fluxwire_format::slug(&name));
+                nested.as_path()
+            } else {
+                rel
+            };
         let mut files = Vec::new();
         for mut f in std::mem::take(&mut p.files) {
             match f.kind {
@@ -328,6 +351,33 @@ mod tests {
         ImportWizard::new(dir.to_path_buf(), vec![], dir.to_path_buf())
     }
 
+    /// A Workspace whose folder is itself a collection.
+    fn root_collection_wizard(dir: &Path) -> ImportWizard {
+        ImportWizard::new(
+            dir.to_path_buf(),
+            vec![dir.to_path_buf()],
+            dir.to_path_buf(),
+        )
+    }
+
+    #[test]
+    fn importing_into_an_empty_workspace_makes_a_collection_folder() {
+        let d = tempfile::tempdir().unwrap();
+        let mut w = wizard(d.path());
+        w.set_src(fixture("openapi/petstore.yaml"));
+        let out = w.import().unwrap();
+        assert!(
+            out.written
+                .contains(&PathBuf::from("petstore/fluxwire.toml"))
+        );
+        assert!(
+            out.written
+                .contains(&PathBuf::from("petstore/collection.flux.md"))
+        );
+        assert!(!d.path().join("fluxwire.toml").exists());
+        assert!(!d.path().join("collection.flux.md").exists());
+    }
+
     #[test]
     fn set_src_detects_the_source_and_plans() {
         let d = tempfile::tempdir().unwrap();
@@ -355,7 +405,7 @@ mod tests {
     #[test]
     fn tree_groups_files_under_directories() {
         let d = tempfile::tempdir().unwrap();
-        let mut w = wizard(d.path());
+        let mut w = root_collection_wizard(d.path());
         w.set_src(fixture("insomnia/bookstore.insomnia.json"));
         let rows = w.tree();
         let dir = rows.iter().position(|r| r.label == "books/").unwrap();
@@ -370,7 +420,7 @@ mod tests {
     #[test]
     fn existing_files_need_confirmation_and_are_kept_by_default() {
         let d = tempfile::tempdir().unwrap();
-        let mut w = wizard(d.path());
+        let mut w = root_collection_wizard(d.path());
         w.set_src(fixture("hurl/health.hurl"));
         let out = w.import().unwrap();
         assert!(out.written.contains(&PathBuf::from("get-health.flux.md")));
@@ -439,7 +489,8 @@ mod tests {
             .iter()
             .map(|f| f.path.clone())
             .collect();
-        assert!(paths.contains(&PathBuf::from(".fluxwire/sync/petstore.base.json")));
+        assert!(paths.contains(&PathBuf::from("petstore/.fluxwire/sync/petstore.base.json")));
+        assert!(paths.contains(&PathBuf::from("petstore/petstore/petstore.yaml")));
         w.set_spec_link(false);
         let paths: Vec<_> = w
             .plan

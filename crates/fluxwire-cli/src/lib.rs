@@ -5,6 +5,7 @@ mod exit;
 mod files;
 mod import;
 mod mcp;
+mod openapi;
 mod reporter;
 mod run;
 mod tools;
@@ -45,12 +46,8 @@ pub enum Command {
     Completions(tools::CompletionsArgs),
     /// Import a Postman, Insomnia, OpenAPI, Hurl or .http source into a folder (SPEC §14).
     Import(import::ImportArgs),
-    /// OpenAPI sync (M12).
-    #[command(hide = true)]
-    Openapi {
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
+    /// OpenAPI two-way sync: status, pull, push, diff (SPEC §15).
+    Openapi(openapi::OpenapiArgs),
     /// API documentation export (M13).
     #[command(hide = true)]
     Docs {
@@ -129,7 +126,7 @@ where
         } => tools::env_list(a),
         Command::Completions(a) => tools::completions(a),
         Command::Import(a) => import::run(a),
-        Command::Openapi { .. } => tools::stub("openapi", "M12"),
+        Command::Openapi(a) => openapi::run(a),
         Command::Docs { .. } => tools::stub("docs export", "M13"),
         Command::Mcp {
             command: McpCommand::Serve(a),

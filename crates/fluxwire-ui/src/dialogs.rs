@@ -86,6 +86,11 @@ pub enum ConfirmAction {
         root: PathBuf,
         name: String,
     },
+    /// Remove a Spec link from `fluxwire.toml` and its base snapshot; spec and Requests stay.
+    RemoveSpecLink {
+        root: PathBuf,
+        name: String,
+    },
 }
 
 /// What happens once the Workspace has been closed.
@@ -378,11 +383,6 @@ impl WorkspaceView {
         let Some(c) = ws.collections.iter().find(|c| c.key == key) else {
             return;
         };
-        if key.is_empty() {
-            // The collection is the Workspace folder itself: refuse (shows a notice).
-            self.delete_collection(key, cx);
-            return;
-        }
         let name = c.collection.config.collection.name.clone();
         let name = if name.is_empty() {
             ws.name.clone()
@@ -391,10 +391,19 @@ impl WorkspaceView {
         };
         self.dialog = Some(Dialog::Confirm(Confirm {
             title: format!("Move {name} to the trash?"),
-            lines: vec![format!(
-                "The folder {} and everything in it will be moved to the trash.",
-                c.root.display()
-            )],
+            lines: vec![if key.is_empty() {
+                // The collection is the Workspace folder itself: its contents go, the folder
+                // stays as an empty Workspace.
+                format!(
+                    "Everything in {} except .git will be moved to the trash. The Workspace stays open and empty.",
+                    c.root.display()
+                )
+            } else {
+                format!(
+                    "The folder {} and everything in it will be moved to the trash.",
+                    c.root.display()
+                )
+            }],
             buttons: vec![
                 (
                     "Move to trash".into(),
@@ -528,6 +537,7 @@ impl WorkspaceView {
             } => self.history_clear_scope(scope, include_pinned, cx),
             ConfirmAction::DeleteHistory(ids) => self.history_delete(ids, cx),
             ConfirmAction::DeleteEnvironment { root, name } => self.delete_env_in(&root, &name, cx),
+            ConfirmAction::RemoveSpecLink { root, name } => self.remove_spec_link(&root, &name, cx),
             ConfirmAction::CloseEnvTab(id, save) => self.finish_close_env_tab(id, save, cx),
             ConfirmAction::Close(after, mode) => self.finish_close(after, mode, window, cx),
             ConfirmAction::StartNew {

@@ -77,6 +77,8 @@ impl WorkspaceView {
                 self.replace_scope();
                 self.scope.workspace = Some(p);
                 self.history_workspace_changed(cx);
+                self.sync = Default::default();
+                self.refresh_sync();
                 let saved = self
                     .state_dir
                     .as_ref()
@@ -183,6 +185,7 @@ impl WorkspaceView {
             self.sync_tab(&key);
         }
         self.reconcile_tabs();
+        self.refresh_sync();
         cx.notify();
     }
 
@@ -1628,20 +1631,25 @@ impl WorkspaceView {
         else {
             return;
         };
-        if key.is_empty() {
-            self.notice = Some(
-                "This collection is the workspace folder itself; close the workspace and delete the folder from your file manager.".into(),
-            );
-            cx.notify();
-            return;
-        }
         if !self.dirty_under(key).is_empty() {
             self.notice =
                 Some("Save or revert unsaved changes before deleting the collection.".into());
             cx.notify();
             return;
         }
-        match fmt::delete(&root) {
+        let result = if key.is_empty() {
+            // The collection is the Workspace folder itself: trash its contents (but not
+            // `.git`) and keep the folder open as an empty Workspace.
+            std::fs::read_dir(&root).and_then(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .filter(|e| e.file_name() != ".git")
+                    .try_for_each(|e| fmt::delete(&e.path()))
+            })
+        } else {
+            fmt::delete(&root)
+        };
+        match result {
             Ok(()) => {
                 self.drop_collection_state(key);
                 if let Some(w) = self.scope.workspace.as_mut() {

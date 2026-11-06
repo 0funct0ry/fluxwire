@@ -1,0 +1,98 @@
+{
+  "version": 2,
+  "operations": {
+    "GET /pets/{petId}": {
+      "body": null,
+      "deprecated": true,
+      "description": null,
+      "expected_status": 200,
+      "method": "GET",
+      "name": "Get a pet",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "petId",
+          "required": true,
+          "description": null,
+          "type": "string",
+          "example": null
+        }
+      ],
+      "path": "/pets/{petId}",
+      "tags": [
+        "pets"
+      ]
+    },
+    "createPet": {
+      "body": {
+        "application/json": {
+          "id": 0,
+          "name": "Rex",
+          "tags": [
+            "string"
+          ]
+        }
+      },
+      "deprecated": false,
+      "description": null,
+      "expected_status": 201,
+      "method": "POST",
+      "name": "Create a pet",
+      "parameters": [],
+      "path": "/pets",
+      "tags": [
+        "pets"
+      ]
+    },
+    "deletePet": {
+      "body": null,
+      "deprecated": false,
+      "description": null,
+      "expected_status": 204,
+      "method": "DELETE",
+      "name": null,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "petId",
+          "required": true,
+          "description": null,
+          "type": "string",
+          "example": null
+        }
+      ],
+      "path": "/pets/{petId}",
+      "tags": []
+    },
+    "listPets": {
+      "body": null,
+      "deprecated": false,
+      "description": "Returns all pets.",
+      "expected_status": 200,
+      "method": "GET",
+      "name": "List pets",
+      "parameters": [
+        {
+          "in": "header",
+          "name": "X-Trace",
+          "required": true,
+          "description": null,
+          "type": "string",
+          "example": "abc"
+        },
+        {
+          "in": "query",
+          "name": "limit",
+          "required": false,
+          "description": null,
+          "type": "integer",
+          "example": "20"
+        }
+      ],
+      "path": "/pets",
+      "tags": [
+        "pets"
+      ]
+    }
+  }
+}

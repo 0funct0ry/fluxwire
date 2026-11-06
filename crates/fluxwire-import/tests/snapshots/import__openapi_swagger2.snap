@@ -7,7 +7,21 @@ expression: snapshot_text(& p)
 fluxwire.local.toml
 .fluxwire/cache/
 
-=== add-user.flux.md ===
+=== collection.flux.md ===
+---
+name: Legacy
+vars:
+  baseUrl: https://legacy.example.com/api
+---
+
+# Legacy
+
+=== fluxwire.toml ===
+[collection]
+name = "Legacy"
+format = 1
+
+=== users/add-user.flux.md ===
 ---
 name: Add user
 seq: 2
@@ -30,16 +44,7 @@ Content-Type: application/json
 HTTP 200
 ```
 
-=== collection.flux.md ===
----
-name: Legacy
-vars:
-  baseUrl: https://legacy.example.com/api
----
-
-# Legacy
-
-=== find-users.flux.md ===
+=== users/find-users.flux.md ===
 ---
 name: Find users
 seq: 1
@@ -56,22 +61,26 @@ GET {{baseUrl}}/users?q
 HTTP 200
 ```
 
-=== fluxwire.toml ===
-[collection]
-name = "Legacy"
-format = 1
+=== users/folder.flux.md ===
+---
+name: users
+seq: 1
+---
+
+# users
 
 # Import report
 
 Source: OpenAPI
 
-## Files (5)
+## Files (6)
 
 - `.gitignore`
-- `add-user.flux.md`
 - `collection.flux.md`
-- `find-users.flux.md`
 - `fluxwire.toml`
+- `users/add-user.flux.md`
+- `users/find-users.flux.md`
+- `users/folder.flux.md`
 
 ## Lossy conversions (0)
 

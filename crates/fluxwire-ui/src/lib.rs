@@ -66,6 +66,8 @@ pub mod segmented;
 pub mod session;
 pub mod session_log;
 pub mod state_snapshot;
+pub mod sync_state;
+pub mod sync_tab;
 pub mod tabs;
 pub mod text_input;
 pub mod theme;

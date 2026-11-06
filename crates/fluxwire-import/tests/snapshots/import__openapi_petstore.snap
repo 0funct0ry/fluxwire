@@ -21,26 +21,6 @@ vars:
 
 A tiny pet store.
 
-=== deletepet.flux.md ===
----
-name: deletePet
-seq: 1
-operation: deletePet
-auth: none
-path:
-  petId: "{{petId}}"
----
-
-# deletePet
-
-```http
-DELETE {{baseUrl}}/pets/:petId
-```
-
-```http expect
-HTTP 204
-```
-
 === environments/staging.env ===
 baseUrl=https://staging.petstore.example.com/v1
 
@@ -74,6 +54,26 @@ Content-Type: application/json
 
 ```http expect
 HTTP 201
+```
+
+=== pets/deletepet.flux.md ===
+---
+name: deletePet
+seq: 4
+operation: deletePet
+auth: none
+path:
+  petId: "{{petId}}"
+---
+
+# deletePet
+
+```http
+DELETE {{baseUrl}}/pets/:petId
+```
+
+```http expect
+HTTP 204
 ```
 
 === pets/folder.flux.md ===
@@ -137,10 +137,10 @@ Source: OpenAPI
 
 - `.gitignore`
 - `collection.flux.md`
-- `deletepet.flux.md`
 - `environments/staging.env`
 - `fluxwire.toml`
 - `pets/create-a-pet.flux.md`
+- `pets/deletepet.flux.md`
 - `pets/folder.flux.md`
 - `pets/get-a-pet.flux.md`
 - `pets/list-pets.flux.md`

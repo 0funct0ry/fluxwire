@@ -3260,19 +3260,38 @@ fn delete_collection_asks_first_and_cancel_keeps_it(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn the_workspace_root_collection_cannot_be_deleted_from_the_menu(cx: &mut TestAppContext) {
-    let (view, cx) = setup(cx);
+fn the_workspace_root_collection_can_be_deleted_and_keeps_git(cx: &mut TestAppContext) {
+    let (view, cx) = bare(cx);
+    let root = fresh_dir("delroot");
+    std::fs::write(
+        root.join("fluxwire.toml"),
+        "[collection]\nname = \"Root\"\nformat = 1\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("pets")).unwrap();
+    std::fs::write(
+        root.join("pets/list.flux.md"),
+        "---\nname: List\n---\n\n```http\nGET https://example.com/pets\n```\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join(".git")).unwrap();
     view.update_in(cx, |w, window, cx| {
-        w.confirm_delete_collection("", window, cx)
+        w.open_workspace(&root, window, cx);
+        w.confirm_delete_collection("", window, cx);
     });
+    let (title, lines, buttons) = confirm_of(&view, cx);
+    assert!(title.contains("to the trash"), "{title}");
+    assert!(lines[0].contains("except .git"), "{lines:?}");
+    assert_eq!(buttons, ["Move to trash", "Cancel"]);
+    view.update_in(cx, |w, _, cx| {
+        w.dialog = None;
+        w.delete_collection("", cx);
+    });
+    assert!(!root.join("fluxwire.toml").exists());
+    assert!(!root.join("pets").exists());
+    assert!(root.join(".git").is_dir());
     view.read_with(cx, |w, _| {
-        assert!(w.dialog.is_none());
-        assert!(
-            w.notice
-                .as_deref()
-                .unwrap()
-                .contains("workspace folder itself")
-        );
+        assert!(w.scope.workspace.as_ref().unwrap().collections.is_empty());
     });
 }
 
@@ -4799,4 +4818,54 @@ fn pinning_keeps_the_selected_entry_detail_loaded(cx: &mut TestAppContext) {
     wait_until(&view, cx, "pinned and detail reloaded", move |w| {
         w.history.cache.get(&id).is_some_and(|e| e.summary.pinned)
     });
+}
+
+#[gpui::test]
+fn sync_tab_reports_changes_and_pulls(cx: &mut TestAppContext) {
+    let (view, cx, root) = setup_with(cx, "openapi-sync", "sync");
+    // In sync right after opening.
+    view.update_in(cx, |w, _, _| assert_eq!(w.sync.totals(), (0, 0, 0)));
+    // The spec renames an operation; the file watcher is off in tests, so refresh directly.
+    let spec = root.join("petstore/petstore.yaml");
+    let text = std::fs::read_to_string(&spec).unwrap();
+    std::fs::write(
+        &spec,
+        text.replacen("summary: Create a pet", "summary: Add a pet", 1),
+    )
+    .unwrap();
+    view.update_in(cx, |w, _, cx| {
+        w.on_fs_changes(std::slice::from_ref(&spec), cx);
+        assert_eq!(w.sync.totals(), (1, 0, 0));
+        w.open_sync_tab(cx);
+        assert_eq!(
+            w.scope.tabs.active().map(|t| t.key.clone()).as_deref(),
+            Some("sync")
+        );
+        w.sync_pull(0, cx);
+        assert_eq!(w.sync.totals(), (0, 0, 0));
+    });
+    let req = std::fs::read_to_string(root.join("petstore/pets/create-a-pet.flux.md")).unwrap();
+    assert!(req.contains("name: Add a pet"), "{req}");
+}
+
+#[gpui::test]
+fn removing_a_spec_link_clears_sync_and_keeps_the_spec(cx: &mut TestAppContext) {
+    let (view, cx, root) = setup_with(cx, "openapi-sync", "unlink");
+    view.update_in(cx, |w, window, cx| {
+        assert!(w.sync.has_links());
+        w.ask_remove_spec_link(0, window, cx);
+    });
+    let (title, _, buttons) = confirm_of(&view, cx);
+    assert!(title.contains("petstore"), "{title}");
+    assert_eq!(buttons, ["Remove link", "Cancel"]);
+    view.update_in(cx, |w, window, cx| {
+        let Some(crate::dialogs::Dialog::Confirm(c)) = w.dialog.take() else {
+            panic!("expected a confirm dialog");
+        };
+        w.run_confirm_action(c.buttons[0].1.clone(), window, cx);
+        assert!(!w.sync.has_links());
+    });
+    let toml = std::fs::read_to_string(root.join("fluxwire.toml")).unwrap();
+    assert!(!toml.contains("[[openapi]]"));
+    assert!(root.join("petstore/petstore.yaml").is_file());
 }

@@ -1,0 +1,18 @@
+# ADR-021: OpenAPI two-way sync
+
+Status: accepted (M12)
+
+## Decisions
+- **Layering.** `fluxwire-openapi` depends on `fluxwire-format` and `fluxwire-model` and has no GPUI. `fluxwire-import` depends on it for the base snapshot and for `synth` (schema example synthesis), so the importer, the status computation and the CLI map a spec the same way. `fluxwire-cli` and `fluxwire-ui` call `fluxwire_openapi::link`.
+- **SyncModel is a map of normalized JSON values.** An operation is a map of the nine synced fields (SPEC §15.1); a missing field equals `null`. Merge compares values field by field, so adding a field needs no new merge code. Descriptions are trimmed and empty strings are `null`; the body keeps one example per content type; cookie parameters are never synced.
+- **Fields a request cannot express come from the base.** The collection mapping copies parameter descriptions and types, and content types other than the request's own, from the base snapshot, so only real edits differ. A parameter value that is a `{{variable}}` takes the base value and is never pushed. An operation with no summary shows the importer's fallback name (operationId or `METHOD /path`) as `null`.
+- **Effective examples.** The spec side falls back to an example synthesized from the schema, matching what the importer writes into the request body. A push of a body therefore writes an `example`.
+- **Base snapshot version 2.** `.fluxwire/sync/<name>.base.json` is `{version: 2, operations}`; version 1 (M11) is read and its unknown fields are dropped. A missing snapshot is treated as the spec, so the first status shows collection drift.
+- **The base advances only by what was applied.** After a pull the base takes the applied incoming changes; after a push, the applied outgoing ones. Changes that need a manual edit or fell back to a patch are not recorded, so they stay visible.
+- **Conflicts.** `LinkState::resolved` folds "take spec", "take collection" and "edit" resolutions into ordinary changes. Pull and push refuse to run with open conflicts (CLI exit 4).
+- **Pull is span edits.** `pull.rs` uses the `fluxwire-format` editors: front matter keys, request line, query and header lines, body, `http expect` status (`set_expect_status`), form lines (`set_kv_value`) and the description paragraph (`description.rs`, SPEC §7.3, edited through `edit_prose`). A new operation creates a minimal request file; a deleted one goes to the OS trash.
+- **Push.** JSON is parsed with `preserve_order` and written with the detected indent; with no edits the text is returned untouched. YAML is edited with tree-sitter-yaml (`yaml.rs`): the span of the value, or the insertion point after the last pair, is replaced and the rest stays byte-identical, comments included. Anchors, aliases, flow-style containers on the path and whole-sequence edits return `PushError::Fallback`, and the caller shows the edit as a patch.
+- **Needs manual edit.** A parameter reached through `$ref` or a shared path item, or a `$ref` request body, is listed with its pointer into the spec and never pushed. Pull works through `$ref`.
+- **UI.** `sync_state.rs` is the pure model; `sync_tab.rs` draws the tab, panel and status item. Status is recomputed on workspace open, on every file-change batch and on `sync: refresh`.
+
+Deferred: adding a new operation to the spec, pushing `method`, `path`, `expected_status` and `tags` placement (these are listed as needing a manual edit), moving a request file between folders on a tag change, fetching URL sources (they are pull-only and the caller must supply the text), Swagger 2.0 links, writing `[[openapi]]` into an existing collection's `fluxwire.toml` from the wizard, and an in-place editor for the Edit resolution.

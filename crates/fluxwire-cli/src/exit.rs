@@ -6,6 +6,8 @@ use fluxwire_runner::{FolderRunResult, RunError, RunResult};
 pub const TESTS_FAILED: u8 = 1;
 pub const NETWORK: u8 = 2;
 pub const SCRIPT: u8 = 3;
+/// OpenAPI conflicts block a pull or push.
+pub const CONFLICTS: u8 = 4;
 pub const USAGE: u8 = 64;
 pub const PARSE: u8 = 65;
 pub const UNSUPPORTED: u8 = 66;

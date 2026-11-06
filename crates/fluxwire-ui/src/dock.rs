@@ -10,7 +10,6 @@ use gpui::{
 
 use crate::{
     assets::BUFFER_FONT,
-    tabs::TabKind,
     theme::Theme,
     ui::{icon, row},
     workspace::{MenuKind, Panel, WorkspaceView},
@@ -812,49 +811,6 @@ impl WorkspaceView {
             .with_priority(2)
             .into_any_element(),
         )
-    }
-
-    fn render_sync_panel(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let down = self.mock.sync.iter().filter(|c| c.arrow == "↓").count();
-        let up = self.mock.sync.len() - down;
-        div()
-            .flex()
-            .flex_col()
-            .child(
-                self.tree_row(
-                    t,
-                    "sync-link".into(),
-                    0,
-                    self.scope.tabs.active().is_some_and(|a| a.key == "sync"),
-                )
-                .dev_click(
-                    "dock.render_sync_panel",
-                    Role::Button,
-                    "dock.render_sync_panel",
-                    true,
-                    cx.listener(|this, ev: &gpui::ClickEvent, _, cx| {
-                        this.open_tab("sync", "Sync", TabKind::Sync, ev.click_count() >= 2);
-                        cx.notify();
-                    }),
-                )
-                .child(icon("refresh-cw", 14., t.text_muted))
-                .child(div().flex_1().truncate().child("openapi/payments.yaml"))
-                .child(
-                    div()
-                        .font_family(BUFFER_FONT)
-                        .text_size(px(11.))
-                        .text_color(t.text_muted)
-                        .child(format!("↓{down} ↑{up}")),
-                ),
-            )
-            .child(
-                div()
-                    .px_2()
-                    .pt_2()
-                    .text_size(px(12.))
-                    .text_color(t.text_placeholder)
-                    .child("Linked to the payments folder"),
-            )
     }
 
     pub(crate) fn render_welcome(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {

@@ -20,6 +20,7 @@ dev-mcp = ["dep:fluxwire-agent", "dep:tokio"]
 fluxwire-model.workspace = true
 fluxwire-format.workspace = true
 fluxwire-import.workspace = true
+fluxwire-openapi.workspace = true
 gpui.workspace = true
 anyhow.workspace = true
 serde.workspace = true

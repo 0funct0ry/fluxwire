@@ -4,39 +4,31 @@ expression: snapshot_text(& p)
 ---
 === .fluxwire/sync/petstore.base.json ===
 {
-  "version": 1,
+  "version": 2,
   "operations": {
     "GET /pets/{petId}": {
+      "body": null,
+      "deprecated": true,
+      "description": null,
+      "expected_status": 200,
       "method": "GET",
-      "path": "/pets/{petId}",
       "name": "Get a pet",
-      "description": "",
-      "tags": [
-        "pets"
-      ],
       "parameters": [
         {
           "in": "path",
           "name": "petId",
           "required": true,
-          "description": "",
+          "description": null,
           "type": "string",
-          "example": ""
+          "example": null
         }
       ],
-      "body": null,
-      "expected_status": 200,
-      "deprecated": true
-    },
-    "createPet": {
-      "method": "POST",
-      "path": "/pets",
-      "name": "Create a pet",
-      "description": "",
+      "path": "/pets/{petId}",
       "tags": [
         "pets"
-      ],
-      "parameters": [],
+      ]
+    },
+    "createPet": {
       "body": {
         "application/json": {
           "id": 0,
@@ -46,58 +38,66 @@ expression: snapshot_text(& p)
           ]
         }
       },
+      "deprecated": false,
+      "description": null,
       "expected_status": 201,
-      "deprecated": false
+      "method": "POST",
+      "name": "Create a pet",
+      "parameters": [],
+      "path": "/pets",
+      "tags": [
+        "pets"
+      ]
     },
     "deletePet": {
+      "body": null,
+      "deprecated": false,
+      "description": null,
+      "expected_status": 204,
       "method": "DELETE",
-      "path": "/pets/{petId}",
-      "name": "",
-      "description": "",
-      "tags": [],
+      "name": null,
       "parameters": [
         {
           "in": "path",
           "name": "petId",
           "required": true,
-          "description": "",
+          "description": null,
           "type": "string",
-          "example": ""
+          "example": null
         }
       ],
-      "body": null,
-      "expected_status": 204,
-      "deprecated": false
+      "path": "/pets/{petId}",
+      "tags": []
     },
     "listPets": {
-      "method": "GET",
-      "path": "/pets",
-      "name": "List pets",
+      "body": null,
+      "deprecated": false,
       "description": "Returns all pets.",
-      "tags": [
-        "pets"
-      ],
+      "expected_status": 200,
+      "method": "GET",
+      "name": "List pets",
       "parameters": [
-        {
-          "in": "query",
-          "name": "limit",
-          "required": false,
-          "description": "",
-          "type": "integer",
-          "example": "20"
-        },
         {
           "in": "header",
           "name": "X-Trace",
           "required": true,
-          "description": "",
+          "description": null,
           "type": "string",
           "example": "abc"
+        },
+        {
+          "in": "query",
+          "name": "limit",
+          "required": false,
+          "description": null,
+          "type": "integer",
+          "example": "20"
         }
       ],
-      "body": null,
-      "expected_status": 200,
-      "deprecated": false
+      "path": "/pets",
+      "tags": [
+        "pets"
+      ]
     }
   }
 }
@@ -131,12 +131,121 @@ format = 1
 
 [[openapi]]
 name = "petstore"
-source = "openapi/petstore.yaml"
+source = "petstore/petstore.yaml"
 folder = "petstore"
 mode = "two-way"
 base_url_variable = "baseUrl"
 
-=== openapi/petstore.yaml ===
+=== petstore/folder.flux.md ===
+---
+name: Petstore
+---
+
+# Petstore
+
+A tiny pet store.
+
+=== petstore/pets/create-a-pet.flux.md ===
+---
+name: Create a pet
+seq: 2
+tags: [pets]
+operation: createPet
+---
+
+# Create a pet
+
+```http
+POST {{baseUrl}}/pets
+Content-Type: application/json
+
+{
+  "id": 0,
+  "name": "Rex",
+  "tags": [
+    "string"
+  ]
+}
+```
+
+```http expect
+HTTP 201
+```
+
+=== petstore/pets/deletepet.flux.md ===
+---
+name: deletePet
+seq: 4
+operation: deletePet
+auth: none
+path:
+  petId: "{{petId}}"
+---
+
+# deletePet
+
+```http
+DELETE {{baseUrl}}/pets/:petId
+```
+
+```http expect
+HTTP 204
+```
+
+=== petstore/pets/folder.flux.md ===
+---
+name: pets
+seq: 1
+---
+
+# pets
+
+Everything about pets
+
+=== petstore/pets/get-a-pet.flux.md ===
+---
+name: Get a pet
+seq: 3
+tags: [pets]
+operation: GET /pets/{petId}
+deprecated: true
+path:
+  petId: "{{petId}}"
+---
+
+# Get a pet
+
+```http
+GET {{baseUrl}}/pets/:petId
+```
+
+```http expect
+HTTP 200
+```
+
+=== petstore/pets/list-pets.flux.md ===
+---
+name: List pets
+seq: 1
+tags: [pets]
+operation: listPets
+---
+
+# List pets
+
+Returns all pets.
+
+```http
+GET {{baseUrl}}/pets
+    # &limit=20
+X-Trace: abc
+```
+
+```http expect
+HTTP 200
+```
+
+=== petstore/petstore.yaml ===
 openapi: 3.0.3
 info:
   title: Petstore
@@ -214,115 +323,6 @@ components:
         name: { type: string, example: Rex }
         tags: { type: array, items: { type: string } }
 
-=== petstore/deletepet.flux.md ===
----
-name: deletePet
-seq: 1
-operation: deletePet
-auth: none
-path:
-  petId: "{{petId}}"
----
-
-# deletePet
-
-```http
-DELETE {{baseUrl}}/pets/:petId
-```
-
-```http expect
-HTTP 204
-```
-
-=== petstore/folder.flux.md ===
----
-name: Petstore
----
-
-# Petstore
-
-A tiny pet store.
-
-=== petstore/pets/create-a-pet.flux.md ===
----
-name: Create a pet
-seq: 2
-tags: [pets]
-operation: createPet
----
-
-# Create a pet
-
-```http
-POST {{baseUrl}}/pets
-Content-Type: application/json
-
-{
-  "id": 0,
-  "name": "Rex",
-  "tags": [
-    "string"
-  ]
-}
-```
-
-```http expect
-HTTP 201
-```
-
-=== petstore/pets/folder.flux.md ===
----
-name: pets
-seq: 1
----
-
-# pets
-
-Everything about pets
-
-=== petstore/pets/get-a-pet.flux.md ===
----
-name: Get a pet
-seq: 3
-tags: [pets]
-operation: GET /pets/{petId}
-deprecated: true
-path:
-  petId: "{{petId}}"
----
-
-# Get a pet
-
-```http
-GET {{baseUrl}}/pets/:petId
-```
-
-```http expect
-HTTP 200
-```
-
-=== petstore/pets/list-pets.flux.md ===
----
-name: List pets
-seq: 1
-tags: [pets]
-operation: listPets
----
-
-# List pets
-
-Returns all pets.
-
-```http
-GET {{baseUrl}}/pets
-    # &limit=20
-X-Trace: abc
-```
-
-```http expect
-HTTP 200
-```
-
 # Import report
 
 Source: OpenAPI
@@ -334,13 +334,13 @@ Source: OpenAPI
 - `collection.flux.md`
 - `environments/staging.env`
 - `fluxwire.toml`
-- `openapi/petstore.yaml`
-- `petstore/deletepet.flux.md`
 - `petstore/folder.flux.md`
 - `petstore/pets/create-a-pet.flux.md`
+- `petstore/pets/deletepet.flux.md`
 - `petstore/pets/folder.flux.md`
 - `petstore/pets/get-a-pet.flux.md`
 - `petstore/pets/list-pets.flux.md`
+- `petstore/petstore.yaml`
 
 ## Lossy conversions (0)
 

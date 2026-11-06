@@ -26,3 +26,4 @@ notify = "8"
 [dev-dependencies]
 insta = "1"
 proptest = "1"
+tempfile = "3"

@@ -1,0 +1,76 @@
+openapi: 3.0.3
+info:
+  title: Petstore
+  description: A tiny pet store.
+  version: 1.0.0
+servers:
+  - url: https://petstore.example.com/v1
+    description: Production
+  - url: https://staging.petstore.example.com/v1
+    description: Staging
+tags:
+  - name: pets
+    description: Everything about pets
+security:
+  - bearerAuth: []
+paths:
+  /pets:
+    get:
+      tags: [pets]
+      operationId: listPets
+      summary: List pets
+      description: Returns all pets.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, example: 20 }
+        - name: X-Trace
+          in: header
+          required: true
+          schema: { type: string }
+          example: abc
+      responses:
+        "200": { description: OK }
+    post:
+      tags: [pets]
+      operationId: createPet
+      summary: Create a pet
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Pet"
+      responses:
+        "400": { description: Bad }
+        "201": { description: Created }
+  /pets/{petId}:
+    parameters:
+      - name: petId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [pets]
+      summary: Get a pet
+      deprecated: true
+      responses:
+        "200": { description: OK }
+    delete:
+      operationId: deletePet
+      security: []
+      responses:
+        "204": { description: Gone }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  schemas:
+    Pet:
+      type: object
+      required: [name]
+      properties:
+        id: { type: integer, format: int64 }
+        name: { type: string, example: Rex }
+        tags: { type: array, items: { type: string } }

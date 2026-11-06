@@ -258,6 +258,7 @@ pub struct WorkspaceView {
     pub scope: crate::open_workspace::OpenWorkspace,
     pub mock: Mock,
     pub history: crate::history::HistoryState,
+    pub sync: crate::sync_state::SyncState,
     pub history_focus: FocusHandle,
     pub modal: Option<Modal>,
     /// The focused element, refreshed on every render, so fields know whether to draw a caret.
@@ -346,6 +347,7 @@ impl WorkspaceView {
             scope: crate::open_workspace::OpenWorkspace::default(),
             mock: mock::payments_api(),
             history: crate::history::HistoryState::new(state_dir_is_set),
+            sync: crate::sync_state::SyncState::default(),
             history_focus: cx.focus_handle(),
             modal: None,
             focused: None,
@@ -1042,8 +1044,8 @@ impl WorkspaceView {
         };
         let problems = self.problem_total();
         let notice = self.notice.clone();
-        let sync_down = self.mock.sync.iter().filter(|c| c.arrow == "↓").count();
-        let sync_up = self.mock.sync.len() - sync_down;
+        let (sync_down, sync_up, sync_conflicts) = self.sync.totals();
+        let has_sync = self.sync.has_links();
         row()
             .h(px(24.))
             .flex_none()
@@ -1138,22 +1140,23 @@ impl WorkspaceView {
                         }),
                     ),
             )
-            .child(
+            .children(has_sync.then(|| {
                 div()
                     .id("sync-status")
                     .cursor_pointer()
-                    .child(format!("OpenAPI ↓{sync_down} ↑{sync_up}"))
+                    .child(if sync_conflicts > 0 {
+                        format!("OpenAPI ↓{sync_down} ↑{sync_up} ⚠{sync_conflicts}")
+                    } else {
+                        format!("OpenAPI ↓{sync_down} ↑{sync_up}")
+                    })
                     .dev_click(
                         "status.sync",
                         Role::Button,
                         "Sync status",
                         true,
-                        cx.listener(|this, _, _, cx| {
-                            this.open_tab("sync", "Sync", TabKind::Sync, true);
-                            cx.notify();
-                        }),
-                    ),
-            )
+                        cx.listener(|this, _, _, cx| this.open_sync_tab(cx)),
+                    )
+            }))
             .child(div().flex_1())
             .children(notice.map(|n| {
                 div()
@@ -1713,7 +1716,10 @@ impl Render for WorkspaceView {
                     this.open_env_tab(&name)
                 }
             },
-            OpenSync => |this, _w, _c| this.open_tab("sync", "Sync", TabKind::Sync, true),
+            OpenSync => |this, _w, c| this.open_sync_tab(c),
+            SyncRefresh => |this, _w, c| { this.refresh_sync(); c.notify() },
+            SyncPullAll => |this, _w, c| this.sync_pull(0, c),
+            SyncPushAll => |this, _w, c| this.sync_push(0, c),
             CloseWorkspace => |this, w, c| this.request_close(crate::dialogs::AfterClose::Welcome, w, c),
             OpenWorkspace => |this, w, c| this.open_folder_dialog(w, c),
             NewWorkspace => |this, w, c| this.start_new_workspace(w, c),

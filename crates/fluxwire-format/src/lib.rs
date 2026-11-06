@@ -5,6 +5,7 @@
 
 mod body_format;
 mod collection;
+mod description;
 mod edit;
 mod editor_settings;
 mod environments;
@@ -15,12 +16,14 @@ mod fsops;
 mod head;
 mod keymap;
 mod lines;
+mod openapi_link;
 mod parse;
 mod prose;
 mod query;
 mod schema;
 mod scope;
 mod settings;
+mod sync_edit;
 mod template;
 pub mod theme;
 mod trust;
@@ -28,6 +31,7 @@ mod watch;
 
 pub use body_format::{FormatError, format_json, format_xml};
 pub use collection::*;
+pub use description::{DescriptionSite, description, description_site, set_description};
 pub use edit::*;
 pub use editor_settings::{EditorConfig, EditorSettings, SoftWrap, Whitespace};
 pub use environments::*;
@@ -40,6 +44,7 @@ pub use keymap::{
     remove_entries, save_keymap, set_binding,
 };
 pub use lines::{Line, lines};
+pub use openapi_link::remove_link;
 pub use parse::{parse, parse_with};
 pub use prose::{ProseEditError, edit_prose, prose_regions};
 pub use query::{Pair, rewrite_url_query, url_query};
@@ -48,6 +53,7 @@ pub use scope::{ScopeInputs, ancestor_docs, build_scope};
 pub use settings::{
     McpSettings, UserSettings, load_settings, parse_manifest_mcp, parse_settings, save_theme,
 };
+pub use sync_edit::{kv_line, set_expect_status, set_kv_value};
 pub use template::*;
 pub use trust::{is_trusted, set_trusted, trusted_collections};
 pub use watch::{DEBOUNCE, WatchHandle, watch};
