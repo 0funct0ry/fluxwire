@@ -342,10 +342,11 @@ impl WorkspaceView {
         let Some(req) = doc.parsed.request() else {
             return;
         };
-        if req.target == text {
+        let method = req.method.clone();
+        let edits = fmt::set_url_text(&doc.parsed, &method, text);
+        if edits.is_empty() {
             return;
         }
-        let edits = fmt::set_request_line(&doc.parsed, &req.method.clone(), text);
         if doc.apply(&edits) {
             self.after_edit(key, cx);
             self.refresh_completion(CompleteTarget::Url, text);
@@ -377,7 +378,7 @@ impl WorkspaceView {
             .workspace
             .as_ref()
             .and_then(|p| p.doc(&key))
-            .and_then(|d| d.parsed.request().map(|r| r.target.clone()))
+            .map(|d| fmt::display_url(&d.parsed))
             .unwrap_or_default();
         match self.completion_key(ev, CompleteTarget::Url, &cur) {
             CompleteKey::Consumed => cx.notify(),
@@ -394,7 +395,7 @@ impl WorkspaceView {
         let Some(method) = doc.parsed.request().map(|r| r.method.clone()) else {
             return;
         };
-        let edits = fmt::set_request_line(&doc.parsed, &method, target);
+        let edits = fmt::set_url_text(&doc.parsed, &method, target);
         if doc.apply(&edits) {
             self.after_edit(key, cx);
         }
@@ -706,23 +707,22 @@ impl WorkspaceView {
         };
         let edits = fmt::insert_block(&doc.parsed, kind.clone(), &info, "");
         if doc.apply(&edits) {
-            if let Some(i) = doc.find_block(kind, None) {
+            if let Some(&i) = doc.blocks_of_kind(kind).last() {
                 self.scope.target = Target::Block(i);
             }
             self.after_edit(&key, cx);
         }
     }
 
-    /// Switch the first `kind` block between `ts` and `js` by rewriting only its info string.
-    pub fn toggle_block_language(&mut self, kind: BlockKind, cx: &mut Context<Self>) {
+    /// Switch block `i` between `ts` and `js` by rewriting only its info string.
+    pub fn toggle_block_language(&mut self, i: usize, cx: &mut Context<Self>) {
         let Some(key) = self.active_key() else { return };
         let Some(doc) = self.scope.workspace.as_mut().and_then(|p| p.doc_mut(&key)) else {
             return;
         };
-        let Some(i) = doc.find_block(kind, None) else {
+        let Some(b) = doc.parsed.blocks.get(i) else {
             return;
         };
-        let b = &doc.parsed.blocks[i];
         let to = if b.info.language == "ts" { "js" } else { "ts" };
         let info = b.info_span.slice(&doc.parsed.source).to_string();
         let new = match info.trim_start().strip_prefix(b.info.language.as_str()) {
@@ -731,6 +731,138 @@ impl WorkspaceView {
         };
         let edit = fluxwire_model::Edit::replace(b.info_span, new);
         if doc.apply(&[edit]) {
+            self.after_edit(&key, cx);
+        }
+    }
+
+    /// Start editing the title of script block `i` in place; every keystroke is written to the
+    /// block's info string, like the table cells.
+    pub fn start_script_title(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(key) = self.active_key() else { return };
+        let current = self
+            .scope
+            .workspace
+            .as_ref()
+            .and_then(|p| p.doc(&key))
+            .and_then(|d| d.parsed.blocks.get(i))
+            .and_then(|b| fmt::block_title(b).map(str::to_string))
+            .unwrap_or_default();
+        let input =
+            crate::text_input::bound_input("Title", cx, move |this: &mut Self, text, cx| {
+                this.set_script_title(i, &text, cx)
+            });
+        input.update(cx, |t, cx| {
+            t.set_text(&current, cx);
+            t.select_all(cx);
+        });
+        window.focus(&gpui::Focusable::focus_handle(input.read(cx), cx));
+        self.scope.script_title = Some((key, i, input));
+        cx.notify();
+    }
+
+    pub fn set_script_title(&mut self, i: usize, title: &str, cx: &mut Context<Self>) {
+        let Some(key) = self.active_key() else { return };
+        let Some(doc) = self.scope.workspace.as_mut().and_then(|p| p.doc_mut(&key)) else {
+            return;
+        };
+        let edits = fmt::set_block_title(&doc.parsed, i, title);
+        if doc.apply(&edits) {
+            self.after_edit(&key, cx);
+        }
+    }
+
+    pub fn end_script_title(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.scope.script_title.take().is_some() {
+            window.focus(&self.root_focus);
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn script_layout_key(key: &str, post: bool) -> String {
+        format!("{key}#{}", if post { "post" } else { "pre" })
+    }
+
+    pub fn toggle_script_card(&mut self, layout_key: &str, pos: usize, cx: &mut Context<Self>) {
+        if let Some(l) = self.scope.script_layouts.borrow_mut().get_mut(layout_key) {
+            l.toggle(pos);
+        }
+        cx.notify();
+    }
+
+    /// Start dragging the handle below card `pos`.
+    pub fn start_script_resize(
+        &mut self,
+        layout_key: &str,
+        pos: usize,
+        y: f32,
+        cx: &mut Context<Self>,
+    ) {
+        let layouts = self.scope.script_layouts.borrow();
+        let Some(l) = layouts.get(layout_key) else {
+            return;
+        };
+        let Some(j) = l.next_expanded(pos) else {
+            return;
+        };
+        let h = f32::from(self.script_cards_bounds.get().size.height);
+        self.script_drag = Some(crate::workspace::ScriptDrag {
+            layout_key: layout_key.to_string(),
+            i: pos,
+            j,
+            y0: y,
+            wi: l.weights[pos],
+            wj: l.weights[j],
+            px_per_weight: l.px_per_weight(h),
+        });
+        drop(layouts);
+        cx.notify();
+    }
+
+    pub fn script_drag_move(
+        &mut self,
+        d: &crate::workspace::ScriptDrag,
+        y: f32,
+        cx: &mut Context<Self>,
+    ) {
+        let (a, b) = crate::script_cards::drag_weights(d.wi, d.wj, y - d.y0, d.px_per_weight);
+        if let Some(l) = self
+            .scope
+            .script_layouts
+            .borrow_mut()
+            .get_mut(&d.layout_key)
+            && d.j < l.weights.len()
+        {
+            l.weights[d.i] = a;
+            l.weights[d.j] = b;
+        }
+        cx.notify();
+    }
+
+    /// Delete block `i` through the span editor.
+    pub fn remove_block(&mut self, i: usize, cx: &mut Context<Self>) {
+        let Some(key) = self.active_key() else { return };
+        let Some(doc) = self.scope.workspace.as_mut().and_then(|p| p.doc_mut(&key)) else {
+            return;
+        };
+        let edits = fmt::remove_block(&doc.parsed, i);
+        let slot = doc.parsed.blocks.get(i).map(|b| {
+            let post = b.kind == fluxwire_model::BlockKind::Post;
+            let pos = doc
+                .blocks_of_kind(b.kind.clone())
+                .iter()
+                .position(|&x| x == i);
+            (post, pos)
+        });
+        if doc.apply(&edits) {
+            if let Some((post, Some(pos))) = slot
+                && let Some(l) = self
+                    .scope
+                    .script_layouts
+                    .borrow_mut()
+                    .get_mut(&Self::script_layout_key(&key, post))
+            {
+                l.remove(pos);
+            }
             self.after_edit(&key, cx);
         }
     }

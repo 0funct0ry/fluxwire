@@ -11,7 +11,6 @@ use serde_json::Value;
 
 use crate::{
     assets::BUFFER_FONT,
-    center::button,
     editor::{Lang, code_view},
     history::{body_text, headers_of, lang_for, pretty, time_label},
     history_filters::ms_label,
@@ -148,70 +147,155 @@ impl WorkspaceView {
                 .filter(|v| !v.is_null() && v.as_array().is_none_or(|a| !a.is_empty()))
                 .and_then(|v| serde_json::to_string_pretty(v).ok())
         };
-        let button_row = row()
-            .gap_2()
-            .flex_wrap()
-            .child(button(t, "hd-restore", "Restore", true).dev_click(
+        let ticked = self.history.ticked.len();
+        let open = self.history.actions_menu;
+        let item = |id: &'static str, label: String, enabled: bool| {
+            let hover = t.element_hover;
+            row()
+                .id(id)
+                .h(px(26.))
+                .px_2()
+                .text_size(px(12.))
+                .when(enabled, |d| d.cursor_pointer().hover(move |s| s.bg(hover)))
+                .when(!enabled, |d| d.text_color(t.text_placeholder))
+                .child(label)
+        };
+        let mut menu = div()
+            .id("hd-menu")
+            .absolute()
+            .top(px(28.))
+            .right_0()
+            .w(px(210.))
+            .py_1()
+            .rounded(px(6.))
+            .border_1()
+            .border_color(t.border)
+            .bg(t.elevated)
+            .shadow_lg()
+            .occlude()
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                this.history.actions_menu = false;
+                cx.notify();
+            }));
+        // Every entry closes the menu first, then acts.
+        menu = menu
+            .child(item("hd-restore", "Restore".into(), true).dev_click(
                 "hd-restore",
                 Role::Button,
                 "hd-restore",
                 true,
                 cx.listener({
                     let key = key.clone();
-                    move |this, _, w, cx| this.history_restore(id, key.clone(), w, cx)
+                    move |this, _, w, cx| {
+                        this.history.actions_menu = false;
+                        this.history_restore(id, key.clone(), w, cx)
+                    }
                 }),
             ))
-            .child(button(t, "hd-curl", "Copy as cURL", false).dev_click(
+            .child(item("hd-curl", "Copy as cURL".into(), true).dev_click(
                 "hd-curl",
                 Role::Button,
                 "hd-curl",
                 true,
-                cx.listener(move |this, _, _, cx| this.history_copy_curl(id, cx)),
+                cx.listener(move |this, _, _, cx| {
+                    this.history.actions_menu = false;
+                    this.history_copy_curl(id, cx)
+                }),
             ))
             .child(
-                button(t, "hd-prev", "Compare to previous", false).dev_click(
+                item("hd-prev", "Compare to previous".into(), true).dev_click(
                     "hd-prev",
                     Role::Button,
                     "hd-prev",
                     true,
-                    cx.listener(move |this, _, _, cx| this.history_compare_previous(id, cx)),
+                    cx.listener(move |this, _, _, cx| {
+                        this.history.actions_menu = false;
+                        this.history_compare_previous(id, cx)
+                    }),
                 ),
             )
-            .child(button(t, "hd-diff", "Diff ticked", false).dev_click(
-                "hd-diff",
-                Role::Button,
-                "hd-diff",
-                true,
-                cx.listener(|this, _, _, cx| this.history_diff_ticked(cx)),
-            ))
             .child(
-                button(t, "hd-pin", if pinned { "Unpin" } else { "Pin" }, false).dev_click(
+                item(
+                    "hd-diff",
+                    format!("Diff ticked rows ({ticked}/2)"),
+                    ticked == 2,
+                )
+                .dev_click(
+                    "hd-diff",
+                    Role::Button,
+                    "hd-diff",
+                    true,
+                    cx.listener(|this, _, _, cx| {
+                        this.history.actions_menu = false;
+                        this.history_diff_ticked(cx)
+                    }),
+                ),
+            )
+            .child(
+                item("hd-pin", if pinned { "Unpin" } else { "Pin" }.into(), true).dev_click(
                     "hd-pin",
                     Role::Button,
                     "hd-pin",
                     true,
                     cx.listener(move |this, _, _, cx| {
+                        this.history.actions_menu = false;
                         this.history_set_pinned(vec![id], !pinned, cx)
                     }),
                 ),
             )
-            .child(button(t, "hd-goto", "Go to request", false).dev_click(
+            .child(item("hd-goto", "Go to request".into(), true).dev_click(
                 "hd-goto",
                 Role::Button,
                 "hd-goto",
                 true,
                 cx.listener({
                     let key = key.clone();
-                    move |this, _, w, cx| this.open_request(&key, true, w, cx)
+                    move |this, _, w, cx| {
+                        this.history.actions_menu = false;
+                        this.open_request(&key, true, w, cx)
+                    }
                 }),
             ))
-            .child(button(t, "hd-popout", "Open in tab", false).dev_click(
+            .child(item("hd-popout", "Open in tab".into(), true).dev_click(
                 "hd-popout",
                 Role::Button,
                 "hd-popout",
                 true,
-                cx.listener(move |this, _, _, cx| this.open_history_entry(id, true, cx)),
+                cx.listener(move |this, _, _, cx| {
+                    this.history.actions_menu = false;
+                    this.open_history_entry(id, true, cx)
+                }),
             ));
+        let more = div()
+            .relative()
+            .flex_none()
+            .child(
+                div()
+                    .id("hd-more")
+                    .size(px(26.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(4.))
+                    .cursor_pointer()
+                    .when(open, |d| d.bg(t.element_selected))
+                    .hover({
+                        let h = t.element_hover;
+                        move |s| s.bg(h)
+                    })
+                    .child(crate::ui::icon("ellipsis", 16., t.text_muted))
+                    .dev_click(
+                        "hd-more",
+                        Role::Button,
+                        "hd-more",
+                        true,
+                        cx.listener(|this, _, _, cx| {
+                            this.history.actions_menu = !this.history.actions_menu;
+                            cx.notify();
+                        }),
+                    ),
+            )
+            .when(open, |d| d.child(gpui::deferred(menu).with_priority(1)));
         shell
             .child(
                 row()
@@ -239,12 +323,17 @@ impl WorkspaceView {
                     ),
             )
             .child(
-                div()
-                    .text_size(px(12.))
-                    .text_color(t.text_muted)
-                    .child(meta.join(" · ")),
+                row()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(12.))
+                            .text_color(t.text_muted)
+                            .child(meta.join(" · ")),
+                    )
+                    .child(more),
             )
-            .child(button_row)
             .child(
                 row()
                     .id("hd-note")

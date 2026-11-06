@@ -250,7 +250,11 @@ fn doc_text(view: &Entity<WorkspaceView>, cx: &mut VisualTestContext, key: &str)
 fn params_table_lists_url_query_and_edits_it_in_place(cx: &mut TestAppContext) {
     let (view, cx) = setup(cx);
     view.update(cx, |w, cx| {
-        w.set_url_text(CREATE, "{{baseUrl}}/p?delay=100&fail=500", cx)
+        w.set_url_text(
+            CREATE,
+            "{{baseUrl}}/p?delay=100&fail=500&expand=customer",
+            cx,
+        )
     });
     let rows = |view: &Entity<WorkspaceView>, cx: &mut VisualTestContext| {
         view.read_with(cx, |w, _| {
@@ -275,7 +279,7 @@ fn params_table_lists_url_query_and_edits_it_in_place(cx: &mut TestAppContext) {
     });
     let text = doc_text(&view, cx, CREATE);
     assert!(
-        text.contains("{{baseUrl}}/p?delay=100&fail=503\n"),
+        text.contains("{{baseUrl}}/p?delay=100&fail=503&expand=customer\n"),
         "{text}"
     );
     // Removing the first leaves the other in the URL.
@@ -284,7 +288,10 @@ fn params_table_lists_url_query_and_edits_it_in_place(cx: &mut TestAppContext) {
     });
     assert_eq!(names(&view, cx), ["fail", "expand", "debug"]);
     let text = doc_text(&view, cx, CREATE);
-    assert!(text.contains("{{baseUrl}}/p?fail=503\n"), "{text}");
+    assert!(
+        text.contains("{{baseUrl}}/p?fail=503&expand=customer\n"),
+        "{text}"
+    );
 }
 
 fn dirty(view: &Entity<WorkspaceView>, cx: &mut VisualTestContext, key: &str) -> bool {
@@ -326,14 +333,10 @@ fn url_edit_dirties_the_tab_and_save_touches_one_line(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("secondary-s");
     assert!(!dirty(&view, cx, CREATE));
     let after = std::fs::read_to_string(root.join(CREATE)).unwrap();
-    let diff: Vec<_> = before
-        .lines()
-        .zip(after.lines())
-        .filter(|(a, b)| a != b)
-        .collect();
-    assert_eq!(diff.len(), 1, "{diff:?}");
-    assert!(diff[0].1.ends_with("/v1/paymentsx"), "{diff:?}");
-    assert_eq!(before.lines().count(), after.lines().count());
+    // The caret is at the end of the bar, after the continuation-line parameters, so the edit
+    // folds them into the request line and touches nothing else.
+    assert!(after.contains("/v1/payments?expand=customerx\n"), "{after}");
+    assert_eq!(before.lines().count(), after.lines().count() + 1);
 }
 
 #[gpui::test]
@@ -708,7 +711,7 @@ fn external_edit_reloads_clean_tab_and_flags_dirty_one(cx: &mut TestAppContext) 
     // Keep mine: the in-memory edit stays and is still unsaved.
     view.update(cx, |w, cx| w.resolve_conflict(false, cx));
     assert!(dirty(&view, cx, CREATE));
-    assert!(doc_text(&view, cx, CREATE).contains("paymentsy"));
+    assert!(doc_text(&view, cx, CREATE).contains("customery"));
 }
 
 #[gpui::test]
@@ -3030,12 +3033,8 @@ fn url_of(view: &Entity<WorkspaceView>, cx: &mut VisualTestContext) -> String {
             .as_ref()
             .unwrap()
             .doc(&k)
+            .map(|d| fluxwire_format::display_url(&d.parsed))
             .unwrap()
-            .parsed
-            .request()
-            .unwrap()
-            .target
-            .clone()
     })
 }
 
@@ -4727,4 +4726,77 @@ fn every_offered_dynamic_value_resolves() {
         assert!(!r.text.is_empty() && !r.text.contains("{{"), "{label}");
         assert!(!detail.is_empty());
     }
+}
+
+#[gpui::test]
+fn scripts_tab_adds_and_removes_several_pre_blocks(cx: &mut TestAppContext) {
+    let (view, cx) = setup(cx);
+    let pre = |view: &Entity<WorkspaceView>, cx: &mut VisualTestContext| {
+        view.read_with(cx, |w, _| {
+            let d = w.scope.workspace.as_ref().unwrap().doc(CREATE).unwrap();
+            d.blocks_of_kind(fluxwire_model::BlockKind::Pre).len()
+        })
+    };
+    let before = pre(&view, cx);
+    for _ in 0..2 {
+        view.update(cx, |w, cx| {
+            w.add_block(fluxwire_model::BlockKind::Pre, "ts pre", cx)
+        });
+    }
+    assert_eq!(pre(&view, cx), before + 2);
+    let first = view.read_with(cx, |w, _| {
+        w.scope
+            .workspace
+            .as_ref()
+            .unwrap()
+            .doc(CREATE)
+            .unwrap()
+            .blocks_of_kind(fluxwire_model::BlockKind::Pre)[0]
+    });
+    view.update(cx, |w, cx| w.remove_block(first, cx));
+    assert_eq!(pre(&view, cx), before + 1);
+}
+
+#[gpui::test]
+fn script_title_is_written_to_the_info_string(cx: &mut TestAppContext) {
+    let (view, cx) = setup(cx);
+    view.update(cx, |w, cx| {
+        w.add_block(fluxwire_model::BlockKind::Pre, "ts pre", cx)
+    });
+    let idx = view.read_with(cx, |w, _| {
+        w.scope
+            .workspace
+            .as_ref()
+            .unwrap()
+            .doc(CREATE)
+            .unwrap()
+            .blocks_of_kind(fluxwire_model::BlockKind::Pre)[0]
+    });
+    view.update(cx, |w, cx| {
+        w.set_script_title(idx, "Store auth in header", cx)
+    });
+    let text = doc_text(&view, cx, CREATE);
+    assert!(
+        text.contains("```ts pre title=\"Store auth in header\"\n"),
+        "{text}"
+    );
+    view.update(cx, |w, cx| w.set_script_title(idx, "", cx));
+    assert!(!doc_text(&view, cx, CREATE).contains("title="));
+}
+
+#[gpui::test]
+fn pinning_keeps_the_selected_entry_detail_loaded(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "hist-pin");
+    let port = test_server(false);
+    set_doc_text(&view, cx, CREATE, doc_for(port, "/v1/one"));
+    send_and_record(&view, cx, 1);
+    let id = view.read_with(cx, |w, _| w.history.entries[0].id);
+    view.update(cx, |w, cx| w.history_select(id, cx));
+    wait_until(&view, cx, "detail", move |w| {
+        w.history.cache.contains_key(&id)
+    });
+    view.update(cx, |w, cx| w.history_set_pinned(vec![id], true, cx));
+    wait_until(&view, cx, "pinned and detail reloaded", move |w| {
+        w.history.cache.get(&id).is_some_and(|e| e.summary.pinned)
+    });
 }

@@ -497,7 +497,18 @@ impl WorkspaceView {
         if url_input.read(cx).text() != url {
             url_input.update(cx, |i, cx| i.set_text(url, cx));
         }
-        let decorations = crate::ui::url_decorations(url, t, &look);
+        let mut decorations = crate::ui::url_decorations(url, t, &look);
+        {
+            let values = self
+                .scope
+                .workspace
+                .as_ref()
+                .and_then(|p| p.doc(&key))
+                .map(|d| fluxwire_format::path_values(&d.parsed))
+                .unwrap_or_default();
+            decorations.extend(crate::ui::path_decorations(url, t, &values, &look));
+            decorations.sort_by_key(|d| d.range.start);
+        }
         let url_focus = gpui::Focusable::focus_handle(url_input.read(cx), cx);
         let url_focused = self.focused.as_ref() == Some(&url_focus);
         let completing = self.scope.envs.completion.is_some();
@@ -745,7 +756,7 @@ impl WorkspaceView {
         let key = tab.key.clone();
         let req = doc.parsed.request();
         let method = req.map_or("GET".to_string(), |r| r.method.clone());
-        let url = req.map_or(String::new(), |r| r.target.clone());
+        let url = fluxwire_format::display_url(&doc.parsed);
         let params_on = fluxwire_format::query_rows(&doc.parsed)
             .iter()
             .filter(|q| q.enabled)
@@ -1356,15 +1367,216 @@ impl WorkspaceView {
             }
             3 => self.render_auth_tab(t, key, cx),
             4 => {
-                let (kind, info) = if ui.post_script {
-                    (BlockKind::Post, "ts post")
+                let (kind, info, add_id) = if ui.post_script {
+                    (BlockKind::Post, "ts post", "add-post")
                 } else {
-                    (BlockKind::Pre, "ts pre")
+                    (BlockKind::Pre, "ts pre", "add-pre")
                 };
+                let blocks = doc.blocks_of_kind(kind.clone());
+                let total = blocks.len();
+                let label = if ui.post_script { "Post" } else { "Pre" };
+                let layout_key = Self::script_layout_key(&doc.key, ui.post_script);
+                let layout = {
+                    let mut all = self.scope.script_layouts.borrow_mut();
+                    let l = all.entry(layout_key.clone()).or_default();
+                    l.fit(total);
+                    l.clone()
+                };
+                let cards = blocks
+                    .into_iter()
+                    .enumerate()
+                    .flat_map(|(n, i)| {
+                        let collapsed = layout.is_collapsed(n);
+                        let weight = layout.weights[n];
+                        let lk = layout_key.clone();
+                        let b = &doc.parsed.blocks[i];
+                        let (lang, lang_label) = if b.info.language == "js" {
+                            (Lang::Js, "js")
+                        } else {
+                            (Lang::Ts, "ts")
+                        };
+                        let text = doc.target_text(Target::Block(i));
+                        let ed = (!collapsed)
+                            .then(|| self.code_editor(&doc.key, Target::Block(i), lang, &text, cx));
+                        let (shown, is_default) = crate::script_cards::card_title(
+                            fluxwire_format::block_title(b),
+                            &text,
+                            ui.post_script,
+                            n + 1,
+                        );
+                        let editing = self
+                            .scope
+                            .script_title
+                            .as_ref()
+                            .filter(|(k, bi, _)| *k == doc.key && *bi == i)
+                            .map(|(_, _, input)| input.clone());
+                        let title_el = match editing {
+                            Some(input) => div()
+                                .id(("script-title-edit", i))
+                                .w(px(280.))
+                                .h(px(24.))
+                                .px_1()
+                                .rounded(px(3.))
+                                .border_1()
+                                .border_color(t.accent)
+                                .text_color(t.text)
+                                .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, w, cx| {
+                                    if matches!(ev.keystroke.key.as_str(), "enter" | "escape") {
+                                        this.end_script_title(w, cx);
+                                    }
+                                }))
+                                .on_mouse_down_out(
+                                    cx.listener(|this, _, w, cx| this.end_script_title(w, cx)),
+                                )
+                                .child(input)
+                                .into_any_element(),
+                            None => div()
+                                .id(("script-title", i))
+                                .px_1()
+                                .rounded(px(3.))
+                                .cursor_text()
+                                .max_w(px(420.))
+                                .overflow_hidden()
+                                .text_color(if is_default { t.text_muted } else { t.text })
+                                .hover({
+                                    let h = t.element_hover;
+                                    move |s| s.bg(h)
+                                })
+                                .child(shown)
+                                .dev_click(
+                                    "script-title",
+                                    Role::Button,
+                                    "script-title",
+                                    true,
+                                    cx.listener(move |this, _, w, cx| {
+                                        this.start_script_title(i, w, cx)
+                                    }),
+                                )
+                                .into_any_element(),
+                        };
+                        let mut card = div()
+                            .id(("script-card", i))
+                            .flex()
+                            .flex_col()
+                            .overflow_hidden()
+                            .rounded(px(4.))
+                            .border_1()
+                            .border_color(t.border_variant);
+                        if collapsed {
+                            card = card.flex_none();
+                        } else {
+                            // Expanded cards share the free height by weight (equal by default);
+                            // one card fills the whole pane.
+                            card = card.min_h(px(crate::script_cards::MIN_CARD_PX));
+                            card.style().flex_grow = Some(weight);
+                            card.style().flex_basis = Some(gpui::relative(0.).into());
+                        }
+                        let toggle_key = lk.clone();
+                        let card = card
+                            .child(
+                                row()
+                                    .flex_none()
+                                    .h(px(crate::script_cards::HEADER_PX))
+                                    .px_2()
+                                    .gap_2()
+                                    .when(!collapsed, |d| {
+                                        d.border_b_1().border_color(t.border_variant)
+                                    })
+                                    .text_size(px(12.))
+                                    .text_color(t.text_muted)
+                                    .child(
+                                        div()
+                                            .id(("script-collapse", i))
+                                            .cursor_pointer()
+                                            .p_1()
+                                            .child(icon(
+                                                if collapsed {
+                                                    "chevron-right"
+                                                } else {
+                                                    "chevron-down"
+                                                },
+                                                14.,
+                                                t.text_muted,
+                                            ))
+                                            .dev_click(
+                                                "script-collapse",
+                                                Role::Button,
+                                                "script-collapse",
+                                                true,
+                                                cx.listener(move |this, _, _, cx| {
+                                                    this.toggle_script_card(&toggle_key, n, cx)
+                                                }),
+                                            ),
+                                    )
+                                    .child(order_badge(t, n + 1, label, total))
+                                    .child(title_el)
+                                    .child(div().flex_1())
+                                    .child(button(t, "script-lang", lang_label, false).dev_click(
+                                        "script-lang",
+                                        Role::Button,
+                                        "script-lang",
+                                        true,
+                                        cx.listener(move |this, _, _, cx| {
+                                            this.toggle_block_language(i, cx)
+                                        }),
+                                    ))
+                                    .child(
+                                        div()
+                                            .id(("script-remove", i))
+                                            .cursor_pointer()
+                                            .p_1()
+                                            .child(icon("trash-2", 14., t.text_muted))
+                                            .dev_click(
+                                                "script-remove",
+                                                Role::Button,
+                                                "script-remove",
+                                                true,
+                                                cx.listener(move |this, _, _, cx| {
+                                                    this.remove_block(i, cx)
+                                                }),
+                                            ),
+                                    ),
+                            )
+                            .children(
+                                ed.map(|ed| div().flex_1().min_h_0().px_2().py_1().child(ed)),
+                            );
+                        let mut out = vec![card.into_any_element()];
+                        if n + 1 < total {
+                            let draggable = !collapsed && !layout.is_collapsed(n + 1);
+                            let hover = t.border;
+                            let mut gap = div()
+                                .id(("script-handle", i))
+                                .flex_none()
+                                .h(px(crate::script_cards::HANDLE_PX));
+                            if draggable {
+                                gap = gap
+                                    .cursor_row_resize()
+                                    .hover(move |s| s.bg(hover))
+                                    .on_mouse_down(
+                                        gpui::MouseButton::Left,
+                                        cx.listener(
+                                            move |this, ev: &gpui::MouseDownEvent, _, cx| {
+                                                this.start_script_resize(
+                                                    &lk,
+                                                    n,
+                                                    f32::from(ev.position.y),
+                                                    cx,
+                                                )
+                                            },
+                                        ),
+                                    );
+                            }
+                            out.push(gap.into_any_element());
+                        }
+                        out
+                    })
+                    .collect::<Vec<_>>();
+                let cards_bounds = self.script_cards_bounds.clone();
                 div()
                     .flex()
                     .flex_col()
                     .flex_1()
+                    .min_h_0()
                     .child(
                         row()
                             .gap_2()
@@ -1386,37 +1598,44 @@ impl WorkspaceView {
                                 )
                             }))
                             .child(div().flex_1())
-                            .when_some(doc.find_block(kind.clone(), None), |d, i| {
-                                let lang: &'static str =
-                                    if doc.parsed.blocks[i].info.language == "js" {
-                                        "js"
-                                    } else {
-                                        "ts"
-                                    };
+                            .child({
                                 let k = kind.clone();
-                                d.child(button(t, "script-lang", lang, false).dev_click(
-                                    "script-lang",
+                                button(t, add_id, "+ Add script", false).dev_click(
+                                    add_id,
                                     Role::Button,
-                                    "script-lang",
+                                    add_id,
                                     true,
                                     cx.listener(move |this, _, _, cx| {
-                                        this.toggle_block_language(k.clone(), cx)
+                                        this.add_block(k.clone(), info, cx)
                                     }),
-                                ))
+                                )
                             }),
                     )
-                    .child(self.block_editor(
-                        t,
-                        doc,
-                        kind,
-                        info,
-                        if ui.post_script {
-                            "add-post"
-                        } else {
-                            "add-pre"
-                        },
-                        cx,
-                    ))
+                    .child(if total == 0 {
+                        div()
+                            .p_3()
+                            .text_color(t.text_muted)
+                            .child(format!("No `{info}` block in this file."))
+                            .into_any_element()
+                    } else {
+                        div()
+                            .id("script-cards")
+                            .relative()
+                            .flex_1()
+                            .min_h_0()
+                            .flex()
+                            .flex_col()
+                            .overflow_y_scroll()
+                            .px_2()
+                            .pb_2()
+                            .child(
+                                gpui::canvas(move |b, _, _| cards_bounds.set(b), |_, _, _, _| {})
+                                    .absolute()
+                                    .size_full(),
+                            )
+                            .children(cards)
+                            .into_any_element()
+                    })
                     .into_any_element()
             }
             5 => self.render_tests_tab(t, doc, ui, cx),
@@ -1806,4 +2025,37 @@ pub(crate) fn body_lang(doc: &OpenDoc, text: &str) -> Lang {
         _ if text.trim_start().starts_with('<') => Lang::Xml,
         _ => Lang::Plain,
     }
+}
+
+/// Round badge with a script's place in the run order; the tooltip spells it out.
+fn order_badge(t: &Theme, n: usize, label: &str, total: usize) -> impl IntoElement {
+    let tip = format!("{label} script {n} of {total}: runs {}", ordinal(n));
+    div()
+        .id(("script-order", n))
+        .flex_none()
+        .size(px(20.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_full()
+        .bg(t.accent_bg())
+        .text_color(t.accent)
+        .text_size(px(11.))
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .child(n.to_string())
+        .tooltip(move |_, cx| {
+            let tip = tip.clone();
+            cx.new(|_| crate::ui::VarTip { text: tip }).into()
+        })
+}
+
+fn ordinal(n: usize) -> String {
+    let suffix = match (n % 10, n % 100) {
+        (_, 11..=13) => "th",
+        (1, _) => "st",
+        (2, _) => "nd",
+        (3, _) => "rd",
+        _ => "th",
+    };
+    format!("{n}{suffix}")
 }

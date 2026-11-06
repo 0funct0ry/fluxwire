@@ -46,6 +46,10 @@ pub struct OpenWorkspace {
     /// Selected tree row (workspace-relative key); target of rename/duplicate/delete/new.
     pub selected: Option<String>,
     pub cell: Option<CellEdit>,
+    /// Script card whose title is being edited: (request key, block index, input).
+    /// Card layout (heights, collapsed) per request and script kind, `"{key}#pre"`.
+    pub script_layouts: std::cell::RefCell<HashMap<String, crate::script_cards::CardLayout>>,
+    pub script_title: Option<(String, usize, gpui::Entity<crate::text_input::TextInput>)>,
     /// Surface that receives editor key presses.
     pub target: Target,
     pub watcher: Option<fluxwire_format::WatchHandle>,
@@ -97,6 +101,8 @@ impl Default for OpenWorkspace {
             inline: None,
             selected: None,
             cell: None,
+            script_layouts: Default::default(),
+            script_title: None,
             target: Target::Body,
             watcher: None,
             url_inputs: Default::default(),

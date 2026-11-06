@@ -193,6 +193,13 @@ impl OpenDoc {
     }
 
     /// First block index with this kind and language, for the Scripts/Tests tabs.
+    /// Indices of every block of `kind`, in file order (the run order of scripts).
+    pub fn blocks_of_kind(&self, kind: BlockKind) -> Vec<usize> {
+        (0..self.parsed.blocks.len())
+            .filter(|&i| self.parsed.blocks[i].kind == kind)
+            .collect()
+    }
+
     pub fn find_block(&self, kind: BlockKind, lang: Option<&str>) -> Option<usize> {
         self.parsed
             .blocks

@@ -94,6 +94,8 @@ pub struct HistoryState {
     pub nav_menu: Option<(crate::history_nav::NavTarget, gpui::Point<gpui::Pixels>)>,
     pub clear_menu: bool,
     pub export_menu: bool,
+    /// The `…` actions menu of the detail pane.
+    pub actions_menu: bool,
     pub include_pinned: bool,
     pub focus: Option<gpui::FocusHandle>,
     pub cache: HashMap<i64, Arc<Entry>>,
@@ -148,6 +150,7 @@ impl HistoryState {
             nav_menu: None,
             clear_menu: false,
             export_menu: false,
+            actions_menu: false,
             include_pinned: false,
             focus: None,
             cache: HashMap::new(),

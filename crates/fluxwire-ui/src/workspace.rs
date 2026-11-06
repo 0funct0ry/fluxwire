@@ -126,6 +126,18 @@ pub enum Col {
     Value,
 }
 
+/// A drag of the handle below script card `i` (against the next expanded card `j`).
+#[derive(Clone, Debug)]
+pub struct ScriptDrag {
+    pub layout_key: String,
+    pub i: usize,
+    pub j: usize,
+    pub y0: f32,
+    pub wi: f32,
+    pub wj: f32,
+    pub px_per_weight: f32,
+}
+
 /// The table cell being edited. Every keystroke is applied to the document immediately.
 #[derive(Clone, Debug)]
 pub struct CellEdit {
@@ -260,6 +272,10 @@ pub struct WorkspaceView {
     pub resizing_bottom: bool,
     /// Pointer position and editor share when a drag of the request/response divider began.
     pub resizing_split: Option<(f32, f32)>,
+    /// Drag of a handle between two script cards.
+    pub script_drag: Option<ScriptDrag>,
+    /// Bounds of the script card list, written when drawn.
+    pub script_cards_bounds: Rc<Cell<Bounds<Pixels>>>,
     pub keybind_query: String,
     /// The Keybindings tab is in edit mode (`keymap: edit`).
     pub keybind_editing: bool,
@@ -341,6 +357,8 @@ impl WorkspaceView {
             keymap_issues: Vec::new(),
             resizing_bottom: false,
             resizing_split: None,
+            script_drag: None,
+            script_cards_bounds: Rc::new(Cell::new(Bounds::default())),
             keybind_query: String::new(),
             keybind_editing: false,
             keybind_edit: None,
@@ -1520,6 +1538,9 @@ impl Render for WorkspaceView {
                 if this.history.resizing.is_some() {
                     this.history_drag(f32::from(ev.position.x), cx);
                 }
+                if let Some(d) = this.script_drag.clone() {
+                    this.script_drag_move(&d, f32::from(ev.position.y), cx);
+                }
                 if this.resizing {
                     this.scope.left_width = f32::from(ev.position.x).clamp(180.0, 520.0);
                     cx.notify();
@@ -1569,6 +1590,9 @@ impl Render for WorkspaceView {
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
                     this.history_drag_end(cx);
+                    if this.script_drag.take().is_some() {
+                        cx.notify();
+                    }
                     if this.resizing_split.take().is_some() {
                         cx.notify();
                     }
@@ -1599,7 +1623,8 @@ impl Render for WorkspaceView {
             Dismiss => |this, w, c| {
                 if this.dialog.is_some() { this.close_dialog(w, c); return; }
                 if let Some(sw) = this.switcher.take() { if let Some(first) = sw.order.first() { this.scope.tabs.peek(*first) } return; }
-                let hist_open = this.history.menu.is_some() || this.history.nav_menu.is_some() || this.history.clear_menu || this.history.export_menu;
+                let hist_open = this.history.menu.is_some() || this.history.nav_menu.is_some() || this.history.clear_menu || this.history.export_menu || this.history.actions_menu;
+                this.history.actions_menu = false;
                 this.history.menu = None; this.history.nav_menu = None; this.history.clear_menu = false; this.history.export_menu = false;
                 let open = hist_open || this.scope.tab_menu.is_some() || this.scope.method_menu || this.scope.tree_menu.is_some() || this.scope.cell.is_some() || this.scope.inline.is_some() || this.modal.is_some();
                 this.scope.tab_menu = None; this.scope.method_menu = false; this.scope.tree_menu = None; this.scope.cell = None; this.scope.inline = None; this.close_modal(w, c);

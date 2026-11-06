@@ -61,6 +61,7 @@ pub mod open_workspace;
 pub mod ops;
 pub mod response;
 pub mod runs;
+pub mod script_cards;
 pub mod segmented;
 pub mod session;
 pub mod session_log;

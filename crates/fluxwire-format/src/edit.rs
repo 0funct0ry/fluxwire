@@ -98,10 +98,11 @@ pub fn remove_front_matter(doc: &FluxDoc, key: &str) -> Vec<Edit> {
     }
 }
 
-/// Names of the `:name` path parameters in the path of `target`, in order, without repeats
-/// (SPEC §7.4). A `:` inside the scheme or port is not a parameter, and neither are `{{...}}`
-/// variables or segments with characters outside `[A-Za-z0-9_-]`.
-pub fn path_param_names(target: &str) -> Vec<String> {
+/// Byte ranges (including the `:`) of every `:name` path parameter in the path of `target`,
+/// with the name, in order and with repeats (SPEC §7.4). A `:` inside the scheme or port is not
+/// a parameter, and neither are `{{...}}` variables or segments with characters outside
+/// `[A-Za-z0-9_-]`.
+pub fn path_param_ranges(target: &str) -> Vec<(String, std::ops::Range<usize>)> {
     let start = target.find("://").map_or(0, |i| i + 3);
     let Some(path_start) = target[start..].find('/').map(|i| i + start) else {
         return Vec::new();
@@ -109,18 +110,77 @@ pub fn path_param_names(target: &str) -> Vec<String> {
     let path_end = target[path_start..]
         .find(['?', '#'])
         .map_or(target.len(), |i| i + path_start);
-    let mut out: Vec<String> = Vec::new();
+    let mut out = Vec::new();
+    let mut at = path_start;
     for seg in target[path_start..path_end].split('/') {
         if let Some(n) = seg.strip_prefix(':')
             && !n.is_empty()
             && n.chars()
                 .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-            && !out.iter().any(|o| o == n)
         {
-            out.push(n.to_string());
+            out.push((n.to_string(), at..at + seg.len()));
+        }
+        at += seg.len() + 1;
+    }
+    out
+}
+
+/// Names of the `:name` path parameters in the path of `target`, in order, without repeats.
+pub fn path_param_names(target: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for (n, _) in path_param_ranges(target) {
+        if !out.contains(&n) {
+            out.push(n);
         }
     }
     out
+}
+
+/// The text of the URL bar: the target followed by the enabled query continuation lines, so
+/// every active query parameter is visible in one place.
+pub fn display_url(doc: &FluxDoc) -> String {
+    let Some((_, r)) = req(doc) else {
+        return String::new();
+    };
+    let mut url = r.target.clone();
+    for q in r.query.iter().filter(|q| q.enabled) {
+        url.push(if url.contains('?') { '&' } else { '?' });
+        url.push_str(&q.name);
+        if let Some(v) = &q.value {
+            url.push('=');
+            url.push_str(v);
+        }
+    }
+    url
+}
+
+/// Edits for text typed into the URL bar (see `display_url`). The text becomes the whole target,
+/// so query parameters typed or removed there are added to or removed from the Params table;
+/// enabled continuation lines are folded into the target, disabled ones stay as they are.
+pub fn set_url_text(doc: &FluxDoc, method: &str, text: &str) -> Vec<Edit> {
+    let Some((_, r)) = req(doc) else {
+        return vec![];
+    };
+    let shown = display_url(doc);
+    if shown == text {
+        return vec![];
+    }
+    // Only the part before `?` changed: rewrite just that, keeping the parameters where they are.
+    if let (Some((_, old_q)), Some((new_base, new_q))) =
+        (shown.split_once('?'), text.split_once('?'))
+        && old_q == new_q
+    {
+        let own_query = r.target.find('?').map_or("", |i| &r.target[i..]);
+        return set_request_line(doc, method, &format!("{new_base}{own_query}"));
+    }
+    if !shown.contains('?') && !text.contains('?') {
+        return set_request_line(doc, method, text);
+    }
+    let mut edits = set_request_line(doc, method, text);
+    for q in r.query.iter().filter(|q| q.enabled) {
+        edits.push(Edit::delete(full_line(&doc.source, q.span)));
+    }
+    edits
 }
 
 /// Value stored for each `path` front matter entry.
@@ -453,6 +513,91 @@ pub fn insert_block(doc: &FluxDoc, kind: BlockKind, info: &str, content: &str) -
         "\n\n"
     };
     vec![Edit::insert(src.len(), format!("{sep}{fence}{nl}"))]
+}
+
+/// The `title="..."` attribute of a block's info string (SPEC §7.5), if present and not empty.
+pub fn block_title(block: &fluxwire_model::Block) -> Option<&str> {
+    block
+        .info
+        .attrs
+        .iter()
+        .find(|(k, v)| k == "title" && !v.is_empty())
+        .map(|(_, v)| v.as_str())
+}
+
+/// Set (or, when `title` is blank, remove) the `title` attribute of block `i`. Only the info
+/// string is rewritten; every other token of it keeps its place. Quotes and line breaks cannot
+/// appear in a title and are replaced.
+pub fn set_block_title(doc: &FluxDoc, i: usize, title: &str) -> Vec<Edit> {
+    let Some(b) = doc.blocks.get(i) else {
+        return vec![];
+    };
+    let info = b.info_span.slice(&doc.source);
+    // Cut the existing `title=` token (quote-aware, like `parse_info`).
+    let bytes = info.as_bytes();
+    let mut kept = String::new();
+    let mut pos = 0;
+    let mut k = 0;
+    let mut first = true;
+    while k < bytes.len() {
+        let ws = k;
+        while k < bytes.len() && (bytes[k] as char).is_whitespace() {
+            k += 1;
+        }
+        if k >= bytes.len() {
+            kept.push_str(&info[ws..]);
+            pos = bytes.len();
+            break;
+        }
+        let start = k;
+        let mut quote = false;
+        while k < bytes.len() && (quote || !(bytes[k] as char).is_whitespace()) {
+            if bytes[k] == b'"' {
+                quote = !quote;
+            }
+            k += 1;
+        }
+        let is_title = !first && info[start..k].starts_with("title=");
+        first = false;
+        if !is_title {
+            kept.push_str(&info[ws..k]);
+        }
+        pos = k;
+    }
+    kept.push_str(&info[pos.min(info.len())..]);
+    let kept = kept.trim_end().to_string();
+    let clean: String = title
+        .chars()
+        .map(|c| {
+            if matches!(c, '"' | '\n' | '\r') {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect();
+    let clean = clean.trim();
+    let new = if clean.is_empty() {
+        kept
+    } else {
+        format!("{kept} title=\"{clean}\"")
+    };
+    if new == info {
+        return vec![];
+    }
+    vec![Edit::replace(b.info_span, new)]
+}
+
+/// Remove block `i` whole: its fences, content and the blank line after it, so neighbours keep
+/// their usual spacing. Nothing else is touched.
+pub fn remove_block(doc: &FluxDoc, i: usize) -> Vec<Edit> {
+    let Some(b) = doc.blocks.get(i) else {
+        return vec![];
+    };
+    let src = &doc.source;
+    let mut end = b.span.end + eol_len_at(src, b.span.end);
+    end += eol_len_at(src, end);
+    vec![Edit::delete(Span::new(b.span.start, end.min(src.len())))]
 }
 
 /// Convenience: apply edits to a doc's source and return the new source.

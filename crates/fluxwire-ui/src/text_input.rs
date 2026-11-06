@@ -1150,14 +1150,7 @@ impl Element for TextElement {
         let t = cx.global::<Theme>();
         let (text_color, placeholder_color, accent) = (t.text, t.text_placeholder, t.accent);
         let focused = input.focus.is_focused(window);
-        let sel_bg = if focused {
-            t.accent_bg()
-        } else {
-            Hsla {
-                a: t.accent_bg().a * 0.5,
-                ..t.accent
-            }
-        };
+        let sel_bg = t.selection_bg(focused);
         let style = window.text_style();
         let empty = input.buf.is_empty();
         let display = if empty {

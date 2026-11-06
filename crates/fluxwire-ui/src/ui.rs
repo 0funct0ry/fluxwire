@@ -153,6 +153,53 @@ pub fn url_decorations(
         .collect()
 }
 
+/// `:name` path parameter chips for the URL input: accent when the parameter has a value (or a
+/// variable of the same name resolves), error colour when it has neither, with the value on hover.
+pub fn path_decorations(
+    text: &str,
+    t: &Theme,
+    values: &[(String, String)],
+    look: &dyn Fn(&str) -> VarInfo,
+) -> Vec<crate::text_input::Decoration> {
+    fluxwire_format::path_param_ranges(text)
+        .into_iter()
+        .map(|(name, range)| {
+            let set = values
+                .iter()
+                .find(|(k, v)| *k == name && !v.is_empty())
+                .map(|(_, v)| v.as_str());
+            let (resolved, tip) = match set {
+                Some(v) => (true, format!(":{name} = {v} · path parameter")),
+                None => {
+                    let info = look(&name);
+                    if info.resolved {
+                        (true, format!(":{name} · {}", info.tip))
+                    } else {
+                        (
+                            false,
+                            format!(
+                                ":{name} has no value · set it under Params > Path or define a variable named {name}"
+                            ),
+                        )
+                    }
+                }
+            };
+            let (color, background, underline) = if resolved {
+                (t.accent, Some(t.accent_bg()), None)
+            } else {
+                (t.deleted, None, Some(t.deleted))
+            };
+            crate::text_input::Decoration {
+                range,
+                color: Some(color),
+                background,
+                underline,
+                tip: Some(tip.into()),
+            }
+        })
+        .collect()
+}
+
 /// A horizontal row container with the shared item gap.
 pub fn row() -> Div {
     div().flex().flex_row().items_center()

@@ -457,8 +457,109 @@ fn resolve(segs: &[Seg]) -> Vec<Member> {
                 .collect();
             pm_members(&names)
         }
-        _ => vec![],
+        other => js_global_members(other, &segs[1..]),
     }
+}
+
+/// `(name, signature, doc)` of the members of the built-in JS globals.
+type JsMember = (&'static str, &'static str, &'static str);
+
+const JS_GLOBALS: &[(&str, &[JsMember])] = &[
+    (
+        "console",
+        &[
+            ("log", "log(...args)", "Print values to the Console."),
+            ("info", "info(...args)", "Print an informational message."),
+            ("warn", "warn(...args)", "Print a warning."),
+            ("error", "error(...args)", "Print an error."),
+            ("debug", "debug(...args)", "Print a debug message."),
+        ],
+    ),
+    (
+        "JSON",
+        &[
+            ("parse", "parse(text)", "Parse a JSON string."),
+            (
+                "stringify",
+                "stringify(value, replacer?, space?)",
+                "Serialize a value to JSON.",
+            ),
+        ],
+    ),
+    (
+        "Math",
+        &[
+            ("abs", "abs(x)", "Absolute value."),
+            ("ceil", "ceil(x)", "Round up."),
+            ("floor", "floor(x)", "Round down."),
+            ("round", "round(x)", "Round to the nearest integer."),
+            ("max", "max(...values)", "Largest value."),
+            ("min", "min(...values)", "Smallest value."),
+            ("pow", "pow(x, y)", "x to the power y."),
+            ("random", "random()", "Random number in [0, 1)."),
+            ("sqrt", "sqrt(x)", "Square root."),
+            ("trunc", "trunc(x)", "Integer part."),
+        ],
+    ),
+    (
+        "Date",
+        &[
+            ("now", "now()", "Milliseconds since the Unix epoch."),
+            (
+                "parse",
+                "parse(text)",
+                "Parse a date string to milliseconds.",
+            ),
+            (
+                "UTC",
+                "UTC(year, month, ...)",
+                "Milliseconds for a UTC date.",
+            ),
+        ],
+    ),
+    (
+        "Promise",
+        &[
+            ("all", "all(promises)", "Resolve when all resolve."),
+            (
+                "allSettled",
+                "allSettled(promises)",
+                "Resolve when all settle.",
+            ),
+            ("race", "race(promises)", "Settle with the first to settle."),
+            (
+                "resolve",
+                "resolve(value)",
+                "A promise resolved with a value.",
+            ),
+            (
+                "reject",
+                "reject(reason)",
+                "A promise rejected with a reason.",
+            ),
+        ],
+    ),
+];
+
+fn js_global_members(root: &str, rest: &[Seg]) -> Vec<Member> {
+    if !rest.is_empty() {
+        return vec![];
+    }
+    JS_GLOBALS
+        .iter()
+        .find(|(n, _)| *n == root)
+        .map(|(_, ms)| {
+            ms.iter()
+                .map(|(n, sig, doc)| Member {
+                    name: n.to_string(),
+                    kind: ItemKind::Method,
+                    sig: sig.to_string(),
+                    doc: doc.to_string(),
+                    ty: Ty::Opaque,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 const VAR_FNS: &[&str] = &[
@@ -884,6 +985,14 @@ mod tests {
     fn unfinished_expression() {
         assert!(!at("const r = await fw.sendRequest(\"a\"); fw.v|", Role::Pre).is_empty());
         assert!(labels(&at("if (fw.vars.|", Role::Pre)).contains(&"get"));
+    }
+
+    #[test]
+    fn js_globals_complete_their_members() {
+        let l = labels(&at("console.|", Role::Pre).into_iter().collect::<Vec<_>>()).join(",");
+        assert!(l.contains("log") && l.contains("error"), "{l}");
+        assert!(!at("Math.|", Role::Pre).is_empty());
+        assert!(at("foo.|", Role::Pre).is_empty());
     }
 
     #[test]

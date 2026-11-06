@@ -430,3 +430,86 @@ fn set_path_param_edits_only_the_path_map() {
     assert!(!s4.contains("path:"), "{s4}");
     assert_eq!(s4, src);
 }
+
+#[test]
+fn path_param_ranges_cover_each_segment() {
+    let t = "{{base}}/u/:id/p/:id?x=1";
+    let r = path_param_ranges(t);
+    assert_eq!(r.len(), 2);
+    assert_eq!(&t[r[0].1.clone()], ":id");
+    assert_eq!(r[1].1, 17..20);
+}
+
+#[test]
+fn url_bar_text_includes_enabled_query_lines_and_syncs_back() {
+    let src = "```http\nGET https://x.test/u\n    ?page=2\n    &limit=10\n    # &off=1\n```\n";
+    let d = parse(src);
+    assert_eq!(display_url(&d), "https://x.test/u?page=2&limit=10");
+    assert!(set_url_text(&d, "GET", "https://x.test/u?page=2&limit=10").is_empty());
+    // Removing a parameter in the bar removes it from the table.
+    let s = apply_edits(src, &set_url_text(&d, "GET", "https://x.test/u?page=2")).unwrap();
+    let rows = query_rows(&parse(&s));
+    assert_eq!(rows.len(), 2, "{s}");
+    assert_eq!(rows[0].name, "page");
+    assert!(!rows[1].enabled && rows[1].name == "off", "{s}");
+    // Adding one in the bar adds it to the table.
+    let s = apply_edits(
+        &s,
+        &set_url_text(&parse(&s), "GET", "https://x.test/u?page=2&q=z"),
+    )
+    .unwrap();
+    let names: Vec<_> = query_rows(&parse(&s)).into_iter().map(|q| q.name).collect();
+    assert_eq!(names, ["page", "q", "off"], "{s}");
+}
+
+#[test]
+fn remove_block_takes_one_block_and_its_blank_line() {
+    let src =
+        "```http\nGET /a\n```\n\n```ts pre\n1\n```\n\n```ts pre\n2\n```\n\n```ts pre\n3\n```\n";
+    let d = parse(src);
+    let idx: Vec<usize> = d
+        .blocks
+        .iter()
+        .enumerate()
+        .filter(|(_, b)| b.kind == BlockKind::Pre)
+        .map(|(i, _)| i)
+        .collect();
+    let out = apply_edits(src, &remove_block(&d, idx[1])).unwrap();
+    assert_eq!(
+        out,
+        "```http\nGET /a\n```\n\n```ts pre\n1\n```\n\n```ts pre\n3\n```\n"
+    );
+    let out = apply_edits(src, &remove_block(&d, idx[2])).unwrap();
+    assert!(
+        out.ends_with("2\n```\n\n") || out.ends_with("2\n```\n"),
+        "{out:?}"
+    );
+}
+
+#[test]
+fn block_title_is_set_replaced_and_removed_in_the_info_string_only() {
+    let src = "```http\nGET /a\n```\n\n```ts pre\nx\n```\n";
+    let d = parse(src);
+    let pre = d
+        .blocks
+        .iter()
+        .position(|b| b.kind == BlockKind::Pre)
+        .unwrap();
+    let s1 = apply_edits(src, &set_block_title(&d, pre, "Store auth in header")).unwrap();
+    assert!(
+        s1.contains("```ts pre title=\"Store auth in header\"\nx\n```"),
+        "{s1}"
+    );
+    let d1 = parse(&s1);
+    assert_eq!(block_title(&d1.blocks[pre]), Some("Store auth in header"));
+    assert_eq!(d1.blocks[pre].kind, BlockKind::Pre);
+    let s2 = apply_edits(&s1, &set_block_title(&d1, pre, "Say \"hi\"")).unwrap();
+    assert!(
+        s2.contains("title=\"Say  hi\"") || s2.contains("title=\"Say hi\""),
+        "{s2}"
+    );
+    assert_eq!(s2.matches("title=").count(), 1);
+    let s3 = apply_edits(&s2, &set_block_title(&parse(&s2), pre, "  ")).unwrap();
+    assert_eq!(s3, src);
+    assert!(set_block_title(&parse(src), pre, "").is_empty());
+}

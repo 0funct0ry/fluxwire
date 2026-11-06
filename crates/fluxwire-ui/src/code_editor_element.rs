@@ -163,6 +163,7 @@ pub struct Prepaint {
     caret: Option<PaintQuad>,
     text_origin_x: Pixels,
     gutter_bg: Vec<PaintQuad>,
+    bars: Vec<PaintQuad>,
 }
 
 impl Element for CodeEditorElement {
@@ -217,7 +218,7 @@ impl Element for CodeEditorElement {
             .width;
         let focused = self.editor.read(cx).focus.is_focused(window);
 
-        let (rows, quads, caret, gutter_w, gutter_bg) = self.editor.update(cx, |e, _| {
+        let (rows, quads, caret, gutter_w, gutter_bg, bars) = self.editor.update(cx, |e, _| {
             let digits = e.display().line_count().to_string().len().max(2);
             let gutter_w = if e.cfg.line_numbers {
                 char_w * (digits as f32 + 2.)
@@ -257,14 +258,7 @@ impl Element for CodeEditorElement {
             let head_col = e.display().col_of(head);
             let origin_x = bounds.left() + gutter_w - e.scroll_x;
 
-            let sel_bg = if focused {
-                t.accent_bg()
-            } else {
-                Hsla {
-                    a: t.accent_bg().a * 0.5,
-                    ..t.accent
-                }
-            };
+            let sel_bg = t.selection_bg(focused);
             let mut quads = Vec::new();
             let mut painted = Vec::new();
             let pair = e.bracket_pair();
@@ -497,7 +491,24 @@ impl Element for CodeEditorElement {
                     ));
                 }
             }
-            (painted, quads, caret, gutter_w, gutter_bg)
+            let bars = scrollbars(
+                &t,
+                bounds,
+                gutter_w,
+                total,
+                visible.saturating_sub(1).max(1),
+                e.top_row,
+                e.scroll_x,
+                e.cfg.soft_wrap == SoftWrap::None,
+                char_w,
+                e.display()
+                    .rows()
+                    .iter()
+                    .map(|r| r.range.len())
+                    .max()
+                    .unwrap_or(0),
+            );
+            (painted, quads, caret, gutter_w, gutter_bg, bars)
         });
         let scroll_x = self.editor.read(cx).scroll_x;
         Prepaint {
@@ -506,6 +517,7 @@ impl Element for CodeEditorElement {
             caret,
             text_origin_x: bounds.left() + gutter_w - scroll_x,
             gutter_bg,
+            bars,
         }
     }
 
@@ -564,14 +576,102 @@ impl Element for CodeEditorElement {
             if let Some(q) = pre.caret.take() {
                 window.paint_quad(q);
             }
+            for q in pre.bars.drain(..) {
+                window.paint_quad(q);
+            }
         });
         self.editor.update(cx, |e, _| e.chip_rects = rects);
     }
 }
 
+/// Thumb geometry of one scrollbar: `(offset, length)` in pixels along a track of `track`
+/// pixels, for `visible` of `total` units scrolled to `pos`. `None` when everything fits.
+pub(crate) fn thumb(track: f32, total: f32, visible: f32, pos: f32) -> Option<(f32, f32)> {
+    if total <= visible || track <= 0. {
+        return None;
+    }
+    let len = (track * visible / total).clamp(24.0_f32.min(track), track);
+    let max_pos = total - visible;
+    let off = (track - len) * (pos / max_pos).clamp(0., 1.);
+    Some((off, len))
+}
+
+/// Overlay scrollbar thumbs (vertical always, horizontal when the editor does not wrap), drawn
+/// only when the content overflows.
+#[allow(clippy::too_many_arguments)]
+fn scrollbars(
+    t: &Theme,
+    bounds: Bounds<Pixels>,
+    gutter_w: Pixels,
+    rows: usize,
+    visible_rows: usize,
+    top_row: f32,
+    scroll_x: Pixels,
+    horizontal: bool,
+    char_w: Pixels,
+    longest_row: usize,
+) -> Vec<PaintQuad> {
+    let color = Hsla {
+        a: 0.35,
+        ..t.text_muted
+    };
+    let thickness = px(6.);
+    let mut out = Vec::new();
+    // `rows` can be scrolled until the last row is at the top, like the wheel handler allows.
+    if let Some((off, len)) = thumb(
+        f32::from(bounds.size.height),
+        rows as f32,
+        visible_rows as f32,
+        top_row,
+    ) {
+        out.push(
+            fill(
+                Bounds::new(
+                    point(bounds.right() - thickness - px(2.), bounds.top() + px(off)),
+                    size(thickness, px(len)),
+                ),
+                color,
+            )
+            .corner_radii(px(3.)),
+        );
+    }
+    if horizontal {
+        let track = f32::from(bounds.size.width - gutter_w);
+        let content = f32::from(char_w) * longest_row as f32;
+        if let Some((off, len)) = thumb(track, content, track, f32::from(scroll_x)) {
+            out.push(
+                fill(
+                    Bounds::new(
+                        point(
+                            bounds.left() + gutter_w + px(off),
+                            bounds.bottom() - thickness - px(2.),
+                        ),
+                        size(px(len), thickness),
+                    ),
+                    color,
+                )
+                .corner_radii(px(3.)),
+            );
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn thumb_hidden_when_content_fits_and_tracks_position() {
+        assert_eq!(thumb(100., 10., 10., 0.), None);
+        assert_eq!(thumb(100., 5., 10., 0.), None);
+        let (off, len) = thumb(100., 20., 10., 0.).unwrap();
+        assert_eq!((off, len), (0., 50.));
+        let (off, len) = thumb(100., 20., 10., 10.).unwrap();
+        assert_eq!((off, len), (50., 50.));
+        let (_, len) = thumb(100., 10_000., 10., 0.).unwrap();
+        assert_eq!(len, 24.);
+    }
 
     #[test]
     fn tabs_expand_and_runs_cover_the_row() {

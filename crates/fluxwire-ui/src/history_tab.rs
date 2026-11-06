@@ -66,6 +66,9 @@ impl WorkspaceView {
         let ids: Vec<i64> = self.history.ticked.iter().copied().collect();
         if let [a, b] = ids[..] {
             self.open_history_diff(a, b, cx);
+        } else {
+            self.notice = Some("Tick exactly two rows in the list to diff them.".into());
+            cx.notify();
         }
     }
 
@@ -120,10 +123,19 @@ impl WorkspaceView {
             this.update(cx, |this, cx| {
                 this.history.cache.clear();
                 this.history_reload(cx);
+                this.history_refresh_selected(cx);
             })
             .ok();
         })
         .detach();
+    }
+
+    /// Fetch the selected entry again after the cache was invalidated, so the detail pane
+    /// never stays on "Loading…".
+    pub(crate) fn history_refresh_selected(&mut self, cx: &mut Context<Self>) {
+        if let Some(id) = self.history.selected {
+            self.history_fetch(vec![id], cx, |_, _| {});
+        }
     }
 
     /// Save the note field's text when it changed (also on blur).
@@ -155,6 +167,7 @@ impl WorkspaceView {
             this.update(cx, |this, cx| {
                 this.history.cache.remove(&id);
                 this.history_reload(cx);
+                this.history_refresh_selected(cx);
             })
             .ok();
         })
@@ -328,6 +341,7 @@ impl WorkspaceView {
             }
             self.history.clear_menu = false;
             self.history.export_menu = false;
+            self.history.actions_menu = false;
             return;
         }
         if !self.history_focus.is_focused(window)

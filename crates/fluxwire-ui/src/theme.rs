@@ -159,6 +159,15 @@ impl Theme {
         }
     }
 
+    /// Background of selected text. Stronger than `accent_bg` and the active-line colour so a
+    /// selection never blends into the line highlight; fainter when the editor is not focused.
+    pub fn selection_bg(&self, focused: bool) -> Hsla {
+        Hsla {
+            a: if focused { 0.38 } else { 0.2 },
+            ..self.accent
+        }
+    }
+
     /// Method colors derive from syntax and status tokens (SPEC §17.7).
     pub fn method_color(&self, method: &str) -> Hsla {
         match method {
