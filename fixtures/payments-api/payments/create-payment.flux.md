@@ -14,6 +14,8 @@ capture:
 Creates a payment. `Idempotency-Key` is generated on every send, so
 re-sending creates a new payment. Pin it with `fw.vars` to replay.
 
+[see refunds](../refunds/create-refund.flux.md) 
+
 ```http
 POST {{baseUrl}}/v1/payments
     ?expand=customer
@@ -48,4 +50,19 @@ Every payment gets an id we can use in later requests:
 
 ```ts test
 fw.test("has an id", () => fw.expect(fw.response.json()).toHaveProperty("id"));
+```
+
+```http example
+HTTP 404
+Content-Type: application/json; charset=utf-8
+
+{
+  "error": {
+    "type": "not_found",
+    "code": "route_not_found",
+    "message": "No route matches POST /v1/payments",
+    "param": null,
+    "request_id": "ec8a249f-8d86-470f-8697-e1747b81a15c"
+  }
+}
 ```

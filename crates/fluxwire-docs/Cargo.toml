@@ -12,3 +12,8 @@ workspace = true
 
 [dependencies]
 fluxwire-model.workspace = true
+fluxwire-format.workspace = true
+pulldown-cmark = { version = "0.13", default-features = false }
+
+[dev-dependencies]
+tempfile = "3"

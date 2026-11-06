@@ -25,6 +25,7 @@ actions!(
         FindInResponse,
         CopyResponseBody,
         SaveResponseBody,
+        SaveResponseAsExample,
         QuickSearch,
         CommandPalette,
         NewRequest,
@@ -186,6 +187,12 @@ pub static ACTIONS: &[ActionInfo] = &[
     a!("response: find", FindInResponse, Some("secondary-f"), None),
     a!("response: copy body", CopyResponseBody, None, None),
     a!("response: save body to file", SaveResponseBody, None, None),
+    a!(
+        "response: save as example",
+        SaveResponseAsExample,
+        None,
+        None
+    ),
     a!("quick search: open", QuickSearch, Some("secondary-k"), None),
     a!(
         "command palette: toggle",
@@ -1022,6 +1029,7 @@ mod tests {
         "response: find",
         "response: copy body",
         "response: save body to file",
+        "response: save as example",
         "quick search: open",
         "quick search: open result beside",
         "command palette: toggle",

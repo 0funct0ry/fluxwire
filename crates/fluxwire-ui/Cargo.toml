@@ -21,6 +21,7 @@ fluxwire-model.workspace = true
 fluxwire-format.workspace = true
 fluxwire-import.workspace = true
 fluxwire-openapi.workspace = true
+fluxwire-docs.workspace = true
 gpui.workspace = true
 anyhow.workspace = true
 serde.workspace = true

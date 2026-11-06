@@ -71,9 +71,9 @@ pub fn chip_for(info: &str) -> String {
     let lang = info.split_whitespace().next().unwrap_or("");
     let role = info.split_whitespace().nth(1).unwrap_or("");
     match (lang, role) {
-        ("http", _) | ("ws", _) => format!("{lang} request · edit in Params/Body"),
         (_, "pre") | (_, "post") => format!("{lang} {role} · edit in Scripts"),
         (_, "test") | (_, "expect") => format!("{lang} {role} · edit in Tests"),
+        ("http", "") | ("ws", "") => format!("{lang} request · edit in Params/Body"),
         _ => format!("{info} · edit in Open as text"),
     }
 }
@@ -158,6 +158,12 @@ mod tests {
         assert_eq!(chip_tab(&BlockKind::Post), 4);
         assert_eq!(chip_tab(&BlockKind::Expect), 5);
         assert_eq!(chip_tab(&BlockKind::Config), OPEN_AS_TEXT);
+    }
+
+    #[test]
+    fn expect_block_chip_points_to_tests() {
+        assert_eq!(chip_for("http expect"), "http expect · edit in Tests");
+        assert_eq!(chip_for("http"), "http request · edit in Params/Body");
     }
 
     #[test]

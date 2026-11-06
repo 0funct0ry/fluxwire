@@ -1162,8 +1162,8 @@ impl WorkspaceView {
     }
 
     /// Tests tab: the declarative `http expect` block, or the `test` script (SPEC §7.7, §11).
-    /// Docs sub-tab: *Preview* (rendered Markdown, read-only, the default) or *Source* (the
-    /// Markdown editor).
+    /// Docs sub-tab: *Edit* (the Markdown editor), *Preview* (rendered, read-only, the default)
+    /// or *Split* (both).
     fn render_docs_tab(
         &self,
         t: &Theme,
@@ -1171,35 +1171,35 @@ impl WorkspaceView {
         ui: &TabUi,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let source = ui.docs_source;
-        let toggle =
-            row()
-                .gap_2()
-                .p_2()
-                .flex_none()
-                .children([("Preview", false), ("Source", true)].map(|(l, s)| {
-                    button(
-                        t,
-                        if s { "docs-source" } else { "docs-preview" },
-                        l,
-                        source == s,
-                    )
-                    .dev_click(
-                        "center.render_docs_tab",
-                        Role::Button,
-                        "center.render_docs_tab",
-                        true,
-                        cx.listener(move |this, _, _, cx| {
-                            if let Some(ui) = this.active_ui() {
-                                ui.docs_source = s;
-                            }
-                            cx.notify();
-                        }),
-                    )
-                }));
+        let (source, split) = (ui.docs_source, ui.docs_split);
+        // Edit, Preview and Split modes (SPEC §16).
+        let modes: [(&str, &str, bool, bool); 3] = [
+            ("docs-source", "Edit", true, false),
+            ("docs-preview", "Preview", false, false),
+            ("docs-split", "Split", true, true),
+        ];
+        let toggle = row()
+            .gap_2()
+            .p_2()
+            .flex_none()
+            .children(modes.map(|(id, l, s, sp)| {
+                button(t, id, l, split == sp && (sp || source == s)).dev_click(
+                    "center.render_docs_tab",
+                    Role::Button,
+                    id,
+                    true,
+                    cx.listener(move |this, _, _, cx| {
+                        if let Some(ui) = this.active_ui() {
+                            ui.docs_source = s;
+                            ui.docs_split = sp;
+                        }
+                        cx.notify();
+                    }),
+                )
+            }));
         let text = doc.target_text(Target::Docs);
-        let body: AnyElement = if source {
-            self.editor_surface(
+        let editor = |this: &Self, cx: &mut Context<Self>| {
+            this.editor_surface(
                 "docs-editor",
                 &doc.key,
                 &text,
@@ -1207,6 +1207,23 @@ impl WorkspaceView {
                 Target::Docs,
                 cx,
             )
+        };
+        let body: AnyElement = if split {
+            let (left, right) = (
+                editor(self, cx),
+                self.render_docs_preview(t, &doc.key, &text, cx),
+            );
+            div()
+                .flex()
+                .flex_row()
+                .flex_1()
+                .min_h_0()
+                .gap_2()
+                .child(div().flex().flex_col().flex_1().min_w_0().child(left))
+                .child(div().flex().flex_col().flex_1().min_w_0().child(right))
+                .into_any_element()
+        } else if source {
+            editor(self, cx)
         } else {
             self.render_docs_preview(t, &doc.key, &text, cx)
         };

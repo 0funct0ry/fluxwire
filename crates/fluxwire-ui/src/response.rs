@@ -1048,6 +1048,49 @@ impl WorkspaceView {
         cx.notify();
     }
 
+    /// Inserts an `http example` block holding the active tab's response, secrets redacted
+    /// (SPEC §16), through a span insert; nothing else in the file changes.
+    pub fn save_response_as_example(&mut self, cx: &mut Context<Self>) {
+        let Some(key) = self.active_key() else { return };
+        let Some(r) = self
+            .scope
+            .tabs
+            .active_id()
+            .and_then(|id| self.scope.responses.get(&id))
+        else {
+            return;
+        };
+        let Some(res) = r.result.as_ref() else { return };
+        let Some(x) = res.outcome.as_ref().and_then(|o| o.exchange.as_ref()) else {
+            self.notice = Some("There is no response to save as an example.".into());
+            return;
+        };
+        let body = match &r.shown {
+            Some(s) => s.text.clone(),
+            None => x
+                .body
+                .as_memory()
+                .map(|b| String::from_utf8_lossy(b).into_owned())
+                .unwrap_or_default(),
+        };
+        let redact = |s: &str| res.redact(s);
+        let content = fluxwire_docs::example::example_content(x.status, &x.headers, &body, &redact);
+        let Some(doc) = self.scope.workspace.as_mut().and_then(|p| p.doc_mut(&key)) else {
+            return;
+        };
+        let edits = fluxwire_format::insert_block(
+            &doc.parsed,
+            fluxwire_model::BlockKind::Example,
+            "http example",
+            &content,
+        );
+        if doc.apply(&edits) {
+            self.after_edit(&key, cx);
+            self.notice = Some("Saved the response as an example in Docs.".into());
+        }
+        cx.notify();
+    }
+
     pub fn save_response_body(&mut self, cx: &mut Context<Self>) {
         let Some(r) = self
             .scope

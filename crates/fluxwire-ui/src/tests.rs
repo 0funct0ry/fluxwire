@@ -4869,3 +4869,48 @@ fn removing_a_spec_link_clears_sync_and_keeps_the_spec(cx: &mut TestAppContext) 
     assert!(!toml.contains("[[openapi]]"));
     assert!(root.join("petstore/petstore.yaml").is_file());
 }
+
+#[gpui::test]
+fn docs_split_mode_shows_the_editor_beside_the_preview(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "docs-split");
+    view.update_in(cx, |w, _, _| {
+        let ui = w.active_ui().unwrap();
+        ui.sub = 6;
+        ui.docs_source = true;
+        ui.docs_split = true;
+    });
+    view.update(cx, |_, cx| cx.notify());
+    cx.run_until_parked();
+    let docs_key = (CREATE.to_string(), crate::workspace_model::Target::Docs);
+    assert!(view.read_with(cx, |w, _| {
+        w.scope.code_editors.borrow().contains_key(&docs_key)
+    }));
+    // Rendering the split view leaves the file as it was.
+    let before = doc_text(&view, cx, CREATE);
+    view.update(cx, |_, cx| cx.notify());
+    cx.run_until_parked();
+    assert_eq!(doc_text(&view, cx, CREATE), before);
+}
+
+#[gpui::test]
+fn relative_doc_links_open_the_linked_request(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "docs-link");
+    view.update_in(cx, |w, window, cx| {
+        w.open_doc_link("../refunds/create-refund.flux.md", window, cx);
+    });
+    cx.run_until_parked();
+    let key = view.update(cx, |w, _| w.active_key());
+    assert!(
+        key.as_deref()
+            .is_some_and(|k| k.ends_with("refunds/create-refund.flux.md")),
+        "{key:?}"
+    );
+}
+
+#[gpui::test]
+fn saving_an_example_without_a_response_changes_nothing(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "docs-example-none");
+    let before = doc_text(&view, cx, CREATE);
+    view.update(cx, |w, cx| w.save_response_as_example(cx));
+    assert_eq!(doc_text(&view, cx, CREATE), before);
+}

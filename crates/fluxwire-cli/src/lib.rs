@@ -1,6 +1,7 @@
 //! clap command tree and reporters (no GPUI). `mcp serve` (ADR-009) and the M10 headless CLI.
 
 mod data;
+mod docs;
 mod exit;
 mod files;
 mod import;
@@ -48,12 +49,8 @@ pub enum Command {
     Import(import::ImportArgs),
     /// OpenAPI two-way sync: status, pull, push, diff (SPEC §15).
     Openapi(openapi::OpenapiArgs),
-    /// API documentation export (M13).
-    #[command(hide = true)]
-    Docs {
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
+    /// API documentation: export a static HTML reference (SPEC §16).
+    Docs(docs::DocsArgs),
     /// Model Context Protocol server for agents (ADR-009).
     Mcp {
         #[command(subcommand)]
@@ -127,7 +124,7 @@ where
         Command::Completions(a) => tools::completions(a),
         Command::Import(a) => import::run(a),
         Command::Openapi(a) => openapi::run(a),
-        Command::Docs { .. } => tools::stub("docs export", "M13"),
+        Command::Docs(a) => docs::run(a),
         Command::Mcp {
             command: McpCommand::Serve(a),
         } => mcp::serve(a),

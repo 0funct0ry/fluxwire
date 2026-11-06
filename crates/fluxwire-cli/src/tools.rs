@@ -1,4 +1,4 @@
-//! `fmt`, `validate`, `env list`, `completions` and the M11–M13 stubs.
+//! `fmt`, `validate`, `env list`, `completions`.
 
 use crate::{exit, files};
 use clap::{Args, CommandFactory};
@@ -96,9 +96,4 @@ pub fn completions(a: CompletionsArgs) -> ExitCode {
     let mut cmd = crate::Cli::command();
     clap_complete::generate(a.shell, &mut cmd, "fluxwire", &mut std::io::stdout());
     ExitCode::SUCCESS
-}
-
-pub fn stub(name: &str, milestone: &str) -> ExitCode {
-    eprintln!("fluxwire {name}: available in {milestone}");
-    ExitCode::from(exit::USAGE)
 }

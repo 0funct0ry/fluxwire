@@ -11,7 +11,7 @@ use crate::workspace::WorkspaceView;
 use gpui::{
     AnyElement, Context, FontStyle, FontWeight, HighlightStyle, InteractiveText, IntoElement,
     ParentElement, SharedString, StatefulInteractiveElement, StrikethroughStyle, Styled,
-    StyledText, UnderlineStyle, div, prelude::*, px,
+    StyledText, UnderlineStyle, Window, div, prelude::*, px,
 };
 use std::ops::Range;
 
@@ -85,6 +85,95 @@ fn inline_parts(inl: &[Inline], t: &Theme) -> InlineParts {
 }
 
 impl WorkspaceView {
+    /// Follows a link of a Docs preview (SPEC §16): external links open in the browser, relative
+    /// `.flux.md` links open that request or folder in the app.
+    pub(crate) fn open_doc_link(
+        &mut self,
+        href: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use fluxwire_docs::links::{Link, resolve};
+        let from = self.active_key().unwrap_or_default();
+        match resolve(&from, href) {
+            Link::External(u) => cx.open_url(&u),
+            Link::Doc { path, .. } if path.ends_with(".flux.md") => {
+                self.open_request(&path, true, window, cx)
+            }
+            Link::Anchor(_) => {}
+            Link::Doc { path, .. } => {
+                self.notice = Some(format!("{path}: open Markdown files from the tree."));
+                cx.notify();
+            }
+            Link::Other(o) => {
+                self.notice = Some(format!("{o}: this link cannot be opened here."));
+                cx.notify();
+            }
+        }
+    }
+
+    /// The generated sections beneath the prose (SPEC §16): never written to disk.
+    fn render_generated_sections(&self, t: &Theme, key: &str) -> Vec<AnyElement> {
+        use fluxwire_docs::generated::{Content, generate};
+        let Some(doc) = self.scope.workspace.as_ref().and_then(|p| p.doc(key)) else {
+            return vec![];
+        };
+        generate(&doc.parsed)
+            .into_iter()
+            .map(|s| {
+                let body: AnyElement = match s.content {
+                    Content::Table(rows) => div()
+                        .flex()
+                        .flex_col()
+                        .children(rows.into_iter().map(|(k, v)| {
+                            div()
+                                .flex()
+                                .flex_row()
+                                .gap_3()
+                                .child(
+                                    div()
+                                        .w(px(140.))
+                                        .flex_none()
+                                        .text_color(t.text_muted)
+                                        .child(k),
+                                )
+                                .child(div().min_w_0().child(v))
+                        }))
+                        .into_any_element(),
+                    Content::Lines(l) => div()
+                        .flex()
+                        .flex_col()
+                        .children(
+                            l.into_iter()
+                                .map(|x| div().child(format!("• {}", x.replace('`', "")))),
+                        )
+                        .into_any_element(),
+                    Content::Code { text, .. } => div()
+                        .p_2()
+                        .rounded(px(4.))
+                        .bg(t.element_hover)
+                        .child(text)
+                        .into_any_element(),
+                };
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .border_t_1()
+                    .border_color(t.border_variant)
+                    .pt_2()
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .text_color(t.text_placeholder)
+                            .child(s.title.to_uppercase()),
+                    )
+                    .child(body)
+                    .into_any_element()
+            })
+            .collect()
+    }
+
     fn md_inline(
         &self,
         id: SharedString,
@@ -101,19 +190,9 @@ impl WorkspaceView {
         let urls: Vec<String> = links.into_iter().map(|l| l.1).collect();
         let ws = cx.entity();
         InteractiveText::new(id, styled)
-            .on_click(ranges, move |ix, _, cx| {
+            .on_click(ranges, move |ix, window, cx| {
                 let url = urls[ix].clone();
-                if url.starts_with("http://")
-                    || url.starts_with("https://")
-                    || url.starts_with("mailto:")
-                {
-                    cx.open_url(&url);
-                } else {
-                    ws.update(cx, |this, cx| {
-                        this.notice = Some(format!("{url}: open linked files from the tree."));
-                        cx.notify();
-                    });
-                }
+                ws.update(cx, |this, cx| this.open_doc_link(&url, window, cx));
             })
             .into_any_element()
     }
@@ -194,28 +273,29 @@ impl WorkspaceView {
                             .child(info.clone()),
                     );
                 }
-                card.child(
-                    div()
-                        .px_2()
-                        .py_1()
-                        .font_family(crate::assets::BUFFER_FONT)
-                        .text_size(px(12.))
-                        .flex()
-                        .flex_col()
-                        .children(rows.into_iter().map(|line| {
-                            div()
-                                .flex()
-                                .flex_row()
-                                .min_h(px(16.))
-                                .children(line.into_iter().map(|(s, tok)| {
-                                    div()
-                                        .text_color(tok_color(t, tok))
-                                        .whitespace_nowrap()
-                                        .child(s)
-                                }))
-                        })),
-                )
-                .into_any_element()
+                card.overflow_hidden()
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("{id}-code")))
+                            .overflow_x_scroll()
+                            .px_2()
+                            .py_1()
+                            .font_family(crate::assets::BUFFER_FONT)
+                            .text_size(px(12.))
+                            .flex()
+                            .flex_col()
+                            .children(rows.into_iter().map(|line| {
+                                div().flex().flex_row().min_h(px(16.)).children(
+                                    line.into_iter().map(|(s, tok)| {
+                                        div()
+                                            .text_color(tok_color(t, tok))
+                                            .whitespace_nowrap()
+                                            .child(s)
+                                    }),
+                                )
+                            })),
+                    )
+                    .into_any_element()
             }
             Block::List { start, items } => {
                 div()
@@ -353,6 +433,13 @@ impl WorkspaceView {
                 )
                 .into_any_element()
         };
+        let generated = self.render_generated_sections(t, key);
+        let body = div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(body)
+            .children(generated);
         div()
             .id("docs-preview-body")
             .flex_1()

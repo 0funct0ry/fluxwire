@@ -2450,6 +2450,7 @@ dependencies = [
  "clap_complete",
  "directories",
  "fluxwire-agent",
+ "fluxwire-docs",
  "fluxwire-format",
  "fluxwire-import",
  "fluxwire-model",
@@ -2465,7 +2466,10 @@ dependencies = [
 name = "fluxwire-docs"
 version = "0.1.0"
 dependencies = [
+ "fluxwire-format",
  "fluxwire-model",
+ "pulldown-cmark",
+ "tempfile",
 ]
 
 [[package]]
@@ -2653,6 +2657,7 @@ dependencies = [
  "chrono",
  "directories",
  "fluxwire-agent",
+ "fluxwire-docs",
  "fluxwire-format",
  "fluxwire-import",
  "fluxwire-model",

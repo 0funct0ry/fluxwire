@@ -225,6 +225,8 @@ pub struct TabUi {
     pub tests_script: bool,
     /// Docs tab: false shows the rendered Preview, true the Markdown Source editor.
     pub docs_source: bool,
+    /// Docs tab: show the Source editor and the Preview side by side (overrides `docs_source`).
+    pub docs_split: bool,
     /// Selected saved message of a WebSocket tab (the one Cmd/Ctrl+Enter sends).
     pub msg_sel: usize,
     /// Saved scroll offset of the editor area while this tab is not showing.
@@ -240,6 +242,7 @@ impl TabUi {
             post_script: false,
             tests_script: false,
             docs_source: false,
+            docs_split: false,
             msg_sel: 0,
             scroll: 0.0,
         }
@@ -1755,6 +1758,7 @@ impl Render for WorkspaceView {
             },
             CopyResponseBody => |this, _w, c| this.copy_response_body(c),
             SaveResponseBody => |this, _w, c| this.save_response_body(c),
+            SaveResponseAsExample => |this, _w, c| this.save_response_as_example(c),
             Connect => |this, _w, c| this.ws_toggle(c),
         });
         root.child(self.render_title_bar(&t, cx))

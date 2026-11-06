@@ -276,7 +276,7 @@ impl WorkspaceView {
         self.after_edit(key, cx)
     }
 
-    fn after_edit(&mut self, key: &str, cx: &mut Context<Self>) {
+    pub(crate) fn after_edit(&mut self, key: &str, cx: &mut Context<Self>) {
         self.sync_tab(key);
         if let Some(id) = self.scope.tabs.id_for_key(key)
             && self
