@@ -1,0 +1,22 @@
+---
+import body from '../components/marketing-body.html?raw';
+import script from '../components/marketing.js?raw';
+import '../styles/marketing.css';
+const base = import.meta.env.BASE_URL;
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Fluxwire — a native API client that lives in your repository</title>
+    <meta name="description" content="Fluxwire is a native, GPU-rendered client for REST and WebSocket APIs. Every request is a small text file you review in pull requests and run in CI." />
+    <link rel="icon" href={`${base}favicon.svg`} type="image/svg+xml" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" />
+  </head>
+  <body>
+    <Fragment set:html={body} />
+    <script is:inline set:html={script} />
+  </body>
+</html>

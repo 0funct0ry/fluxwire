@@ -7,6 +7,7 @@ mod files;
 mod import;
 mod mcp;
 mod openapi;
+mod reference;
 mod reporter;
 mod run;
 mod tools;
@@ -51,6 +52,9 @@ pub enum Command {
     Openapi(openapi::OpenapiArgs),
     /// API documentation: export a static HTML reference (SPEC §16).
     Docs(docs::DocsArgs),
+    /// Reference data for the docs site generators.
+    #[command(hide = true)]
+    Reference(reference::ReferenceArgs),
     /// Model Context Protocol server for agents (ADR-009).
     Mcp {
         #[command(subcommand)]
@@ -86,6 +90,7 @@ pub fn is_cli_arg(arg: &str) -> bool {
             | "import"
             | "openapi"
             | "docs"
+            | "reference"
             | "mcp"
             | "--version"
             | "-V"
@@ -125,6 +130,7 @@ where
         Command::Import(a) => import::run(a),
         Command::Openapi(a) => openapi::run(a),
         Command::Docs(a) => docs::run(a),
+        Command::Reference(a) => reference::run(a),
         Command::Mcp {
             command: McpCommand::Serve(a),
         } => mcp::serve(a),

@@ -508,6 +508,23 @@ icons: ## Regenerate packaging/icons from fluxwire.svg
 install-script: ## Stage scripts/install.sh for the docs site (site/public/install.sh)
 	mkdir -p site/public && cp scripts/install.sh site/public/install.sh
 
+.PHONY: site site-dev site-preview site-check screenshots
+site: install-script ## Build the marketing page and docs site into site/dist
+	cd site && npm ci && npm run build
+
+site-dev: install-script ## Serve the site with live reload
+	cd site && npm install && npm run dev
+
+site-preview: ## Serve the built site (builds first if site/dist is missing) at http://localhost:4321/fluxwire/
+	@test -d site/dist || $(MAKE) site
+	cd site && npx astro preview --open
+
+site-check: site ## Check links and AA contrast of the built site
+	cd site && npm run contrast && node scripts/check-links.mjs
+
+screenshots: ## Capture documentation screenshots from the real app into site/public/screenshots
+	scripts/screenshots.sh
+
 
 ##@ Clean
 

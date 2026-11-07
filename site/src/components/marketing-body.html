@@ -1,0 +1,185 @@
+
+<header class="wrap nav">
+  <a class="logo" href="/fluxwire/">
+    <img src="/fluxwire/favicon.svg" alt="" width="28" height="28">
+    fluxwire
+  </a>
+  <a class="l" href="/fluxwire/docs/">Docs</a>
+  <a class="l hide-sm" href="#compare">Compare</a>
+  
+  <span class="sp"></span>
+  <a class="l" href="https://github.com/0funct0ry/fluxwire">GitHub</a>
+  <button class="theme" id="theme" aria-label="Toggle color theme">◐</button>
+</header>
+
+<main>
+  <section class="wrap hero">
+    <h1>Your API requests belong in your repo.</h1>
+    <p class="lede">Fluxwire is a native, GPU-rendered client for REST and WebSocket APIs. Every request is a small text file you review in pull requests, run in CI, and never upload anywhere.</p>
+    <div class="ctas">
+      <a class="btn primary" href="#install" id="dl">Download for macOS <small>Apple silicon</small></a>
+      <a class="btn" href="/fluxwire/docs/">Read the quick start</a>
+    </div>
+    <p class="fine">Free and MIT licensed. macOS, Linux, and Windows. No account.</p>
+
+    <div class="wire" aria-label="A .flux request file and the response it produced">
+      <div class="wire-col">
+        <div class="wbar"><b>payments/create-payment.flux.md</b></div>
+<pre class="src"><span class="l" data-n="1"><span class="fm">---</span></span><span class="l" data-n="2"><span class="k">name</span>: Create payment</span><span class="l" data-n="3"><span class="k">capture</span>:</span><span class="l" data-n="4">  <span class="k">paymentId</span>: $.id</span><span class="l" data-n="5"><span class="fm">---</span></span><span class="l" data-n="6"></span><span class="l" data-n="7"><span class="hd"># Create payment</span></span><span class="l" data-n="8"></span><span class="l" data-n="9"><span class="pz">Creates a payment awaiting capture.</span></span><span class="l" data-n="10"></span><span class="l" data-n="11"><span class="fm">```</span><span class="bl">http</span></span><span class="l" data-n="12"><span class="fn">POST</span> <span class="v">{{baseUrl}}</span>/v1/payments</span><span class="l" data-n="13"><span class="k">Idempotency-Key</span>: <span class="v">{{$uuid}}</span></span><span class="l" data-n="14"></span><span class="l" data-n="15">{ <span class="k">"amount"</span>: <span class="n">4200</span>, <span class="k">"currency"</span>: <span class="s">"INR"</span> }</span><span class="l" data-n="16"><span class="fm">```</span></span><span class="l" data-n="17"></span><span class="l" data-n="18"><span class="fm">```</span><span class="bl">http expect</span></span><span class="l" data-n="19"><span class="fn">HTTP</span> <span class="n">201</span></span><span class="l" data-n="20"></span><span class="l" data-n="21">{ <span class="k">"status"</span>: <span class="s">"requires_capture"</span> }</span><span class="l" data-n="22"><span class="fm">```</span></span></pre>
+      </div>
+      <div class="wire-col">
+        <div class="wbar"><b>201 Created</b><span>1.2 KB, h2</span><span class="st">expect passed</span></div>
+<pre class="src"><span class="l" data-n="1">{</span><span class="l" data-n="2">  <span class="k">"id"</span>: <span class="s">"pay_8f2c1"</span>,</span><span class="l" data-n="3">  <span class="k">"status"</span>: <span class="s">"requires_capture"</span>,</span><span class="l" data-n="4">  <span class="k">"amount"</span>: <span class="n">4200</span>,</span><span class="l" data-n="5">  <span class="k">"currency"</span>: <span class="s">"INR"</span>,</span><span class="l" data-n="6">  <span class="k">"created_at"</span>: <span class="s">"2026-10-22T09:14:03Z"</span></span><span class="l" data-n="7">}</span></pre>
+        <div class="wf" id="wf"></div>
+      </div>
+    </div>
+    <p class="caption">Left: a request as it sits in git, a Markdown file that reads as documentation on GitHub. Right: what Fluxwire shows after you send it, including where the time went.</p>
+  </section>
+
+  <section class="wrap blk">
+    <div class="two">
+      <div>
+        <h2>Reviewed like the code it tests.</h2>
+        <p class="intro">Each request is a Markdown file: a few lines of front matter, a sentence or two of explanation, and fenced blocks for the request, the response you expect, and any scripts. The request is written as a plain HTTP message, the way the RFCs and your terminal show it.</p>
+        <p class="intro" style="margin-top:14px">It renders as documentation on GitHub, coding agents read and write it without special instructions, and edits from the app touch only the lines that changed.</p>
+      </div>
+      <div class="pr">
+        <div class="pr-head"><b>Add merchant header to payments</b><span>#482 · 1 file changed</span></div>
+<pre class="diff"><span class="h">@@ payments/folder.flux.md @@</span><span> ```http defaults</span><span> X-Client: fluxwire</span><span class="a">+X-Merchant-Id: {{merchantId}}</span><span> ```</span><span> </span><span class="d">-Every request in this folder identifies the client.</span><span class="a">+Every request identifies the client and the merchant</span><span class="a">+it acts for, as required since API v3.</span></pre>
+        <div class="review"><span class="avatar">PS</span><span style="color:var(--muted)">Header matches the spec change in #479. Approving.</span></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="wrap blk">
+    <h2>Everything an API client needs, nothing that phones home.</h2>
+    <p class="intro">Requests, environments, secrets, and history stay on your machine. There is no account to create and no telemetry to turn off.</p>
+    <div class="feats">
+      <div class="feat">
+        <h3>Native and GPU-rendered</h3>
+        <div>
+          <p>Fluxwire is written in Rust on GPUI, the framework behind the Zed editor. It opens in a blink, scrolls a 50 MB JSON response without stutter, and searches thousands of requests as fast as you type.</p>
+          <p>If you use Zed, the keybindings, panels, command palette, and themes will feel familiar. Zed themes load as they are.</p>
+        </div>
+      </div>
+      <div class="feat">
+        <h3>An open format built to grow</h3>
+        <div>
+          <p>The format is documented and has no Fluxwire-only syntax: Markdown, a small YAML header, and fenced blocks whose labels say what they do. A published schema lets editors and agents check their work.</p>
+          <p>New protocols slot in as new kinds of block. GraphQL, gRPC, MCP, and Server-Sent Events are on the roadmap, and a file that needs a newer Fluxwire says so instead of running the wrong way.</p>
+<pre><span class="fm">```</span><span class="bl">mcp</span>
+<span class="fn">tools/call</span> search_payments
+<span class="k">Server</span>: <span class="v">{{paymentsMcpUrl}}</span>
+<span class="fm">```</span></pre>
+        </div>
+      </div>
+      <div class="feat">
+        <h3>Scripts in JavaScript or TypeScript</h3>
+        <div>
+          <p>Pre-request scripts, post-response scripts, and tests run in an embedded, sandboxed engine. Share helpers from a <code>lib/</code> folder. Postman scripts you import keep working through a compatibility layer.</p>
+<pre><span class="kw">import</span> { sign } <span class="kw">from</span> <span class="s">"lib/sign.ts"</span>;
+
+<span class="kw">fw</span>.request.headers.<span class="fn">set</span>(<span class="s">"X-Signature"</span>, <span class="fn">sign</span>(<span class="kw">fw</span>.request.body.<span class="fn">text</span>()));
+<span class="kw">fw</span>.<span class="fn">test</span>(<span class="s">"is authorized"</span>, () =&gt;
+  <span class="kw">fw</span>.<span class="fn">expect</span>(<span class="kw">fw</span>.response.<span class="fn">json</span>().status).<span class="fn">toBe</span>(<span class="s">"authorized"</span>));</pre>
+        </div>
+      </div>
+      <div class="feat">
+        <h3>The same runs in CI</h3>
+        <div>
+          <p>The app and the command line share one execution engine. Run a folder concurrently or in order, feed it a CSV of test data, and report as JUnit for your pipeline. A static, GUI-free build fits in any container.</p>
+<pre class="term"><span class="pr">$</span> fluxwire run api/payments --env ci --reporter pretty --reporter junit -o report.xml
+<span class="dim">payments</span>
+  <span class="ok">✓</span> Login                     <span class="dim">233 ms</span>
+  <span class="ok">✓</span> Create payment            <span class="dim">142 ms</span>
+  <span class="ok">✓</span> Get payment                <span class="dim">61 ms</span>
+  <span class="bad">✕</span> Capture payment           <span class="dim">190 ms</span>
+      expected "succeeded", received "requires_capture"
+<span class="ok">3 passed</span>, <span class="bad">1 failed</span> <span class="dim">in 0.63 s</span></pre>
+        </div>
+      </div>
+      <div class="feat">
+        <h3>Two-way OpenAPI sync</h3>
+        <div>
+          <p>Link a folder to a spec. Pull new operations and parameters into your requests; push renamed requests and new parameters back into the spec. Changes on both sides are merged field by field, conflicts wait for you, and YAML comments survive.</p>
+          <div class="sync">
+            <div class="box"><b>openapi/payments.yaml</b><span>3 operations changed</span></div>
+            <div class="arrows">pull ↓3<br>push ↑1</div>
+            <div class="box"><b>payments/</b><span>1 request renamed</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="feat">
+        <h3>Bring what you already have</h3>
+        <div>
+          <p>Import collections and environments in one step. Every import ends with a report of anything that did not convert cleanly, so nothing disappears quietly.</p>
+          <div class="sources"><span>Postman</span><span>Insomnia</span><span>OpenAPI 3.x and Swagger 2.0</span><span>Hurl</span><span>IntelliJ and VS Code .http</span></div>
+        </div>
+      </div>
+      <div class="feat">
+        <h3>WebSockets, history, and docs</h3>
+        <div>
+          <p>Keep saved messages next to a WebSocket request and watch frames as they arrive. Every send is stored in a local history you can search, diff, and restore. Write Markdown docs beside your requests; they render in the app and on GitHub.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="wrap blk" id="compare">
+    <h2>How it compares.</h2>
+    <p class="intro">Fluxwire is younger than these tools and does less in some areas. The rows where it falls short are here on purpose.</p>
+    <div class="cmp">
+      <table>
+        <thead><tr><th></th><th class="us">Fluxwire</th><th>Postman</th><th>Insomnia</th><th>Bruno</th></tr></thead>
+        <tbody>
+          <tr><td>Native UI (not Electron)</td><td class="us y">Yes</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
+          <tr><td>Requests as plain-text files in your repo</td><td class="us y">Yes</td><td class="p">Partial</td><td class="p">Partial</td><td class="y">Yes</td></tr>
+          <tr><td>Request files read as docs on GitHub</td><td class="us y">Yes</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
+          <tr><td>Works without an account</td><td class="us y">Yes</td><td class="no">No</td><td class="p">Partial</td><td class="y">Yes</td></tr>
+          <tr><td>Two-way OpenAPI sync</td><td class="us y">Yes</td><td class="p">Partial</td><td class="no">No</td><td class="no">No</td></tr>
+          <tr><td>Command-line runner</td><td class="us y">Yes</td><td class="y">Yes</td><td class="y">Yes</td><td class="y">Yes</td></tr>
+          <tr><td>GraphQL</td><td class="us no">Planned for 1.1</td><td class="y">Yes</td><td class="y">Yes</td><td class="y">Yes</td></tr>
+          <tr><td>gRPC</td><td class="us no">Planned for 1.2</td><td class="y">Yes</td><td class="y">Yes</td><td class="y">Yes</td></tr>
+          <tr><td>Team cloud workspaces</td><td class="us no">No, by design</td><td class="y">Yes</td><td class="y">Yes</td><td class="no">No</td></tr>
+          <tr><td>Mock servers</td><td class="us no">No</td><td class="y">Yes</td><td class="y">Yes</td><td class="no">No</td></tr>
+          <tr><td>License</td><td class="us">MIT</td><td>Proprietary</td><td>Apache 2.0</td><td>MIT</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">Based on each project's public documentation at the time of writing. If something here is out of date, open an issue and we'll correct it.</p>
+  </section>
+
+  <section class="wrap blk" id="install">
+    <h2>Install.</h2>
+    <div class="tabs" role="tablist">
+      <button role="tab" aria-selected="true" data-p="mac">macOS</button>
+      <button role="tab" aria-selected="false" data-p="linux">Linux</button>
+      <button role="tab" aria-selected="false" data-p="win">Windows</button>
+      <button role="tab" aria-selected="false" data-p="ci">CI</button>
+    </div>
+    <div class="panel on" id="p-mac">
+      <div class="cmd"><span>brew install --cask 0funct0ry/tap/fluxwire</span><button data-copy>Copy</button></div>
+      <p>Or download the signed <a href="https://github.com/0funct0ry/fluxwire/releases/latest">.dmg for Apple silicon or Intel</a>.</p>
+    </div>
+    <div class="panel" id="p-linux">
+      <div class="cmd"><span>curl -fsSL https://0funct0ry.github.io/fluxwire/install.sh | sh</span><button data-copy>Copy</button></div>
+      <p>Installs to <code>~/.local</code> and verifies the checksum. Archives for x86_64 and arm64 are on the <a href="https://github.com/0funct0ry/fluxwire/releases/latest">releases page</a>.</p>
+    </div>
+    <div class="panel" id="p-win">
+      <div class="cmd"><span>Download fluxwire-x86_64.msi</span><button data-copy>Copy</button></div>
+      <p>The installer adds <code>fluxwire</code> to your PATH and opens <code>.flux</code> files in the app.</p>
+    </div>
+    <div class="panel" id="p-ci">
+      <div class="cmd"><span>curl -fsSL https://0funct0ry.github.io/fluxwire/install.sh | sh -s -- --cli-only</span><button data-copy>Copy</button></div>
+      <p>Installs <code>fluxwire-cli</code>, a static binary with no GUI dependencies, for containers and runners.</p>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>Fluxwire is MIT licensed.</span>
+    <a href="/fluxwire/docs/">Docs</a><a href="https://github.com/0funct0ry/fluxwire">GitHub</a><a href="https://github.com/0funct0ry/fluxwire/releases">Releases</a><a href="https://github.com/0funct0ry/fluxwire/security/policy">Security policy</a>
+  </div>
+</footer>
+

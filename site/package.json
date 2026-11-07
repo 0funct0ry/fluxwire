@@ -1,0 +1,22 @@
+{
+  "name": "fluxwire-site",
+  "type": "module",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "gen": "node scripts/gen-fw-api.mjs && node scripts/gen-schema.mjs && node scripts/gen-reference.mjs && node scripts/gen-keybindings.mjs",
+    "dev": "npm run gen && astro dev",
+    "prebuild": "npm run gen",
+    "build": "astro build",
+    "preview": "astro preview",
+    "contrast": "node scripts/check-contrast.mjs",
+    "lighthouse": "lhci autorun --config=lighthouserc.json"
+  },
+  "dependencies": {
+    "@astrojs/starlight": "^0.34.0",
+    "astro": "^5.7.0"
+  },
+  "devDependencies": {
+    "@lhci/cli": "^0.14.0"
+  }
+}

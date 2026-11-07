@@ -1,0 +1,33 @@
+/* Starlight mapped onto the app's One Light / One Dark tokens (see DOCS-MOCKUP.html). */
+:root {
+  --sl-font: "IBM Plex Sans", system-ui, sans-serif;
+  --sl-font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  --sl-color-accent-low: #dfe6fa;
+  --sl-color-accent: #3158c4;
+  --sl-color-accent-high: #1f3a8a;
+  --sl-color-white: #242529;
+  --sl-color-gray-1: #2e2f33;
+  --sl-color-gray-2: #45464b;
+  --sl-color-gray-3: #5a5b61;
+  --sl-color-gray-4: #6e6f76;
+  --sl-color-gray-5: #dfdfe0;
+  --sl-color-gray-6: #f3f3f4;
+  --sl-color-gray-7: #fafafa;
+  --sl-color-black: #ffffff;
+}
+:root[data-theme='dark'] {
+  --sl-color-accent-low: #243449;
+  --sl-color-accent: #74ade8;
+  --sl-color-accent-high: #b4d3f5;
+  --sl-color-white: #dce0e5;
+  --sl-color-gray-1: #c9ced6;
+  --sl-color-gray-2: #a9afbc;
+  --sl-color-gray-3: #98a0ae;
+  --sl-color-gray-4: #7b8290;
+  --sl-color-gray-5: #363c46;
+  --sl-color-gray-6: #2f343e;
+  --sl-color-gray-7: #282c33;
+  --sl-color-black: #282c33;
+}
+:focus-visible { outline: 2px solid var(--sl-color-accent); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; transition: none !important; animation: none !important; } }

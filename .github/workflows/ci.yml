@@ -180,3 +180,25 @@ jobs:
       - name: Measure startup (macOS)
         if: runner.os == 'macOS'
         run: TOLERANCE=3 scripts/startup-timing.sh target/release/fluxwire
+
+  site:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+      - run: make install-script
+      - run: cd site && npm ci
+      - name: Regenerate reference pages and fail if they are stale
+        run: |
+          cd site && npm run gen
+          git diff --exit-code -- . ':!public/install.sh'
+      - run: cd site && npx astro build
+      - run: cd site && npm run contrast && node scripts/check-links.mjs
+      - name: Lighthouse (accessibility >= 0.95)
+        run: cd site && npx lhci autorun --config=lighthouserc.json

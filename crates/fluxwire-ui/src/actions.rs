@@ -125,6 +125,10 @@ actions!(
         AboutFluxwire,
         ShowUpdates,
         OpenCrashLog,
+        OpenDocumentation,
+        OpenFormatReference,
+        OpenKeybindingsReference,
+        ReportIssue,
     ]
 );
 
@@ -377,6 +381,20 @@ pub static ACTIONS: &[ActionInfo] = &[
     a!("app: about Fluxwire", AboutFluxwire, None, None),
     a!("app: check for updates…", ShowUpdates, None, None),
     a!("app: open last crash log", OpenCrashLog, None, None),
+    a!("help: open documentation", OpenDocumentation, None, None),
+    a!(
+        "help: open format reference",
+        OpenFormatReference,
+        None,
+        None
+    ),
+    a!(
+        "help: open keybindings reference",
+        OpenKeybindingsReference,
+        None,
+        None
+    ),
+    a!("help: report an issue", ReportIssue, None, None),
     a!("cli: install shell command", InstallCliShim, None, None),
     a!("cli: uninstall shell command", UninstallCliShim, None, None),
     h!("keymap: reload", ReloadKeymap, None, None),
@@ -694,6 +712,10 @@ const APP_ACTIONS: &[&str] = &[
     "AboutFluxwire",
     "ShowUpdates",
     "OpenCrashLog",
+    "OpenDocumentation",
+    "OpenFormatReference",
+    "OpenKeybindingsReference",
+    "ReportIssue",
 ];
 
 const WORKSPACE_ACTIONS: &[&str] = &[
@@ -1104,6 +1126,10 @@ mod tests {
         "app: about Fluxwire",
         "app: check for updates…",
         "app: open last crash log",
+        "help: open documentation",
+        "help: open format reference",
+        "help: open keybindings reference",
+        "help: report an issue",
     ];
 
     #[test]

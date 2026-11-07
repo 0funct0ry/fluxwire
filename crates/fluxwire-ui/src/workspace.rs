@@ -12,6 +12,7 @@ use crate::{
     actions::*,
     assets::{BUFFER_FONT, UI_FONT},
     dev_id::{DevClick, DevTag, Role},
+    help_links::HelpTarget,
     mock::{self, Mock},
     tabs::TabKind,
     text_input::{TextInput, TextInputEvent},
@@ -1628,6 +1629,12 @@ impl Render for WorkspaceView {
             AboutFluxwire => |this, w, c| this.show_about(w, c),
             ShowUpdates => |this, w, c| this.show_updates(w, c),
             OpenCrashLog => |this, _w, c| this.open_latest_crash_log(c),
+            OpenDocumentation => |_this, _w, c| c.open_url(&HelpTarget::Documentation.url()),
+            OpenFormatReference => |_this, _w, c| c.open_url(&HelpTarget::FormatReference.url()),
+            OpenKeybindingsReference => |_this, _w, c| {
+                c.open_url(&HelpTarget::KeybindingsReference.url())
+            },
+            ReportIssue => |_this, _w, c| c.open_url(&HelpTarget::ReportIssue.url()),
             UninstallCliShim => |this, _w, c| this.uninstall_cli_shim(c),
             EditKeymap => |this, _w, c| this.edit_keymap(c),
             SwitchEnvironment => |this, w, c| this.open_modal(ModalKind::Environment, w, c),

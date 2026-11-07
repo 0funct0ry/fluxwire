@@ -38,6 +38,7 @@ pub mod env_editor;
 pub mod envs;
 pub mod envs_view;
 pub mod header_catalog;
+pub mod help_links;
 pub mod highlight;
 pub mod history;
 pub mod history_detail;
