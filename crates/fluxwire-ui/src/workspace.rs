@@ -292,6 +292,8 @@ pub struct WorkspaceView {
     pub inline_focus: FocusHandle,
     /// Transient message for the status bar (errors, notices).
     pub notice: Option<String>,
+    /// Result of the last update check (M14).
+    pub updates: crate::updates_state::UpdateState,
     /// The theme to put back when a live theme preview ends without being kept.
     pub theme_restore: Option<Theme>,
     pub open_error: Option<String>,
@@ -375,6 +377,7 @@ impl WorkspaceView {
             notice: cx
                 .try_global::<crate::theme::StartupNotice>()
                 .map(|n| n.0.clone()),
+            updates: Default::default(),
             theme_restore: None,
             open_error: None,
             recent,
@@ -1622,6 +1625,9 @@ impl Render for WorkspaceView {
             NewWorkspaceCollection => |this, w, c| this.start_new_collection(None, w, c),
             CopyWorkspacePath => |this, _w, c| this.copy_workspace_path(c),
             InstallCliShim => |this, _w, c| this.install_cli_shim(c),
+            AboutFluxwire => |this, w, c| this.show_about(w, c),
+            ShowUpdates => |this, w, c| this.show_updates(w, c),
+            OpenCrashLog => |this, _w, c| this.open_latest_crash_log(c),
             UninstallCliShim => |this, _w, c| this.uninstall_cli_shim(c),
             EditKeymap => |this, _w, c| this.edit_keymap(c),
             SwitchEnvironment => |this, w, c| this.open_modal(ModalKind::Environment, w, c),
@@ -1856,6 +1862,7 @@ pub type HostOpts = ();
 
 /// Like [`run`], opening `path` as the Workspace and starting the host in `host`.
 pub fn run_with(path: Option<PathBuf>, host: HostOpts) {
+    let started = std::time::Instant::now();
     #[cfg(not(feature = "dev-mcp"))]
     let () = host;
     gpui::Application::new()
@@ -1878,7 +1885,25 @@ pub fn run_with(path: Option<PathBuf>, host: HostOpts) {
                 }
             })
             .detach();
+            if let Some(dirs) = &dirs {
+                crate::crash::install_hook(dirs.config_dir().to_path_buf());
+            }
             let handle = open_window(cx).expect("open main window");
+            handle
+                .update(cx, |ws, window, cx| ws.startup_checks(window, cx))
+                .ok();
+            // Startup timing harness (M14, ADR-023): `FLUXWIRE_STARTUP_TIMING=1` prints the
+            // milliseconds from process start to the first frame, then quits.
+            if std::env::var_os("FLUXWIRE_STARTUP_TIMING").is_some() {
+                handle
+                    .update(cx, |_, window, _| {
+                        window.on_next_frame(move |_, cx| {
+                            eprintln!("startup_ms={}", started.elapsed().as_millis());
+                            cx.quit();
+                        });
+                    })
+                    .ok();
+            }
             // `fluxwire [PATH]` opens PATH as the Workspace.
             if let Some(path) = &path {
                 handle

@@ -12,6 +12,7 @@ use std::time::SystemTime;
 mod folder;
 pub mod prepare;
 mod report;
+pub mod updates;
 pub use folder::*;
 pub use report::{error_text, to_json, to_junit, to_tap};
 

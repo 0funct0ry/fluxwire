@@ -122,6 +122,9 @@ actions!(
         EditKeymap,
         InstallCliShim,
         UninstallCliShim,
+        AboutFluxwire,
+        ShowUpdates,
+        OpenCrashLog,
     ]
 );
 
@@ -371,6 +374,9 @@ pub static ACTIONS: &[ActionInfo] = &[
         None
     ),
     a!("workspace: copy path", CopyWorkspacePath, None, None),
+    a!("app: about Fluxwire", AboutFluxwire, None, None),
+    a!("app: check for updates…", ShowUpdates, None, None),
+    a!("app: open last crash log", OpenCrashLog, None, None),
     a!("cli: install shell command", InstallCliShim, None, None),
     a!("cli: uninstall shell command", UninstallCliShim, None, None),
     h!("keymap: reload", ReloadKeymap, None, None),
@@ -685,6 +691,9 @@ const APP_ACTIONS: &[&str] = &[
     "ReloadKeymap",
     "Dismiss",
     "Quit",
+    "AboutFluxwire",
+    "ShowUpdates",
+    "OpenCrashLog",
 ];
 
 const WORKSPACE_ACTIONS: &[&str] = &[
@@ -1092,6 +1101,9 @@ mod tests {
         "keymap: edit",
         "cli: install shell command",
         "cli: uninstall shell command",
+        "app: about Fluxwire",
+        "app: check for updates…",
+        "app: open last crash log",
     ];
 
     #[test]

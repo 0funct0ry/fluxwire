@@ -6,6 +6,7 @@ mod curl;
 mod engine;
 mod error;
 mod expect;
+mod fetch;
 mod history;
 pub mod oauth2;
 mod plan;
@@ -24,6 +25,7 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 
 pub use auth::{Auth, OAuth2Config};
+pub use fetch::get_text;
 pub use plan::HttpPlan;
 
 pub struct HttpProtocol;

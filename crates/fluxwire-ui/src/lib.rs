@@ -1,6 +1,8 @@
 //! GPUI application: windows, panels, tabs, editors, palette.
 
+pub mod about;
 pub mod actions;
+pub mod app_dialogs;
 pub mod assets;
 #[cfg(feature = "dev-mcp")]
 pub mod capture;
@@ -13,6 +15,7 @@ pub mod completion;
 pub mod completion_popup;
 pub mod completion_providers;
 pub mod containment;
+pub mod crash;
 #[cfg(feature = "dev-mcp")]
 pub mod dev_audit;
 #[cfg(feature = "dev-mcp")]
@@ -75,6 +78,7 @@ pub mod theme_picker;
 pub mod ui;
 #[cfg(feature = "dev-mcp")]
 pub mod ui_actions;
+pub mod updates_state;
 pub mod viewer;
 pub mod workspace;
 pub mod workspace_model;

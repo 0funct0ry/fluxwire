@@ -1,0 +1,36 @@
+class FluxwireCli < Formula
+  desc "Headless CLI for Fluxwire: run, validate, import and document API collections"
+  homepage "https://0funct0ry.github.io/fluxwire/"
+  version "@VERSION@"
+  license "MIT"
+
+  on_macos do
+    on_arm do
+      url "https://github.com/0funct0ry/fluxwire/releases/download/v@VERSION@/fluxwire-cli-@VERSION@-aarch64-apple-darwin.tar.gz"
+      sha256 "@SHA_AARCH64_APPLE_DARWIN_CLI@"
+    end
+    on_intel do
+      url "https://github.com/0funct0ry/fluxwire/releases/download/v@VERSION@/fluxwire-cli-@VERSION@-x86_64-apple-darwin.tar.gz"
+      sha256 "@SHA_X86_64_APPLE_DARWIN_CLI@"
+    end
+  end
+
+  on_linux do
+    on_arm do
+      url "https://github.com/0funct0ry/fluxwire/releases/download/v@VERSION@/fluxwire-cli-@VERSION@-aarch64-unknown-linux-musl.tar.gz"
+      sha256 "@SHA_AARCH64_UNKNOWN_LINUX_MUSL_CLI@"
+    end
+    on_intel do
+      url "https://github.com/0funct0ry/fluxwire/releases/download/v@VERSION@/fluxwire-cli-@VERSION@-x86_64-unknown-linux-musl.tar.gz"
+      sha256 "@SHA_X86_64_UNKNOWN_LINUX_MUSL_CLI@"
+    end
+  end
+
+  def install
+    bin.install "fluxwire-cli"
+  end
+
+  test do
+    assert_match version.to_s, shell_output("#{bin}/fluxwire-cli --version")
+  end
+end

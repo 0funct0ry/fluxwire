@@ -91,6 +91,14 @@ pub enum ConfirmAction {
         root: PathBuf,
         name: String,
     },
+    /// Open a web page in the browser.
+    OpenUrl(String),
+    /// Run the update check (M14).
+    CheckUpdates,
+    /// Flip `check_for_updates` in `settings.toml`.
+    ToggleAutoUpdates,
+    /// Open a crash log (M14).
+    OpenPath(PathBuf),
 }
 
 /// What happens once the Workspace has been closed.
@@ -538,6 +546,10 @@ impl WorkspaceView {
             ConfirmAction::DeleteHistory(ids) => self.history_delete(ids, cx),
             ConfirmAction::DeleteEnvironment { root, name } => self.delete_env_in(&root, &name, cx),
             ConfirmAction::RemoveSpecLink { root, name } => self.remove_spec_link(&root, &name, cx),
+            ConfirmAction::OpenUrl(u) => cx.open_url(&u),
+            ConfirmAction::CheckUpdates => self.check_updates(true, window, cx),
+            ConfirmAction::ToggleAutoUpdates => self.toggle_auto_updates(window, cx),
+            ConfirmAction::OpenPath(p) => cx.open_url(&format!("file://{}", p.display())),
             ConfirmAction::CloseEnvTab(id, save) => self.finish_close_env_tab(id, save, cx),
             ConfirmAction::Close(after, mode) => self.finish_close(after, mode, window, cx),
             ConfirmAction::StartNew {

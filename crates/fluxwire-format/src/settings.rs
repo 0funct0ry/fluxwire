@@ -11,6 +11,9 @@ pub struct UserSettings {
     /// Store cookie jars in the data dir between runs (SPEC §9.3).
     #[serde(default)]
     pub persist_cookies: bool,
+    /// Query GitHub releases for a newer version at startup (SPEC §21, default off).
+    #[serde(default)]
+    pub check_for_updates: bool,
     /// Name of the colour theme; absent follows the OS appearance (SPEC §17.7).
     #[serde(default)]
     pub theme: Option<String>,
@@ -79,7 +82,26 @@ pub fn load_settings(config_dir: &Path) -> UserSettings {
 /// every other byte alone. Creates the file and directory when missing; a file that does not
 /// parse is left untouched and reported. Atomic (temp file, then rename).
 pub fn save_theme(config_dir: &Path, theme: Option<&str>) -> std::io::Result<()> {
-    use toml_edit::{DocumentMut, value};
+    edit_settings(config_dir, |doc| match theme {
+        Some(name) => doc["theme"] = toml_edit::value(name),
+        None => {
+            doc.remove("theme");
+        }
+    })
+}
+
+/// Sets the top-level `check_for_updates` key; same guarantees as [`save_theme`].
+pub fn save_check_for_updates(config_dir: &Path, on: bool) -> std::io::Result<()> {
+    edit_settings(config_dir, |doc| {
+        doc["check_for_updates"] = toml_edit::value(on)
+    })
+}
+
+fn edit_settings(
+    config_dir: &Path,
+    f: impl FnOnce(&mut toml_edit::DocumentMut),
+) -> std::io::Result<()> {
+    use toml_edit::DocumentMut;
     let path = config_dir.join("settings.toml");
     let text = match std::fs::read_to_string(&path) {
         Ok(t) => t,
@@ -92,12 +114,7 @@ pub fn save_theme(config_dir: &Path, theme: Option<&str>) -> std::io::Result<()>
             format!("settings.toml does not parse, not changed: {e}"),
         )
     })?;
-    match theme {
-        Some(name) => doc["theme"] = value(name),
-        None => {
-            doc.remove("theme");
-        }
-    }
+    f(&mut doc);
     let out = doc.to_string();
     std::fs::create_dir_all(config_dir)?;
     let tmp = config_dir.join("settings.toml.tmp");
@@ -160,6 +177,21 @@ mod tests {
         assert_eq!(read(&d).matches("theme").count(), 1);
         save_theme(&d, None).unwrap();
         assert_eq!(read(&d), src);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn check_for_updates_defaults_off_and_round_trips() {
+        assert!(!parse_settings("").check_for_updates);
+        let d = dir("upd");
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("settings.toml"), "# keep\ntheme = \"Nord\"\n").unwrap();
+        save_check_for_updates(&d, true).unwrap();
+        let s = load_settings(&d);
+        assert!(s.check_for_updates && s.theme.as_deref() == Some("Nord"));
+        assert!(read(&d).contains("# keep"));
+        save_check_for_updates(&d, false).unwrap();
+        assert!(!load_settings(&d).check_for_updates);
         let _ = std::fs::remove_dir_all(&d);
     }
 

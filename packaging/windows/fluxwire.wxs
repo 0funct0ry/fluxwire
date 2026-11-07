@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- WiX v4. Build: wix build -d Version=1.0.0 -d BinDir=target\release -d IconFile=packaging\icons\fluxwire.ico -o fluxwire.msi packaging\windows\fluxwire.wxs -->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="Fluxwire" Manufacturer="Fluxwire" Version="$(Version)"
+           UpgradeCode="6f1d6f0e-3b8e-4c47-9a53-2f0f4a3c8b11" Scope="perUser">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Fluxwire is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+    <Icon Id="fluxwire.ico" SourceFile="$(IconFile)" />
+    <Property Id="ARPPRODUCTICON" Value="fluxwire.ico" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="INSTALLFOLDER" Name="Fluxwire">
+        <Component Id="MainExe" Guid="*">
+          <File Id="FluxwireExe" Source="$(BinDir)\fluxwire.exe" KeyPath="yes" />
+          <Environment Id="PathEntry" Name="PATH" Value="[INSTALLFOLDER]" Action="set" Part="last" System="no" Permanent="no" />
+          <RegistryValue Root="HKCU" Key="Software\Classes\.md\OpenWithProgids" Name="Fluxwire.Request" Type="string" Value="" />
+          <RegistryValue Root="HKCU" Key="Software\Classes\Fluxwire.Request" Type="string" Value="Fluxwire request" />
+          <RegistryValue Root="HKCU" Key="Software\Classes\Fluxwire.Request\shell\open\command" Type="string" Value="&quot;[INSTALLFOLDER]fluxwire.exe&quot; &quot;%1&quot;" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="StartMenuShortcut" Guid="*">
+        <Shortcut Id="FluxwireShortcut" Name="Fluxwire" Target="[INSTALLFOLDER]fluxwire.exe" WorkingDirectory="INSTALLFOLDER" />
+        <RegistryValue Root="HKCU" Key="Software\Fluxwire" Name="StartMenu" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
+    <Feature Id="Main" Title="Fluxwire" Level="1">
+      <ComponentRef Id="MainExe" />
+      <ComponentRef Id="StartMenuShortcut" />
+    </Feature>
+  </Package>
+</Wix>

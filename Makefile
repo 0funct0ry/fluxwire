@@ -224,8 +224,8 @@ cli: ## Build only the headless CLI binary (release, no GPUI)
 	$(CARGO) build $(RELEASE) -p fluxwire-cli $(CARGO_OPTS)
 
 # Needs `rustup target add x86_64-unknown-linux-musl` and musl-tools. CI calls this target.
-cli-static: ## Build a static Linux CLI (musl, release)
-	$(CARGO) build $(RELEASE) -p fluxwire-cli --target x86_64-unknown-linux-musl $(if $(LOCKED),--locked) $(CARGO_FLAGS)
+cli-static: ## Build a static Linux CLI (musl, release); TARGET=aarch64-unknown-linux-musl for arm64
+	$(CARGO) build $(RELEASE) -p fluxwire-cli --target $(or $(TARGET),x86_64-unknown-linux-musl) $(if $(LOCKED),--locked) $(CARGO_FLAGS)
 
 check: ## Type-check everything without producing binaries (fast, debug)
 	$(CARGO) check --workspace --all-targets $(FEATURES) $(CARGO_OPTS)
@@ -412,6 +412,101 @@ dist: build-release ## Package release binaries into dist/fluxwire-<version>-<tr
 	rm -rf "$$stage"; \
 	( cd "$(DIST_DIR)" && shasum -a 256 "$$name.tar.gz" > "$$name.tar.gz.sha256" ); \
 	ls -lh "$(DIST_DIR)/$$name.tar.gz"
+
+
+##@ Release packaging (SPEC §24)
+
+.PHONY: bundle-macos bundle-linux bundle-windows cli-archive checksums release icons install-script
+
+# Short commit hash baked into About (read by `option_env!("FLUXWIRE_COMMIT")`).
+export FLUXWIRE_COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null)
+
+# Signing and notarization run only when the secrets are present:
+#   APPLE_SIGNING_IDENTITY ("Developer ID Application: ..."), and for notarization
+#   APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD. Without them the .app and .dmg are unsigned.
+bundle-macos: build-release ## Build dist/fluxwire-<version>-<triple>.dmg (signed + notarized when APPLE_* are set)
+	@set -e; \
+	triple="$(if $(TARGET),$(TARGET),$(HOST_TRIPLE))"; \
+	app="$(DIST_DIR)/Fluxwire.app"; \
+	rm -rf "$$app"; mkdir -p "$$app/Contents/MacOS" "$$app/Contents/Resources"; \
+	cp "$(call out_dir,release)/fluxwire" "$$app/Contents/MacOS/fluxwire"; \
+	sed "s/@VERSION@/$(VERSION)/g" packaging/macos/Info.plist.in > "$$app/Contents/Info.plist"; \
+	cp packaging/icons/fluxwire.icns "$$app/Contents/Resources/fluxwire.icns"; \
+	if [ -n "$${APPLE_SIGNING_IDENTITY:-}" ]; then \
+		codesign --force --options runtime --timestamp --entitlements packaging/macos/entitlements.plist \
+			--sign "$$APPLE_SIGNING_IDENTITY" "$$app"; \
+	else echo "bundle-macos: APPLE_SIGNING_IDENTITY not set, leaving the app unsigned"; fi; \
+	dmg="$(DIST_DIR)/fluxwire-$(VERSION)-$$triple.dmg"; \
+	stage="$(DIST_DIR)/dmg-stage"; rm -rf "$$stage" "$$dmg"; mkdir -p "$$stage"; \
+	cp -R "$$app" "$$stage/"; ln -s /Applications "$$stage/Applications"; \
+	hdiutil create -volname Fluxwire -srcfolder "$$stage" -ov -format UDZO "$$dmg" >/dev/null; \
+	rm -rf "$$stage"; \
+	if [ -n "$${APPLE_SIGNING_IDENTITY:-}" ]; then codesign --force --timestamp --sign "$$APPLE_SIGNING_IDENTITY" "$$dmg"; fi; \
+	if [ -n "$${APPLE_ID:-}" ] && [ -n "$${APPLE_TEAM_ID:-}" ] && [ -n "$${APPLE_APP_PASSWORD:-}" ]; then \
+		xcrun notarytool submit "$$dmg" --apple-id "$$APPLE_ID" --team-id "$$APPLE_TEAM_ID" \
+			--password "$$APPLE_APP_PASSWORD" --wait; \
+		xcrun stapler staple "$$dmg"; \
+	else echo "bundle-macos: notarization credentials not set, skipping"; fi; \
+	ls -lh "$$dmg"
+
+bundle-linux: build-release ## Build dist/fluxwire-<version>-<triple>.tar.gz with .desktop file, icons and MIME type
+	@set -e; \
+	triple="$(if $(TARGET),$(TARGET),$(HOST_TRIPLE))"; \
+	name="fluxwire-$(VERSION)-$$triple"; stage="$(DIST_DIR)/$$name"; \
+	rm -rf "$$stage"; mkdir -p "$$stage/bin" "$$stage/share/applications" "$$stage/share/mime/packages" \
+		"$$stage/share/icons/hicolor/256x256/apps" "$$stage/share/icons/hicolor/512x512/apps"; \
+	cp "$(call out_dir,release)/fluxwire" "$$stage/bin/"; \
+	cp packaging/linux/fluxwire.desktop "$$stage/share/applications/"; \
+	cp packaging/linux/fluxwire-mime.xml "$$stage/share/mime/packages/fluxwire.xml"; \
+	cp packaging/icons/fluxwire-256.png "$$stage/share/icons/hicolor/256x256/apps/fluxwire.png"; \
+	cp packaging/icons/fluxwire-512.png "$$stage/share/icons/hicolor/512x512/apps/fluxwire.png"; \
+	for doc in LICENSE README.md CHANGELOG.md; do [ -f "$$doc" ] && cp "$$doc" "$$stage/" || true; done; \
+	tar -czf "$(DIST_DIR)/$$name.tar.gz" -C "$(DIST_DIR)" "$$name"; rm -rf "$$stage"; \
+	ls -lh "$(DIST_DIR)/$$name.tar.gz"
+
+# Needs the WiX v4 CLI (`dotnet tool install --global wix`) and 7-Zip. Run on Windows.
+bundle-windows: build-release ## Build dist/fluxwire-<version>-<triple>.msi and .zip (Windows, WiX v4)
+	@set -e; \
+	triple="$(if $(TARGET),$(TARGET),$(HOST_TRIPLE))"; mkdir -p "$(DIST_DIR)"; \
+	wix build -d Version=$(VERSION) -d BinDir="$(call out_dir,release)" -d IconFile=packaging/icons/fluxwire.ico \
+		-o "$(DIST_DIR)/fluxwire-$(VERSION)-$$triple.msi" packaging/windows/fluxwire.wxs; \
+	( cd "$(call out_dir,release)" && 7z a -tzip "$(CURDIR)/$(DIST_DIR)/fluxwire-$(VERSION)-$$triple.zip" fluxwire.exe ); \
+	ls -lh "$(DIST_DIR)"/fluxwire-$(VERSION)-$$triple.*
+
+# fluxwire-cli-<version>-<triple>.tar.gz (zip on Windows). Linux builds use musl: TARGET=x86_64-unknown-linux-musl.
+cli-archive: ## Archive the headless CLI: dist/fluxwire-cli-<version>-<triple>.tar.gz (TARGET=<triple> to cross-build)
+	$(CARGO) build --release -p fluxwire-cli $(if $(TARGET),--target $(TARGET)) $(if $(LOCKED),--locked)
+	@set -e; \
+	triple="$(if $(TARGET),$(TARGET),$(HOST_TRIPLE))"; \
+	name="fluxwire-cli-$(VERSION)-$$triple"; stage="$(DIST_DIR)/$$name"; \
+	rm -rf "$$stage"; mkdir -p "$$stage"; \
+	cp "$(call out_dir,release)/fluxwire-cli"* "$$stage/"; \
+	for doc in LICENSE README.md; do [ -f "$$doc" ] && cp "$$doc" "$$stage/" || true; done; \
+	case "$$triple" in \
+		*windows*) ( cd "$(DIST_DIR)" && 7z a -tzip "$$name.zip" "$$name" >/dev/null ) ;; \
+		*) tar -czf "$(DIST_DIR)/$$name.tar.gz" -C "$(DIST_DIR)" "$$name" ;; \
+	esac; \
+	rm -rf "$$stage"; ls -lh "$(DIST_DIR)"/$$name.*
+
+checksums: ## Write dist/SHA256SUMS for every archive, dmg and msi in dist/
+	@cd $(DIST_DIR) && files=$$(ls *.tar.gz *.zip *.dmg *.msi 2>/dev/null); \
+	[ -n "$$files" ] || { echo "nothing to checksum in $(DIST_DIR)"; exit 1; }; \
+	(command -v sha256sum >/dev/null && sha256sum $$files || shasum -a 256 $$files) > SHA256SUMS; cat SHA256SUMS
+
+release: ## Package this host's artifacts (app bundle + CLI archive) and SHA256SUMS
+	@case "$$(uname -s)" in \
+		Darwin) $(MAKE) bundle-macos ;; \
+		Linux) $(MAKE) bundle-linux ;; \
+		*) $(MAKE) bundle-windows ;; \
+	esac
+	$(MAKE) cli-archive
+	$(MAKE) checksums
+
+icons: ## Regenerate packaging/icons from fluxwire.svg
+	sh scripts/make-icons.sh
+
+install-script: ## Stage scripts/install.sh for the docs site (site/public/install.sh)
+	mkdir -p site/public && cp scripts/install.sh site/public/install.sh
 
 
 ##@ Clean

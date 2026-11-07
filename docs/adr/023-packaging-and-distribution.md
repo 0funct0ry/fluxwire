@@ -1,0 +1,19 @@
+# ADR-023: Packaging and distribution
+
+Status: accepted (M14)
+
+## Decisions
+- **Assets live in `packaging/`**: `macos/Info.plist.in` (with the `dev.fluxwire.request` document type for `.flux.md`), `linux/fluxwire.desktop` and `fluxwire-mime.xml`, `windows/fluxwire.wxs` (WiX v4, per-user), `homebrew/*.rb.in` and `icons/` (generated from `fluxwire.svg` by `scripts/make-icons.sh`; the outputs are committed so CI needs no icon tooling).
+- **The Makefile is the packaging interface.** `bundle-macos`, `bundle-linux`, `bundle-windows`, `cli-archive`, `cli-static`, `checksums` and `release` are the only places that know artifact names (SPEC §24). The release workflow calls them, so a local `make release` and a tag build produce the same files.
+- **Signing is optional and secret-driven.** `bundle-macos` signs with `APPLE_SIGNING_IDENTITY` and notarizes with `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD`; without them it builds an unsigned `.dmg` and says so. The workflow imports the certificate from `APPLE_CERTIFICATE` and `APPLE_CERTIFICATE_PASSWORD`. Windows artifacts are unsigned in M14.
+- **Windows association.** Windows keys associations on the last extension, so `.flux.md` cannot be registered separately from `.md`. The MSI adds Fluxwire to the "Open with" list of `.md` files and does not take over the default.
+- **Provenance and checksums.** One job collects every artifact, writes `SHA256SUMS`, attaches `actions/attest-build-provenance` attestations and creates a draft release. Notes come from `scripts/release-notes.sh`, which groups commit subjects by `[Mn]` tag (numerically) and lists untagged ones under "Other changes".
+- **Homebrew.** `0funct0ry/homebrew-tap` holds `Casks/fluxwire.rb` and `Formula/fluxwire-cli.rb`. `scripts/render-tap.sh` fills the templates from `SHA256SUMS` and fails on a missing checksum or an unfilled placeholder. The push needs a `TAP_TOKEN` secret and is skipped on forks.
+- **`install.sh`** verifies every download against `SHA256SUMS` and refuses a mismatch. `FLUXWIRE_BASE_URL` and `FLUXWIRE_PREFIX` exist for tests; `scripts/test-install.sh` runs it against a local `file://` release, including a tampered archive.
+- **crates.io is opt-in** (`publish_crates` input). Publishing needs a `version` next to every workspace `path` dependency; that edit is deferred, so the job will fail until it lands.
+- **Update check (SPEC §21).** `check_for_updates` in `settings.toml` defaults to `false`. When on, startup sends one GET to the GitHub releases API through the normal HTTP engine (so proxy and CA settings apply) with a `User-Agent` of `fluxwire/<version>`. "Check now" in the Updates dialog does the same on demand. Nothing is downloaded or installed; a newer version shows a status-bar notice and a button to the release page.
+- **Crash logs.** `crash.rs` installs a panic hook that writes `<config dir>/crashes/crash-<unix time>.log` (message, location, backtrace, version, OS and architecture; no request or workspace data). The next launch offers to open the newest log it has not shown, tracked by a `.seen` marker. Nothing is uploaded. `app: open last crash log` opens the newest one.
+- **About, Updates and the crash prompt reuse the Confirm dialog** (`app_dialogs.rs`), with the pure content in `about.rs` and `updates_state.rs`.
+- **Startup budget.** `FLUXWIRE_STARTUP_TIMING=1` makes the app print `startup_ms=<n>` at the first frame and quit; `scripts/startup-timing.sh` takes the median of five runs and compares it with `BUDGET_MS` (300) times `TOLERANCE`. The SPEC §20 budget is for an M1 MacBook Air and a 4-core laptop; hosted CI runners are slower and noisier, so CI uses `TOLERANCE=3` (limit 900 ms) to catch regressions rather than to prove the budget. Local runs use a tolerance of 1.
+
+Deferred: Windows code signing, a Windows-side installer test, `winget`/`scoop`/`.deb`/`.rpm`, crates.io publishing (see above), automatic download and install of updates.

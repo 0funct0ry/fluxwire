@@ -1,0 +1,183 @@
+name: Release
+
+# Tags vX.Y.Z build every artifact named in SPEC §24, checksum and attest them, and open a
+# draft release with notes grouped by milestone. Run it on a fork's tag to get installable
+# artifacts there. Signing and notarization happen only when the APPLE_* secrets exist.
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+  workflow_dispatch:
+    inputs:
+      publish_crates:
+        description: "Also publish fluxwire-cli (and its workspace dependencies) to crates.io"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-14, target: aarch64-apple-darwin, kind: macos }
+          - { os: macos-13, target: x86_64-apple-darwin, kind: macos }
+          - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, cli_target: x86_64-unknown-linux-musl, kind: linux }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, cli_target: aarch64-unknown-linux-musl, kind: linux }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, kind: windows }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.cli_target || matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Linux system libraries
+        if: matrix.kind == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libxcb1-dev libvulkan-dev libasound2-dev libfontconfig-dev libssl-dev musl-tools
+
+      # ---- macOS -------------------------------------------------------------------------
+      - name: Import signing certificate
+        if: matrix.kind == 'macos' && env.APPLE_CERTIFICATE != ''
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p ci "$RUNNER_TEMP/ci.keychain"
+          security default-keychain -s "$RUNNER_TEMP/ci.keychain"
+          security unlock-keychain -p ci "$RUNNER_TEMP/ci.keychain"
+          security import "$RUNNER_TEMP/cert.p12" -k "$RUNNER_TEMP/ci.keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k ci "$RUNNER_TEMP/ci.keychain"
+      - name: Bundle the macOS app
+        if: matrix.kind == 'macos'
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: make bundle-macos LOCKED=1
+      - name: Archive the macOS CLI
+        if: matrix.kind == 'macos'
+        run: make cli-archive LOCKED=1
+
+      # ---- Linux -------------------------------------------------------------------------
+      - name: Bundle the Linux app
+        if: matrix.kind == 'linux'
+        run: make bundle-linux LOCKED=1
+      - name: Archive the static Linux CLI
+        if: matrix.kind == 'linux'
+        run: make cli-archive LOCKED=1 TARGET=${{ matrix.cli_target }}
+
+      # ---- Windows -----------------------------------------------------------------------
+      - name: Install WiX
+        if: matrix.kind == 'windows'
+        run: dotnet tool install --global wix
+      - name: Bundle the Windows app
+        if: matrix.kind == 'windows'
+        shell: bash
+        run: |
+          make bundle-windows LOCKED=1
+          make cli-archive LOCKED=1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.target }}
+          path: |
+            dist/*.dmg
+            dist/*.tar.gz
+            dist/*.msi
+            dist/*.zip
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: dist-*
+          merge-multiple: true
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum *.dmg *.tar.gz *.msi *.zip > SHA256SUMS && cat SHA256SUMS
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/*.dmg
+            dist/*.tar.gz
+            dist/*.msi
+            dist/*.zip
+            dist/SHA256SUMS
+      - name: Release notes grouped by milestone
+        run: |
+          prev=$(git describe --tags --abbrev=0 --match 'v*' "${GITHUB_REF_NAME}^" 2>/dev/null || true)
+          scripts/release-notes.sh "$prev" "${GITHUB_REF_NAME}" > notes.md
+          cat notes.md
+      - name: Draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --draft --verify-tag --title "Fluxwire ${GITHUB_REF_NAME#v}" \
+            --notes-file notes.md dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SHA256SUMS
+          path: dist/SHA256SUMS
+
+  homebrew:
+    needs: release
+    # Needs a TAP_TOKEN secret with push access to 0funct0ry/homebrew-tap; skipped on forks without it.
+    if: github.repository == '0funct0ry/fluxwire'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: SHA256SUMS
+          path: sums
+      - uses: actions/checkout@v4
+        with:
+          repository: 0funct0ry/homebrew-tap
+          token: ${{ secrets.TAP_TOKEN }}
+          path: tap
+      - name: Render the cask and formula
+        run: scripts/render-tap.sh "$GITHUB_REF_NAME" sums/SHA256SUMS tap
+      - name: Commit to the tap
+        working-directory: tap
+        run: |
+          git config user.name "fluxwire-release"
+          git config user.email "release@users.noreply.github.com"
+          git add Casks/fluxwire.rb Formula/fluxwire-cli.rb
+          git commit -m "fluxwire ${GITHUB_REF_NAME#v}" || exit 0
+          git push
+
+  crates:
+    needs: release
+    if: inputs.publish_crates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Publish the CLI and its workspace dependencies
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --workspace --exclude fluxwire --exclude fluxwire-ui --locked

@@ -1,0 +1,22 @@
+cask "fluxwire" do
+  arch arm: "aarch64", intel: "x86_64"
+
+  version "@VERSION@"
+  sha256 arm:   "@SHA_AARCH64_APPLE_DARWIN_DMG@",
+         intel: "@SHA_X86_64_APPLE_DARWIN_DMG@"
+
+  url "https://github.com/0funct0ry/fluxwire/releases/download/v#{version}/fluxwire-#{version}-#{arch}-apple-darwin.dmg"
+  name "Fluxwire"
+  desc "Native REST and WebSocket API client"
+  homepage "https://0funct0ry.github.io/fluxwire/"
+
+  depends_on macos: ">= :monterey"
+
+  app "Fluxwire.app"
+  binary "#{appdir}/Fluxwire.app/Contents/MacOS/fluxwire"
+
+  zap trash: [
+    "~/Library/Application Support/dev.fluxwire.fluxwire",
+    "~/Library/Preferences/dev.fluxwire.fluxwire",
+  ]
+end

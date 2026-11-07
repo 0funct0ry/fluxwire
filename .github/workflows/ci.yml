@@ -114,3 +114,69 @@ jobs:
             -v "$PWD/fixtures:/fixtures" -w /fixtures alpine:3 \
             fluxwire-cli run cli-smoke --env ci --reporter junit -o /fixtures/out.xml
           grep -q "<testsuites" fixtures/out.xml
+
+  # Shell scripts: lint, then run their self-tests (install.sh against a fake release, release
+  # notes grouping, Homebrew rendering). macOS covers the BSD userland, Ubuntu the GNU one.
+  scripts:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        if: runner.os == 'Linux'
+        run: shellcheck scripts/*.sh
+      - run: sh scripts/test-install.sh
+      - run: sh scripts/test-release-notes.sh
+      - run: sh scripts/test-render-tap.sh
+
+  # install.sh on a fresh Ubuntu container, CLI only (no GPUI libraries in the image). The
+  # release directory is local (file://), laid out like a GitHub release.
+  install-fresh-ubuntu:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: make cli-archive TARGET=x86_64-unknown-linux-musl
+      - name: Install in a bare Ubuntu container
+        run: |
+          v=$(make version | tail -n 1)
+          mkdir -p "rel/v$v" && cp dist/fluxwire-cli-"$v"-x86_64-unknown-linux-musl.tar.gz "rel/v$v/"
+          (cd "rel/v$v" && sha256sum ./* | sed 's#\./##' > SHA256SUMS)
+          docker run --rm -v "$PWD/rel:/rel:ro" -v "$PWD/scripts:/scripts:ro" ubuntu:24.04 sh -c "
+            apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null &&
+            FLUXWIRE_BASE_URL=file:///rel sh /scripts/install.sh --cli-only --version $v &&
+            /root/.local/bin/fluxwire-cli --version"
+
+  # Startup budget (SPEC §20: < 300 ms). Hosted runners are slower than the reference laptops,
+  # so the median of five runs is allowed TOLERANCE times the budget (ADR-023).
+  startup-timing:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Linux system libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libxcb1-dev libvulkan-dev libasound2-dev libfontconfig-dev libssl-dev \
+            xvfb mesa-vulkan-drivers
+      - run: make build-release
+      - name: Measure startup (Linux, xvfb)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a -s "-screen 0 1440x900x24" env TOLERANCE=3 scripts/startup-timing.sh target/release/fluxwire
+      - name: Measure startup (macOS)
+        if: runner.os == 'macOS'
+        run: TOLERANCE=3 scripts/startup-timing.sh target/release/fluxwire

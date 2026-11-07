@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Fluxwire
+Comment=Native REST and WebSocket API client
+Exec=fluxwire %F
+Icon=fluxwire
+Terminal=false
+Categories=Development;Network;
+MimeType=text/x-fluxwire-request;
+StartupWMClass=fluxwire

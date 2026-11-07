@@ -51,7 +51,8 @@ pub use query::{Pair, rewrite_url_query, url_query};
 pub use schema::front_matter_schema_json;
 pub use scope::{ScopeInputs, ancestor_docs, build_scope};
 pub use settings::{
-    McpSettings, UserSettings, load_settings, parse_manifest_mcp, parse_settings, save_theme,
+    McpSettings, UserSettings, load_settings, parse_manifest_mcp, parse_settings,
+    save_check_for_updates, save_theme,
 };
 pub use sync_edit::{kv_line, set_expect_status, set_kv_value};
 pub use template::*;
