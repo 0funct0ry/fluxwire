@@ -296,16 +296,25 @@ fn convert_request(item: &Value, seq: i64, file: &str, b: &mut Builder) -> ReqDr
             "graphql" => {
                 let q = s(body.get("graphql").unwrap_or(&Value::Null), "query");
                 let vars = s(body.get("graphql").unwrap_or(&Value::Null), "variables");
-                let mut o = serde_json::Map::new();
-                o.insert("query".into(), Value::String(q));
-                if let Ok(v) = serde_json::from_str::<Value>(&vars) {
-                    o.insert("variables".into(), v);
-                }
-                if !has_ct(&d) {
-                    d.headers.push(Kv::new("Content-Type", "application/json"));
-                }
-                d.body =
-                    Body::Raw(serde_json::to_string_pretty(&Value::Object(o)).unwrap_or_default());
+                // Variables only survive when they are a JSON object; anything else is dropped
+                // with a report line rather than sent as a body the server would reject.
+                let variables = match serde_json::from_str::<Value>(&vars) {
+                    Ok(v @ Value::Object(_)) => serde_json::to_string_pretty(&v).ok(),
+                    _ => {
+                        if !vars.trim().is_empty() {
+                            b.report.lossy(
+                                &file,
+                                "GraphQL variables",
+                                "The variables are not a JSON object and were dropped",
+                            );
+                        }
+                        None
+                    }
+                };
+                d.body = Body::GraphQl {
+                    query: q,
+                    variables,
+                };
             }
             "file" | "binary" => b.report.lossy(
                 &file,

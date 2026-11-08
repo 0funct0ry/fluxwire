@@ -261,6 +261,8 @@ impl NewRequestForm {
             description: self.description.clone(),
             method: if http {
                 self.method.clone()
+            } else if self.kind == NewKind::Other("graphql") {
+                "POST".into()
             } else {
                 "GET".into()
             },
@@ -288,6 +290,10 @@ impl CreatePlan {
         };
         let text = render_request(&spec);
         match self.kind {
+            NewKind::Other("graphql") => {
+                let text = format!("{text}\n```graphql query\n{{\n  __typename\n}}\n```\n");
+                fluxwire_format::requires::sync_requires(&text, fluxwire_model::FileKind::Request)
+            }
             NewKind::Other(id) => text.replacen("```http", &format!("```{id}"), 1),
             _ => text,
         }
@@ -492,10 +498,10 @@ mod tests {
         f.set_kind(NewKind::Other("graphql"));
         f.url = "https://x.test/graphql".into();
         let p = f.plan("").unwrap();
-        assert!(
-            p.render()
-                .contains("```graphql\nGET https://x.test/graphql")
-        );
+        let text = p.render();
+        assert!(text.contains("```http\nPOST https://x.test/graphql"));
+        assert!(text.contains("```graphql query\n"));
+        assert!(text.contains("requires: [graphql]"));
     }
 
     #[test]

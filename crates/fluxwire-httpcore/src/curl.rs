@@ -2,8 +2,8 @@
 
 use fluxwire_model::{Edit, FluxDoc};
 
-use crate::auth::Auth;
-use crate::plan::HttpPlan;
+use crate::Auth;
+use crate::HttpPlan;
 
 fn quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))

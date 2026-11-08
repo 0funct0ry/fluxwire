@@ -45,6 +45,10 @@ pub enum BodyMode {
     Raw,
     Preview,
     Hex,
+    /// GraphQL `data` member only.
+    GqlData,
+    /// GraphQL `errors`, one per line.
+    GqlErrors,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -768,6 +772,8 @@ impl WorkspaceView {
             BodyMode::Raw => view.raw.clone(),
             BodyMode::Hex => view.hex.clone(),
             BodyMode::Preview => None,
+            BodyMode::GqlData => view.gql.as_ref().map(|g| g.data.clone()),
+            BodyMode::GqlErrors => view.gql.as_ref().map(|g| g.errors.clone()),
         };
         r.shown = base.map(|b| {
             if r.wrap {
@@ -1555,6 +1561,21 @@ impl WorkspaceView {
                     "Preview",
                     r.mode == BodyMode::Preview,
                     BodyMode::Preview,
+                ))
+            })
+            .when(view.gql.is_some(), |d| {
+                let n = view.gql.as_ref().map_or(0, |g| g.list.len());
+                d.child(chip(
+                    "m-gql-data",
+                    "Data",
+                    r.mode == BodyMode::GqlData,
+                    BodyMode::GqlData,
+                ))
+                .child(chip(
+                    "m-gql-errors",
+                    if n == 0 { "Errors" } else { "Errors ●" },
+                    r.mode == BodyMode::GqlErrors,
+                    BodyMode::GqlErrors,
                 ))
             })
             .child(chip("m-hex", "Hex", r.mode == BodyMode::Hex, BodyMode::Hex))

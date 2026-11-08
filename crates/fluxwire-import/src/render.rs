@@ -30,6 +30,12 @@ pub enum Body {
     Raw(String),
     Form(Vec<Kv>),
     Multipart(Vec<Kv>),
+    /// A GraphQL operation: written as `graphql query` and `json variables` blocks, and the
+    /// formatter adds `requires: [graphql]` (SPEC §7.9).
+    GraphQl {
+        query: String,
+        variables: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -192,6 +198,9 @@ pub fn render_request(d: &ReqDraft) -> String {
     if d.deprecated {
         out.push_str("deprecated: true\n");
     }
+    if matches!(d.body, Body::GraphQl { .. }) {
+        out.push_str("requires: [graphql]\n");
+    }
     if d.auth_none {
         out.push_str("auth: none\n");
     } else {
@@ -248,6 +257,18 @@ pub fn render_request(d: &ReqDraft) -> String {
         }
         Body::Form(kvs) => after = block("http form", kvs),
         Body::Multipart(kvs) => after = block("http multipart", kvs),
+        Body::GraphQl { query, variables } => {
+            after.push_str(&format!(
+                "\n```graphql query\n{}\n```\n",
+                query.trim_end_matches('\n')
+            ));
+            if let Some(v) = variables.as_deref().filter(|v| !v.trim().is_empty()) {
+                after.push_str(&format!(
+                    "\n```json variables\n{}\n```\n",
+                    v.trim_end_matches('\n')
+                ));
+            }
+        }
         _ => {}
     }
     out.push_str("```\n");

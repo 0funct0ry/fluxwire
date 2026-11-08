@@ -86,6 +86,10 @@ pub enum BlockKind {
     Post,
     Test,
     Message,
+    /// `graphql query`: the operation text (feature `graphql`).
+    GraphqlQuery,
+    /// `json variables`: the operation variables (feature `graphql`).
+    GraphqlVariables,
     Config,
     Example,
     /// `x-` role: preserved, ignored by core.
@@ -105,6 +109,8 @@ impl BlockKind {
     pub fn default_order(&self) -> u8 {
         match self {
             BlockKind::Request => 0,
+            BlockKind::GraphqlQuery => 1,
+            BlockKind::GraphqlVariables => 1,
             BlockKind::Expect => 1,
             BlockKind::Form | BlockKind::Multipart | BlockKind::Defaults => 1,
             BlockKind::Pre => 2,

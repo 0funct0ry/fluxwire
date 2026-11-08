@@ -24,6 +24,7 @@ trash = "5"
 notify = "8"
 
 [dev-dependencies]
+fluxwire-protocol = { workspace = true, features = ["graphql"] }
 insta = "1"
 proptest = "1"
 tempfile = "3"

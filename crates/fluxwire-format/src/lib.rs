@@ -20,6 +20,7 @@ mod openapi_link;
 mod parse;
 mod prose;
 mod query;
+pub mod requires;
 mod schema;
 mod scope;
 mod settings;

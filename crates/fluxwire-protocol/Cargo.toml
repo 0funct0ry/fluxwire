@@ -10,6 +10,11 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Registers the `graphql` feature, request roles and protocol (SPEC §7.9). Without it a build
+# treats `requires: [graphql]` as unsupported (F401, CLI exit 66).
+graphql = []
+
 [dependencies]
 bytes = "1"
 fluxwire-model.workspace = true

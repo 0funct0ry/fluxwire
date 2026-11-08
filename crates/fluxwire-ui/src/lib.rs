@@ -37,6 +37,15 @@ pub mod env_doc;
 pub mod env_editor;
 pub mod envs;
 pub mod envs_view;
+pub mod gql_response;
+#[cfg(feature = "graphql")]
+pub mod graphql_panel;
+#[cfg(feature = "graphql")]
+pub mod graphql_state;
+#[cfg(feature = "graphql")]
+pub mod graphql_tab;
+#[cfg(feature = "graphql")]
+pub mod graphql_vars;
 pub mod header_catalog;
 pub mod help_links;
 pub mod highlight;

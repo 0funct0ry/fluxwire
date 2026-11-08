@@ -83,6 +83,10 @@ impl LanguageConfig {
                 block_comment: Some(("/*", "*/")),
                 ..base(quotes(true))
             },
+            Lang::Graphql => LanguageConfig {
+                line_comment: Some("#"),
+                ..base(quotes(true))
+            },
             Lang::Yaml => LanguageConfig {
                 increase_after_colon: true,
                 line_comment: Some("#"),

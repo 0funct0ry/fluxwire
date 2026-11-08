@@ -5,7 +5,7 @@ use fluxwire_protocol::{Outcome, Plan};
 use fluxwire_vars::VarScope;
 use serde_json::{Value, json};
 
-use crate::plan::HttpPlan;
+use crate::HttpPlan;
 
 const TEXT_LIMIT: usize = 16 * 1024 * 1024;
 

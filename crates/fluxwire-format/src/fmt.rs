@@ -14,6 +14,8 @@ pub fn format(src: &str, kind: FileKind) -> String {
     let mut s = src.replace("\r\n", "\n");
     s = s.strip_prefix('\u{feff}').unwrap_or(&s).to_string();
 
+    s = crate::requires::sync_requires(&s, kind);
+
     let doc = parse_with(&s, kind, &reg);
     s = reorder_front_matter(&doc);
 

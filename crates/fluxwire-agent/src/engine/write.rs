@@ -106,6 +106,7 @@ pub fn register(r: &mut Registry, _e: Arc<Engine>) {
                 }
                 (None, Some(c)) => format(c, kind),
             };
+            let new = fluxwire_format::requires::sync_requires(&new, kind);
             let doc = fluxwire_format::parse(&new);
             let changed = old.as_deref() != Some(new.as_str());
             let dry = a.dry_run.unwrap_or(false);

@@ -723,7 +723,7 @@ impl WorkspaceView {
 
     /// An editable, highlighted code surface bound to `target` of document `key`.
     #[allow(clippy::too_many_arguments)]
-    fn editor_surface(
+    pub(crate) fn editor_surface(
         &self,
         id: &'static str,
         key: &str,
@@ -782,6 +782,14 @@ impl WorkspaceView {
                 ((*l).to_string(), if i == 2 { 0 } else { n })
             })
             .collect();
+        #[cfg(feature = "graphql")]
+        let labels = {
+            let mut labels = labels;
+            if crate::graphql_tab::is_graphql(doc) {
+                labels.push(("GraphQL".to_string(), 0));
+            }
+            labels
+        };
         let mut editor = div()
             .key_context("RequestEditor")
             .flex()
@@ -1344,6 +1352,10 @@ impl WorkspaceView {
         ui: &TabUi,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        #[cfg(feature = "graphql")]
+        if ui.sub == crate::graphql_tab::SUBTAB && crate::graphql_tab::is_graphql(doc) {
+            return self.render_graphql_tab(t, doc, cx);
+        }
         match ui.sub {
             0 => {
                 let has_path = !self.table_rows(key, Table::Path).is_empty();

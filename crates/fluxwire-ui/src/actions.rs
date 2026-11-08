@@ -32,6 +32,9 @@ actions!(
         NewFolder,
         NewWebSocketRequest,
         QuickRequest,
+        GraphqlIntrospect,
+        GraphqlToggleBuilder,
+        GraphqlOpenTab,
         RenameItem,
         DuplicateItem,
         DeleteItem,
@@ -214,6 +217,14 @@ pub static ACTIONS: &[ActionInfo] = &[
         None
     ),
     a!("workspace: quick request", QuickRequest, None, None),
+    a!("graphql: introspect schema", GraphqlIntrospect, None, None),
+    a!(
+        "graphql: toggle query builder",
+        GraphqlToggleBuilder,
+        None,
+        None
+    ),
+    a!("graphql: open GraphQL tab", GraphqlOpenTab, None, None),
     h!("workspace: new folder", NewFolder, None, None),
     h!(
         "workspace: new WebSocket request",
@@ -1079,6 +1090,9 @@ mod tests {
         "collection: import…",
         "run: run folder",
         "environment: switch",
+        "graphql: introspect schema",
+        "graphql: open GraphQL tab",
+        "graphql: toggle query builder",
         "environment: manage",
         "environment: new…",
         "environment: rename…",

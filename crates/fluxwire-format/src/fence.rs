@@ -220,6 +220,8 @@ fn classify_role(
             "multipart" => BlockKind::Multipart,
             "defaults" => BlockKind::Defaults,
             "message" => BlockKind::Message,
+            "query" => BlockKind::GraphqlQuery,
+            "variables" => BlockKind::GraphqlVariables,
             _ => BlockKind::Reserved,
         };
         return ok(kind);

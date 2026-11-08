@@ -7,8 +7,8 @@ use bytes::Bytes;
 use fluxwire_protocol::{Body, HistoryRecord, Interaction, Outcome, PhaseTiming, RedirectHop};
 use serde_json::{Value, json};
 
-use crate::auth::Auth;
-use crate::plan::HttpPlan;
+use crate::Auth;
+use crate::HttpPlan;
 
 /// Bodies are stored up to 1 MiB; the store enforces the same cap.
 const CAP: usize = 1 << 20;
@@ -52,7 +52,7 @@ fn body_bytes(v: &Value) -> Vec<u8> {
     }
 }
 
-pub(crate) fn request_snapshot(p: &HttpPlan) -> Value {
+pub fn request_snapshot(p: &HttpPlan) -> Value {
     json!({
         "method": p.method,
         "url": p.url.as_str(),
@@ -62,7 +62,7 @@ pub(crate) fn request_snapshot(p: &HttpPlan) -> Value {
     })
 }
 
-pub(crate) fn secrets(p: &HttpPlan) -> Vec<(String, String)> {
+pub fn secrets(p: &HttpPlan) -> Vec<(String, String)> {
     let mut out = p.secrets.clone();
     out.extend(
         p.auth
@@ -74,7 +74,7 @@ pub(crate) fn secrets(p: &HttpPlan) -> Vec<(String, String)> {
     out
 }
 
-pub(crate) fn record(r: &Outcome) -> HistoryRecord {
+pub fn record(r: &Outcome) -> HistoryRecord {
     let x = r.exchange.as_ref();
     let response = x.map(|x| {
         let prefix = x.body.read_prefix(CAP + 1).unwrap_or_default();
@@ -111,7 +111,7 @@ pub(crate) fn record(r: &Outcome) -> HistoryRecord {
     }
 }
 
-pub(crate) fn to_outcome(rec: &HistoryRecord) -> Option<Outcome> {
+pub fn to_outcome(rec: &HistoryRecord) -> Option<Outcome> {
     let p = &rec.payload;
     let res = p.get("response").filter(|v| !v.is_null())?;
     let headers: Vec<(String, String)> =
@@ -157,7 +157,7 @@ pub(crate) fn to_outcome(rec: &HistoryRecord) -> Option<Outcome> {
     })
 }
 
-pub(crate) fn to_curl(rec: &HistoryRecord) -> Option<String> {
+pub fn to_curl(rec: &HistoryRecord) -> Option<String> {
     let req = rec.payload.get("request").filter(|v| !v.is_null())?;
     let headers: Vec<(String, String)> =
         serde_json::from_value(req.get("headers").cloned().unwrap_or_default()).unwrap_or_default();

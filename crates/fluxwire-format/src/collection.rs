@@ -1,7 +1,7 @@
 //! Collections on disk (SPEC §6): `fluxwire.toml`, discovery, and the request tree.
 
 use crate::parse::parse_with;
-use fluxwire_model::{CollectionConfig, FileKind, RequestKind, TreeNode};
+use fluxwire_model::{BlockKind, CollectionConfig, FileKind, RequestKind, TreeNode};
 use fluxwire_protocol::ProtocolRegistry;
 use std::path::{Path, PathBuf};
 
@@ -188,6 +188,10 @@ fn scan_dir(root: &Path, dir: &Path, reg: &ProtocolRegistry) -> Vec<TreeNode> {
             let name = doc.name().map_or(stem, str::to_string);
             let (method, kind) = match doc.request() {
                 Some(_) if doc.is_websocket() => ("WS".to_string(), RequestKind::WebSocket),
+                // a GraphQL request is sent with POST or GET; the tree shows what it is
+                Some(_) if doc.blocks_of(BlockKind::GraphqlQuery).next().is_some() => {
+                    ("GQL".to_string(), RequestKind::Http)
+                }
                 Some(r) => (r.method.to_ascii_uppercase(), RequestKind::Http),
                 None => ("?".to_string(), RequestKind::Other),
             };

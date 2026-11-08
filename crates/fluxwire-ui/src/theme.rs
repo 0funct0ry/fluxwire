@@ -177,6 +177,7 @@ impl Theme {
             "DELETE" => self.deleted,
             "WS" => self.syntax_type,
             "RUN" => self.syntax_keyword,
+            "GQL" => self.syntax_keyword,
             _ => self.text_muted,
         }
     }

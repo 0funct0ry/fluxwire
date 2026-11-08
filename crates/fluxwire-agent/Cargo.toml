@@ -11,6 +11,8 @@ rust-version.workspace = true
 workspace = true
 
 [features]
+default = ["graphql"]
+graphql = ["fluxwire-runner/graphql"]
 # Marker for builds that host the in-app server (ADR-009); off in release builds.
 dev-mcp = []
 
@@ -18,7 +20,7 @@ dev-mcp = []
 fluxwire-format.workspace = true
 fluxwire-model.workspace = true
 fluxwire-protocol.workspace = true
-fluxwire-runner.workspace = true
+fluxwire-runner = { workspace = true, features = ["http", "ws"] }
 fluxwire-store.workspace = true
 fluxwire-vars.workspace = true
 directories = "6"

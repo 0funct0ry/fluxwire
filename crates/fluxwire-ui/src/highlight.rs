@@ -34,6 +34,7 @@ pub enum Lang {
     Js,
     Ts,
     Xml,
+    Graphql,
     /// A whole `.flux.md` file.
     FluxMd,
     Plain,
@@ -57,6 +58,7 @@ fn compiled(l: Lang) -> Option<&'static Compiled> {
     static JS: OnceLock<Compiled> = OnceLock::new();
     static TS: OnceLock<Compiled> = OnceLock::new();
     static XML: OnceLock<Compiled> = OnceLock::new();
+    static GQL: OnceLock<Compiled> = OnceLock::new();
     Some(match l {
         Lang::Json => JSON.get_or_init(|| {
             compile(
@@ -90,9 +92,32 @@ fn compiled(l: Lang) -> Option<&'static Compiled> {
                 tree_sitter_xml::XML_HIGHLIGHT_QUERY,
             )
         }),
+        Lang::Graphql => GQL.get_or_init(|| {
+            // The crate ships no highlight query, so this one is ours.
+            compile(tree_sitter_graphql::LANGUAGE.into(), GRAPHQL_HIGHLIGHTS)
+        }),
         Lang::FluxMd | Lang::Plain => return None,
     })
 }
+
+const GRAPHQL_HIGHLIGHTS: &str = r#"
+(comment) @comment
+(string_value) @string
+(int_value) @number
+(float_value) @number
+(boolean_value) @boolean
+(null_value) @constant
+(enum_value) @constant
+(operation_type) @keyword
+["fragment" "on"] @keyword
+(variable) @keyword
+(named_type) @type
+(fragment_name) @function
+(argument (name) @attribute)
+(object_field (name) @attribute)
+(field (name) @property)
+(alias (name) @property)
+"#;
 
 fn tok_for_capture(name: &str) -> Option<Tok> {
     let n = name;
@@ -391,6 +416,7 @@ fn lang_for(info_lang: &str) -> Lang {
         "ts" | "typescript" => Lang::Ts,
         "js" | "javascript" => Lang::Js,
         "xml" => Lang::Xml,
+        "graphql" | "gql" => Lang::Graphql,
         _ => Lang::Plain,
     }
 }
@@ -516,6 +542,8 @@ pub fn highlight_flux(doc: &FluxDoc) -> Spans {
                 | BlockKind::Prose
                 | BlockKind::Extension
                 | BlockKind::Reserved
+                | BlockKind::GraphqlQuery
+                | BlockKind::GraphqlVariables
                 | BlockKind::UnknownRole,
                 _,
             ) => {
@@ -530,7 +558,10 @@ pub fn highlight_flux(doc: &FluxDoc) -> Spans {
                             lang
                         },
                     );
-                    if b.kind == BlockKind::Message {
+                    if matches!(
+                        b.kind,
+                        BlockKind::Message | BlockKind::GraphqlQuery | BlockKind::GraphqlVariables
+                    ) {
                         paint_vars(&mut paint, src, b.content);
                     }
                 }
@@ -580,6 +611,22 @@ mod tests {
             .iter()
             .map(|(s, e, t)| (src[*s..*e].to_string(), *t))
             .collect()
+    }
+
+    #[test]
+    fn graphql_query_is_highlighted() {
+        assert!(
+            compiled(Lang::Graphql).unwrap().query.is_some(),
+            "query compiles"
+        );
+        let src = "# c\nquery Q($id: ID!) { payment(id: $id, n: 2, ok: true) { status } }";
+        let k = kinds(src, &highlight(src, Lang::Graphql));
+        assert!(k.contains(&("# c".into(), Tok::Comment)), "{k:?}");
+        assert!(k.contains(&("query".into(), Tok::Keyword)), "{k:?}");
+        assert!(k.contains(&("2".into(), Tok::Number)), "{k:?}");
+        assert!(k.contains(&("true".into(), Tok::Boolean)), "{k:?}");
+        assert!(k.contains(&("status".into(), Tok::Property)), "{k:?}");
+        assert_eq!(lang_for("graphql"), Lang::Graphql);
     }
 
     #[test]

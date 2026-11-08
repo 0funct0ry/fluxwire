@@ -12,6 +12,7 @@ lists exactly what this version recognizes.
 |---|---|---|---|
 | `http` | `http` | Exchange | none (base format) |
 | `ws` | `ws` | Session | none (base format) |
+| `graphql` | `http` | Exchange | `graphql` |
 
 ## Protocol roles
 
@@ -22,6 +23,8 @@ lists exactly what this version recognizes.
 | `http` | `http` | `multipart` | KvLines | At most one |
 | `http` | `http` | `defaults` | HeaderLines | At most one |
 | `ws` | `ws` | `message` | Text | Any number |
+| `graphql` | `graphql` | `query` | Text | At most one |
+| `graphql` | `json` | `variables` | Text | At most one |
 
 ## Core roles
 

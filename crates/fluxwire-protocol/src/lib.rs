@@ -88,6 +88,22 @@ const WS_ROLES: &[RoleSpec] = &[RoleSpec {
     cardinality: Cardinality::Any,
 }];
 
+#[cfg(feature = "graphql")]
+const GRAPHQL_ROLES: &[RoleSpec] = &[
+    RoleSpec {
+        role: "query",
+        language: Some("graphql"),
+        content: ContentKind::Text,
+        cardinality: Cardinality::AtMostOne,
+    },
+    RoleSpec {
+        role: "variables",
+        language: Some("json"),
+        content: ContentKind::Text,
+        cardinality: Cardinality::AtMostOne,
+    },
+];
+
 /// Roles owned by the core format, independent of protocol.
 pub const SCRIPT_ROLES: &[&str] = &["pre", "post", "test"];
 pub const SCRIPT_LANGUAGES: &[&str] = &["ts", "js"];
@@ -122,7 +138,7 @@ pub const ROLE_CAPABLE_LANGUAGES: &[&str] = &[
 #[derive(Debug, Clone)]
 pub struct ProtocolRegistry {
     protocols: Vec<ProtocolInfo>,
-    /// Features this version can run. Empty in v1.0 (SPEC §7.9).
+    /// Features this version can run (SPEC §7.9).
     supported_features: Vec<&'static str>,
 }
 
@@ -134,7 +150,8 @@ impl Default for ProtocolRegistry {
 
 impl ProtocolRegistry {
     pub fn builtin() -> Self {
-        Self {
+        #[cfg_attr(not(feature = "graphql"), allow(unused_mut))]
+        let mut r = Self {
             protocols: vec![
                 ProtocolInfo {
                     id: "http",
@@ -152,7 +169,29 @@ impl ProtocolRegistry {
                 },
             ],
             supported_features: Vec::new(),
+        };
+        #[cfg(feature = "graphql")]
+        {
+            r.protocols.push(ProtocolInfo {
+                id: "graphql",
+                feature: Some("graphql"),
+                // An `http` request block plus `graphql query`; the protocol claims the
+                // document (`Protocol::claims`), so the language list is only descriptive.
+                request_languages: &["http"],
+                roles: GRAPHQL_ROLES,
+                interaction: Interaction::Exchange,
+            });
+            r.supported_features.push("graphql");
         }
+        r
+    }
+
+    /// The builtin registry as a build without `feature` would see it: the feature is not
+    /// supported and the roles it registered go back to being reserved (SPEC §7.9).
+    pub fn without_feature(mut self, feature: &str) -> Self {
+        self.supported_features.retain(|f| *f != feature);
+        self.protocols.retain(|p| p.feature != Some(feature));
+        self
     }
 
     pub fn protocols(&self) -> &[ProtocolInfo] {
@@ -221,5 +260,36 @@ mod tests {
         assert!(r.role_spec("json", "message").is_some());
         assert!(r.is_reserved_role("schema"));
         assert!(!r.supports_feature("grpc"));
+    }
+
+    #[cfg(feature = "graphql")]
+    #[test]
+    fn graphql_roles_and_feature() {
+        let r = ProtocolRegistry::builtin();
+        assert!(r.supports_feature("graphql"));
+        assert!(r.role_spec("graphql", "query").is_some());
+        assert!(r.role_spec("json", "variables").is_some());
+        assert!(r.role_spec("http", "query").is_none());
+        assert!(!r.is_reserved_role("query"));
+        // http still owns the `http` language.
+        assert_eq!(r.protocol_for_language("http").unwrap().id, "http");
+    }
+
+    #[cfg(not(feature = "graphql"))]
+    #[test]
+    fn a_build_without_graphql_reserves_its_roles() {
+        let r = ProtocolRegistry::builtin();
+        assert!(!r.supports_feature("graphql"));
+        assert!(r.role_spec("graphql", "query").is_none());
+        assert!(r.is_reserved_role("query"));
+    }
+
+    #[cfg(feature = "graphql")]
+    #[test]
+    fn build_without_graphql_reserves_roles() {
+        let r = ProtocolRegistry::builtin().without_feature("graphql");
+        assert!(!r.supports_feature("graphql"));
+        assert!(r.role_spec("graphql", "query").is_none());
+        assert!(r.is_reserved_role("query"));
     }
 }

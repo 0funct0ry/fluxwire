@@ -188,6 +188,10 @@ fn convert_request(r: &Value, seq: i64, file: &str, b: &mut Builder) -> ReqDraft
                 "binary file body",
                 "File bodies are not converted; the body was left empty",
             ),
+            "application/graphql" if graphql_body(&s(body, "text")).is_some() => {
+                let (query, variables) = graphql_body(&s(body, "text")).unwrap_or_default();
+                d.body = Body::GraphQl { query, variables };
+            }
             other => {
                 let ct = if other == "application/graphql" {
                     "application/json"
@@ -440,4 +444,15 @@ pub fn plan(text: &str, opts: &Options) -> Result<ImportPlan, ImportError> {
         b.add_env(n, rows);
     }
     Ok(b.finish(&name))
+}
+
+/// Insomnia keeps a GraphQL body as JSON text: `{"query": "...", "variables": {...}}`.
+fn graphql_body(text: &str) -> Option<(String, Option<String>)> {
+    let v: Value = serde_json::from_str(text).ok()?;
+    let query = v.get("query")?.as_str()?.to_string();
+    let variables = match v.get("variables") {
+        Some(vars @ Value::Object(_)) => serde_json::to_string_pretty(vars).ok(),
+        _ => None,
+    };
+    Some((query, variables))
 }

@@ -21,7 +21,7 @@ export default defineConfig({
           'docs/getting-started/install', 'docs/getting-started/quick-start', 'docs/getting-started/first-collection'] },
         { label: 'Guides', items: [
           'docs/guides/environments-and-secrets', 'docs/guides/scripting', 'docs/guides/folder-runs',
-          'docs/guides/websockets', 'docs/guides/importing', 'docs/guides/openapi-sync',
+          'docs/guides/websockets', 'docs/guides/graphql', 'docs/guides/importing', 'docs/guides/openapi-sync',
           'docs/guides/writing-docs', 'docs/guides/running-in-ci', 'docs/guides/for-ai-agents'] },
         { label: 'Reference', items: [
           'docs/reference/flux-format', 'docs/reference/front-matter', 'docs/reference/extending-the-format',

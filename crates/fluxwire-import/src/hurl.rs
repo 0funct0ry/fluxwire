@@ -31,6 +31,8 @@ struct Entry {
     req_headers: Vec<(String, String)>,
     sections: Vec<(String, Vec<String>)>,
     body: Option<String>,
+    /// The request body was a ```` ```graphql ```` fence.
+    graphql: bool,
     status: Option<String>,
     resp_headers: Vec<(String, String)>,
     resp_sections: Vec<(String, Vec<String>)>,
@@ -187,10 +189,12 @@ fn parse_entry(lines: &[&str]) -> Entry {
             continue;
         }
         if is_body_start(l) {
+            let gql = !resp && l.trim_start().starts_with("```graphql");
             let b = read_body(lines, &mut i);
             if resp {
                 e.resp_body = Some(b);
             } else {
+                e.graphql = gql;
                 e.body = Some(b);
             }
             cur = None;
@@ -453,6 +457,9 @@ fn convert(e: &Entry, name: &str, seq: i64, file: &str, b: &mut Builder) -> ReqD
         d.body = Body::Form(f);
     } else if let Some(m) = multi {
         d.body = Body::Multipart(m);
+    } else if let (true, Some(body)) = (e.graphql, &e.body) {
+        let (query, variables) = split_hurl_graphql(body);
+        d.body = Body::GraphQl { query, variables };
     } else if let Some(body) = &e.body {
         let t = body.trim_start();
         if t.starts_with("file,") || t.starts_with("base64,") || t.starts_with("hex,") {
@@ -683,4 +690,29 @@ pub fn plan(src: &Path, _opts: &Options) -> Result<ImportPlan, ImportError> {
         ..Default::default()
     });
     Ok(b.finish(&name))
+}
+
+/// A Hurl GraphQL body is the query, optionally followed by `variables { ... }` with a JSON
+/// object. Returns the query and the variables text.
+fn split_hurl_graphql(body: &str) -> (String, Option<String>) {
+    let mut offset = 0;
+    for line in body.split_inclusive('\n') {
+        if let Some(rest) = line.trim_start().strip_prefix("variables")
+            && rest.trim_start().starts_with('{')
+        {
+            let vars = body[offset..]
+                .trim_start()
+                .strip_prefix("variables")
+                .unwrap_or("")
+                .trim();
+            if serde_json::from_str::<serde_json::Value>(vars).is_ok() {
+                return (
+                    body[..offset].trim_end().to_string(),
+                    Some(vars.to_string()),
+                );
+            }
+        }
+        offset += line.len();
+    }
+    (body.trim_end().to_string(), None)
 }

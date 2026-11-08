@@ -11,6 +11,8 @@ rust-version.workspace = true
 workspace = true
 
 [features]
+default = ["graphql"]
+graphql = ["fluxwire-runner/graphql", "dep:fluxwire-graphql", "dep:tokio"]
 # Compile Metal shaders at runtime so macOS builds work without the Xcode Metal toolchain.
 runtime-shaders = ["gpui/runtime_shaders"]
 # Hosts the MCP server in-process for agent testing (ADR-009). Off by default and in release.
@@ -26,8 +28,9 @@ gpui.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }
-fluxwire-runner.workspace = true
+fluxwire-runner = { workspace = true, features = ["http", "ws"] }
 fluxwire-agent = { workspace = true, optional = true }
+fluxwire-graphql = { workspace = true, optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync", "macros"], optional = true }
 tree-sitter = "0.26.13"
 tree-sitter-json = "0.24.8"
@@ -36,6 +39,7 @@ tree-sitter-yaml = "0.7"
 tree-sitter-javascript = "0.25"
 tree-sitter-typescript = "0.23"
 tree-sitter-xml = "0.7"
+tree-sitter-graphql = "=0.2.1"
 directories = "6"
 unicode-segmentation = "1"
 smol = "2"

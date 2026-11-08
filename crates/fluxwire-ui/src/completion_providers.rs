@@ -268,13 +268,16 @@ const FENCES: &[(&str, &str, bool)] = &[
     ("yaml config", "Nested configuration", true),
     ("json example", "Documentation-only sample", true),
     ("http example", "Documentation-only sample", true),
-    ("graphql", "Reserved", false),
+    ("graphql query", "GraphQL operation", true),
+    ("json variables", "GraphQL variables", true),
     ("grpc", "Reserved", false),
     ("sse", "Reserved", false),
     ("mcp", "Reserved", false),
 ];
 
-const PLAIN_LANGS: &[&str] = &["json", "yaml", "xml", "sh", "ts", "js", "text", "http"];
+const PLAIN_LANGS: &[&str] = &[
+    "json", "yaml", "xml", "sh", "ts", "js", "text", "http", "graphql",
+];
 
 fn fence_items(partial: Range<usize>, with_roles: bool) -> Vec<CompletionItem> {
     let mut out = Vec::new();
@@ -576,8 +579,10 @@ mod tests {
         let off = DOC.find("```ht").unwrap() + 5;
         let v = p.completions(DOC, off, Trigger::Manual);
         assert!(labels(&v).contains(&"ts pre") && labels(&v).contains(&"http expect"));
-        let g = v.iter().find(|i| i.label == "graphql").unwrap();
+        let g = v.iter().find(|i| i.label == "grpc").unwrap();
         assert_eq!(g.detail, "not supported in this version");
+        let q = v.iter().find(|i| i.label == "graphql query").unwrap();
+        assert_eq!(q.detail, "fence");
     }
 
     #[test]

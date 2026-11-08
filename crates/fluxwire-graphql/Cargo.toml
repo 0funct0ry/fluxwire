@@ -1,0 +1,28 @@
+[package]
+name = "fluxwire-graphql"
+description = "GraphQL protocol: operations over HTTP, introspection, validation and query builder model."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+fluxwire-protocol = { workspace = true, features = ["graphql"] }
+fluxwire-model.workspace = true
+fluxwire-vars.workspace = true
+fluxwire-httpcore.workspace = true
+futures = "0.3.34"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+serde_json = { workspace = true, features = ["preserve_order"] }
+url = "2.5.8"
+bytes = "1.12.1"
+
+[dev-dependencies]
+axum = "0.8.9"
+tokio = { version = "1.54.1", features = ["full"] }
+tokio-util = { version = "0.7.20", features = ["rt"] }
+fluxwire-format.workspace = true

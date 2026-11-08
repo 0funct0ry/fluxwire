@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 fluxwire-protocol.workspace = true
 fluxwire-model.workspace = true
+fluxwire-httpcore.workspace = true
 fluxwire-format.workspace = true
 fluxwire-vars.workspace = true
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "net", "time", "macros", "sync", "fs", "io-util"] }

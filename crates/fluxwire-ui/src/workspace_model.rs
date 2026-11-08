@@ -178,6 +178,13 @@ impl OpenDoc {
     }
 
     pub fn save(&mut self) -> io::Result<()> {
+        // `requires` follows the blocks the file uses (SPEC §7.9), e.g. `graphql`.
+        if self.kind == FileKind::Request {
+            let synced = fluxwire_format::requires::sync_requires(&self.text, self.kind);
+            if synced != self.text {
+                self.set_text(synced);
+            }
+        }
         std::fs::write(&self.abs, &self.text)?;
         self.saved = self.text.clone();
         self.conflict = None;

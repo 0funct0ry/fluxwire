@@ -1,0 +1,23 @@
+{
+  "info": {
+    "name": "Countries",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Country by code",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "graphql",
+          "graphql": {
+            "query": "query Country($code: ID!) {\n  country(code: $code) {\n    name\n    capital\n  }\n}",
+            "variables": "{\"code\": \"NO\"}"
+          }
+        },
+        "url": { "raw": "https://countries.trevorblades.com/graphql", "protocol": "https", "host": ["countries", "trevorblades", "com"], "path": ["graphql"] }
+      }
+    }
+  ]
+}

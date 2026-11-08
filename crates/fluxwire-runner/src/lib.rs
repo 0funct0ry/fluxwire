@@ -272,6 +272,8 @@ pub fn runner() -> &'static Runner {
             Arc::new(fluxwire_http::HttpProtocol),
             #[cfg(feature = "ws")]
             Arc::new(fluxwire_ws::WsProtocol),
+            #[cfg(feature = "graphql")]
+            Arc::new(fluxwire_graphql::GraphqlProtocol),
         ];
         Runner::new(protocols)
     })
@@ -296,12 +298,7 @@ impl Runner {
     }
 
     fn protocol_for(&self, doc: &FluxDoc) -> Result<&Arc<dyn Protocol>, RunError> {
-        let i = doc.request_index().ok_or(RunError::NoRequest)?;
-        let lang = &doc.blocks[i].info.language;
-        self.protocols
-            .iter()
-            .find(|p| p.request_languages().contains(&lang.as_str()))
-            .ok_or_else(|| RunError::NoProtocol(lang.clone()))
+        pick_protocol_ref(&self.protocols, doc)
     }
 
     /// Start a send from the in-memory document (saving is never required).
@@ -761,12 +758,22 @@ fn pick_protocol(
     protocols: &[Arc<dyn Protocol>],
     doc: &FluxDoc,
 ) -> Result<Arc<dyn Protocol>, RunError> {
+    pick_protocol_ref(protocols, doc).cloned()
+}
+
+/// A protocol that claims the document wins; otherwise the request language decides.
+fn pick_protocol_ref<'a>(
+    protocols: &'a [Arc<dyn Protocol>],
+    doc: &FluxDoc,
+) -> Result<&'a Arc<dyn Protocol>, RunError> {
     let i = doc.request_index().ok_or(RunError::NoRequest)?;
+    if let Some(p) = protocols.iter().find(|p| p.claims(doc)) {
+        return Ok(p);
+    }
     let lang = &doc.blocks[i].info.language;
     protocols
         .iter()
         .find(|p| p.request_languages().contains(&lang.as_str()))
-        .cloned()
         .ok_or_else(|| RunError::NoProtocol(lang.clone()))
 }
 

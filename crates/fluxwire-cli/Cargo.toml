@@ -10,10 +10,15 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = ["graphql"]
+# GraphQL support (SPEC §7.9). Without it `requires: [graphql]` files exit 66.
+graphql = ["fluxwire-runner/graphql", "fluxwire-agent/graphql"]
+
 [dependencies]
 fluxwire-model.workspace = true
 fluxwire-format.workspace = true
-fluxwire-runner.workspace = true
+fluxwire-runner = { workspace = true, features = ["http", "ws"] }
 fluxwire-agent.workspace = true
 fluxwire-import.workspace = true
 fluxwire-openapi.workspace = true

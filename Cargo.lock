@@ -2493,7 +2493,60 @@ dependencies = [
 ]
 
 [[package]]
+name = "fluxwire-graphql"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "bytes",
+ "fluxwire-format",
+ "fluxwire-httpcore",
+ "fluxwire-model",
+ "fluxwire-protocol",
+ "fluxwire-vars",
+ "futures",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "url",
+]
+
+[[package]]
 name = "fluxwire-http"
+version = "0.1.0"
+dependencies = [
+ "async-compression",
+ "axum",
+ "axum-server",
+ "base64 0.23.1",
+ "bytes",
+ "fluxwire-format",
+ "fluxwire-httpcore",
+ "fluxwire-model",
+ "fluxwire-protocol",
+ "fluxwire-vars",
+ "futures",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "md-5 0.11.0",
+ "rand 0.10.3",
+ "rcgen",
+ "regex",
+ "rustls",
+ "rustls-pemfile",
+ "rustls-platform-verifier",
+ "serde_json",
+ "serde_json_path",
+ "sha2 0.11.1",
+ "tempfile",
+ "tokio",
+ "tokio-rustls",
+ "tokio-util",
+ "url",
+]
+
+[[package]]
+name = "fluxwire-httpcore"
 version = "0.1.0"
 dependencies = [
  "async-compression",
@@ -2587,6 +2640,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "fluxwire-format",
+ "fluxwire-graphql",
  "fluxwire-http",
  "fluxwire-model",
  "fluxwire-protocol",
@@ -2659,6 +2713,7 @@ dependencies = [
  "fluxwire-agent",
  "fluxwire-docs",
  "fluxwire-format",
+ "fluxwire-graphql",
  "fluxwire-import",
  "fluxwire-model",
  "fluxwire-openapi",
@@ -2677,6 +2732,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tree-sitter",
+ "tree-sitter-graphql",
  "tree-sitter-javascript",
  "tree-sitter-json",
  "tree-sitter-md",
@@ -8142,6 +8198,16 @@ dependencies = [
  "regex-syntax",
  "serde_json",
  "streaming-iterator",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-graphql"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e54723227ad8bf2b5700331ea522785d545a7f9787ff7271044a8f9e24ea660b"
+dependencies = [
+ "cc",
  "tree-sitter-language",
 ]
 

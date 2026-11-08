@@ -185,3 +185,35 @@ fn watcher_reports_external_edit() {
         start.elapsed()
     );
 }
+
+#[test]
+fn a_graphql_request_is_listed_with_the_gql_tag() {
+    let root = tmp("gql-tag");
+    std::fs::write(
+        root.join("fluxwire.toml"),
+        "[collection]\nname = \"g\"\nformat = 1\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("countries.flux.md"),
+        "---\nname: countries\n---\n\n```http\nPOST https://x.test/graphql\n```\n\n```graphql query\n{ __typename }\n```\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("plain.flux.md"),
+        "---\nname: plain\n---\n\n```http\nPOST https://x.test/\n```\n",
+    )
+    .unwrap();
+    let c = scan(&root).unwrap();
+    let method_of = |name: &str| {
+        c.tree.iter().find_map(|n| match n {
+            TreeNode::Request {
+                name: n, method, ..
+            } if n == name => Some(method.clone()),
+            _ => None,
+        })
+    };
+    assert_eq!(method_of("countries").as_deref(), Some("GQL"));
+    assert_eq!(method_of("plain").as_deref(), Some("POST"));
+    let _ = std::fs::remove_dir_all(&root);
+}

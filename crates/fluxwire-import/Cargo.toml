@@ -23,8 +23,8 @@ toml_edit = "0.22"
 [dev-dependencies]
 insta = "1"
 tempfile = "3"
-fluxwire-protocol.workspace = true
-fluxwire-runner = { workspace = true }
+fluxwire-protocol = { workspace = true, features = ["graphql"] }
+fluxwire-runner = { workspace = true, features = ["http", "ws", "graphql"] }
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
 serde_json.workspace = true

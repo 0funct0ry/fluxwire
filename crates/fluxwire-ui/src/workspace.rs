@@ -263,6 +263,8 @@ pub struct WorkspaceView {
     pub mock: Mock,
     pub history: crate::history::HistoryState,
     pub sync: crate::sync_state::SyncState,
+    #[cfg(feature = "graphql")]
+    pub graphql: crate::graphql_state::GraphqlState,
     pub history_focus: FocusHandle,
     pub modal: Option<Modal>,
     /// The focused element, refreshed on every render, so fields know whether to draw a caret.
@@ -354,6 +356,8 @@ impl WorkspaceView {
             mock: mock::payments_api(),
             history: crate::history::HistoryState::new(state_dir_is_set),
             sync: crate::sync_state::SyncState::default(),
+            #[cfg(feature = "graphql")]
+            graphql: crate::graphql_state::GraphqlState::default(),
             history_focus: cx.focus_handle(),
             modal: None,
             focused: None,
@@ -1551,6 +1555,12 @@ impl Render for WorkspaceView {
                 if let Some(d) = this.script_drag.clone() {
                     this.script_drag_move(&d, f32::from(ev.position.y), cx);
                 }
+                #[cfg(feature = "graphql")]
+                if let Some((y0, h0)) = this.graphql.vars_drag {
+                    // dragging the handle up makes the variables pane taller
+                    this.graphql.vars_h = (h0 + (y0 - f32::from(ev.position.y))).clamp(70.0, 520.0);
+                    cx.notify();
+                }
                 if this.resizing {
                     this.scope.left_width = f32::from(ev.position.x).clamp(180.0, 520.0);
                     cx.notify();
@@ -1600,6 +1610,10 @@ impl Render for WorkspaceView {
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
                     this.history_drag_end(cx);
+                    #[cfg(feature = "graphql")]
+                    if this.graphql.vars_drag.take().is_some() {
+                        cx.notify();
+                    }
                     if this.script_drag.take().is_some() {
                         cx.notify();
                     }
@@ -1743,6 +1757,24 @@ impl Render for WorkspaceView {
             AddCollection => |this, w, c| this.start_add_collection(w, c),
             NewRequest => |this, w, c| this.start_new_request(w, c),
             QuickRequest => |this, w, c| this.route_new(false, false, w, c),
+            GraphqlIntrospect => |this, _w, c| {
+                #[cfg(feature = "graphql")]
+                this.graphql_introspect(c);
+                #[cfg(not(feature = "graphql"))]
+                let _ = (this, c);
+            },
+            GraphqlToggleBuilder => |this, _w, c| {
+                #[cfg(feature = "graphql")]
+                this.graphql_toggle_builder(c);
+                #[cfg(not(feature = "graphql"))]
+                let _ = (this, c);
+            },
+            GraphqlOpenTab => |this, _w, c| {
+                #[cfg(feature = "graphql")]
+                this.graphql_open_tab(c);
+                #[cfg(not(feature = "graphql"))]
+                let _ = (this, c);
+            },
             NewWebSocketRequest => |this, w, c| this.route_new(true, false, w, c),
             NewFolder => |this, w, c| this.route_new(false, true, w, c),
             RenameItem => |this, w, c| this.start_rename(w, c),

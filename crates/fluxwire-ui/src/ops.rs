@@ -554,6 +554,14 @@ impl WorkspaceView {
         };
         match target {
             Target::Block(i) => {
+                #[cfg(feature = "graphql")]
+                if doc
+                    .and_then(|d| d.parsed.blocks.get(i))
+                    .is_some_and(|b| b.kind == BlockKind::GraphqlQuery)
+                    && let Some(p) = self.graphql_completion(key)
+                {
+                    parts.push(p);
+                }
                 if let Some(role) = role(i) {
                     parts.push(Rc::new(ScriptProvider {
                         role,

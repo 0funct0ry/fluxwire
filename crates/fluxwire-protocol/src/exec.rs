@@ -411,6 +411,12 @@ pub trait Protocol: Send + Sync {
     fn request_languages(&self) -> &[&'static str];
     fn roles(&self) -> &[RoleSpec];
     fn interaction(&self) -> Interaction;
+    /// Whether this protocol runs `doc` even though another protocol owns its request
+    /// language (GraphQL is an `http` block plus a `graphql query` block). Asked before the
+    /// request-language lookup; the default claims nothing.
+    fn claims(&self, _doc: &FluxDoc) -> bool {
+        false
+    }
 
     fn plan(&self, doc: &FluxDoc, scope: &VarScope) -> Result<Plan, Vec<Diagnostic>>;
     /// Must be called inside a Tokio runtime. The stream ends with exactly one

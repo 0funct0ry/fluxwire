@@ -11,7 +11,8 @@ rust-version.workspace = true
 workspace = true
 
 [features]
-default = ["gui"]
+default = ["gui", "graphql"]
+graphql = ["fluxwire-cli/graphql", "fluxwire-ui?/graphql"]
 gui = ["dep:fluxwire-ui"]
 runtime-shaders = ["fluxwire-ui/runtime-shaders"]
 dev-mcp = ["gui", "fluxwire-ui/dev-mcp"]

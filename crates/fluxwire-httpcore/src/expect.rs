@@ -33,6 +33,17 @@ fn fail(name: String, message: impl Into<String>) -> TestResult {
 }
 
 pub fn check(x: &Exchange, expect: &ExpectBlock, cx: &CheckCtx<'_>) -> Vec<TestResult> {
+    check_opts(x, expect, cx, false)
+}
+
+/// Like `check`. With `data_root`, an expected JSON object that names neither `data` nor
+/// `errors` is matched against the response's `data` member (GraphQL partial matching).
+pub fn check_opts(
+    x: &Exchange,
+    expect: &ExpectBlock,
+    cx: &CheckCtx<'_>,
+    data_root: bool,
+) -> Vec<TestResult> {
     let mut out = Vec::new();
 
     let (ok, want) = match expect.status {
@@ -78,11 +89,16 @@ pub fn check(x: &Exchange, expect: &ExpectBlock, cx: &CheckCtx<'_>) -> Vec<TestR
         ));
     }
 
-    out.extend(check_body(x, expect, cx));
+    out.extend(check_body(x, expect, cx, data_root));
     out
 }
 
-fn check_body(x: &Exchange, expect: &ExpectBlock, cx: &CheckCtx<'_>) -> Vec<TestResult> {
+fn check_body(
+    x: &Exchange,
+    expect: &ExpectBlock,
+    cx: &CheckCtx<'_>,
+    data_root: bool,
+) -> Vec<TestResult> {
     let DocBody::Raw(span) = &expect.body else {
         return Vec::new();
     };
@@ -108,7 +124,15 @@ fn check_body(x: &Exchange, expect: &ExpectBlock, cx: &CheckCtx<'_>) -> Vec<Test
         Ok(want) => match serde_json::from_slice::<Value>(&bytes) {
             Ok(actual) => {
                 let mut out = Vec::new();
-                walk("$", &want, Some(&actual), &mut out);
+                let rooted = data_root
+                    && want
+                        .as_object()
+                        .is_some_and(|o| !o.contains_key("data") && !o.contains_key("errors"));
+                if rooted {
+                    walk("$.data", &want, actual.get("data"), &mut out);
+                } else {
+                    walk("$", &want, Some(&actual), &mut out);
+                }
                 out
             }
             Err(e) => vec![fail(

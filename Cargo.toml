@@ -23,20 +23,22 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 fluxwire-model = { path = "crates/fluxwire-model" }
 fluxwire-format = { path = "crates/fluxwire-format" }
-fluxwire-protocol = { path = "crates/fluxwire-protocol" }
+fluxwire-protocol = { path = "crates/fluxwire-protocol", default-features = false }
 fluxwire-vars = { path = "crates/fluxwire-vars" }
 fluxwire-http = { path = "crates/fluxwire-http" }
+fluxwire-httpcore = { path = "crates/fluxwire-httpcore" }
+fluxwire-graphql = { path = "crates/fluxwire-graphql" }
 fluxwire-ws = { path = "crates/fluxwire-ws" }
 fluxwire-script = { path = "crates/fluxwire-script" }
-fluxwire-runner = { path = "crates/fluxwire-runner" }
+fluxwire-runner = { path = "crates/fluxwire-runner", default-features = false }
 fluxwire-store = { path = "crates/fluxwire-store" }
 fluxwire-import = { path = "crates/fluxwire-import" }
 fluxwire-openapi = { path = "crates/fluxwire-openapi" }
 fluxwire-search = { path = "crates/fluxwire-search" }
 fluxwire-docs = { path = "crates/fluxwire-docs" }
-fluxwire-ui = { path = "crates/fluxwire-ui" }
-fluxwire-cli = { path = "crates/fluxwire-cli" }
-fluxwire-agent = { path = "crates/fluxwire-agent" }
+fluxwire-ui = { path = "crates/fluxwire-ui", default-features = false }
+fluxwire-cli = { path = "crates/fluxwire-cli", default-features = false }
+fluxwire-agent = { path = "crates/fluxwire-agent", default-features = false }
 
 [profile.release]
 lto = "thin"

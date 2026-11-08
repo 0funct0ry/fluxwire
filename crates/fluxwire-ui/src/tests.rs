@@ -4914,3 +4914,296 @@ fn saving_an_example_without_a_response_changes_nothing(cx: &mut TestAppContext)
     view.update(cx, |w, cx| w.save_response_as_example(cx));
     assert_eq!(doc_text(&view, cx, CREATE), before);
 }
+
+#[cfg(feature = "graphql")]
+const GQL_DOC: &str = "---\nname: X\n---\n\n```http\nPOST http://127.0.0.1:1/graphql\n```\n\n```graphql query\n{ payments { id } }\n```\n";
+
+#[cfg(feature = "graphql")]
+#[gpui::test]
+fn a_graphql_request_gets_a_graphql_subtab_that_renders(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "gql-tab");
+    set_doc_text(&view, cx, CREATE, GQL_DOC.into());
+    view.update_in(cx, |w, _, _| {
+        w.active_ui().unwrap().sub = crate::graphql_tab::SUBTAB;
+    });
+    cx.run_until_parked();
+    view.read_with(cx, |w, _| {
+        let doc = w.scope.workspace.as_ref().unwrap().doc(CREATE).unwrap();
+        assert!(crate::graphql_tab::is_graphql(doc));
+        assert!(w.graphql_completion(CREATE).is_none(), "no schema yet");
+    });
+    // a plain request has no GraphQL tab
+    set_doc_text(
+        &view,
+        cx,
+        CREATE,
+        "```http\nGET http://x.test/\n```\n".into(),
+    );
+    view.read_with(cx, |w, _| {
+        let doc = w.scope.workspace.as_ref().unwrap().doc(CREATE).unwrap();
+        assert!(!crate::graphql_tab::is_graphql(doc));
+    });
+}
+
+#[cfg(feature = "graphql")]
+#[gpui::test]
+fn the_builder_writes_the_query_block_and_completion_follows_the_schema(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "gql-builder");
+    set_doc_text(&view, cx, CREATE, GQL_DOC.into());
+    let (url, env) = view.read_with(cx, |w, _| {
+        let doc = w.scope.workspace.as_ref().unwrap().doc(CREATE).unwrap();
+        (
+            doc.parsed.request().unwrap().target.clone(),
+            w.active_env_name().unwrap_or_default(),
+        )
+    });
+    view.update_in(cx, |w, _, cx| {
+        w.graphql.set_schema(
+            crate::graphql_state::schema_key(&url, &env),
+            fluxwire_graphql::schema::sample_schema(),
+        );
+        w.graphql_toggle(vec!["payments".into(), "status".into()], cx);
+    });
+    let text = doc_text(&view, cx, CREATE);
+    assert!(
+        text.contains("```graphql query\n{\n  payments {\n    id\n    status\n  }\n}\n```"),
+        "{text}"
+    );
+    view.read_with(cx, |w, _| assert!(w.graphql_completion(CREATE).is_some()));
+}
+
+#[cfg(feature = "graphql")]
+fn gql_with_schema(
+    view: &gpui::Entity<WorkspaceView>,
+    cx: &mut gpui::VisualTestContext,
+    doc: &str,
+) {
+    set_doc_text(view, cx, CREATE, doc.into());
+    let (url, env) = view.read_with(cx, |w, _| {
+        let d = w.scope.workspace.as_ref().unwrap().doc(CREATE).unwrap();
+        (
+            d.parsed.request().unwrap().target.clone(),
+            w.active_env_name().unwrap_or_default(),
+        )
+    });
+    view.update_in(cx, |w, _, _| {
+        w.graphql.set_schema(
+            crate::graphql_state::schema_key(&url, &env),
+            fluxwire_graphql::schema::sample_schema(),
+        );
+    });
+}
+
+#[cfg(feature = "graphql")]
+#[gpui::test]
+fn a_blank_graphql_query_gets_a_stub_once(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "gql-stub");
+    let doc = "---\nname: X\n---\n\n```http\nPOST http://127.0.0.1:1/graphql\n```\n\n```graphql query\n```\n";
+    set_doc_text(&view, cx, CREATE, doc.into());
+    view.update_in(cx, |w, _, _| {
+        w.active_ui().unwrap().sub = crate::graphql_tab::SUBTAB;
+    });
+    let v = view.clone();
+    cx.draw(
+        gpui::point(gpui::px(0.), gpui::px(0.)),
+        gpui::size(gpui::px(1400.), gpui::px(900.)),
+        move |_, _| v.clone(),
+    );
+    cx.run_until_parked();
+    assert!(
+        doc_text(&view, cx, CREATE).contains("```graphql query\nquery {\n  \n}\n```"),
+        "{}",
+        doc_text(&view, cx, CREATE)
+    );
+    // clearing the editor again is allowed: the stub is added once per document
+    set_doc_text(&view, cx, CREATE, doc.into());
+    cx.run_until_parked();
+    assert!(!doc_text(&view, cx, CREATE).contains("query {"));
+}
+
+#[cfg(feature = "graphql")]
+#[gpui::test]
+fn unchecking_every_field_keeps_the_builder_usable(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "gql-skeleton");
+    gql_with_schema(&view, cx, GQL_DOC);
+    view.update_in(cx, |w, _, cx| {
+        w.graphql_toggle(vec!["payments".into()], cx);
+    });
+    let text = doc_text(&view, cx, CREATE);
+    assert!(text.contains("```graphql query\nquery {\n}\n```"), "{text}");
+    view.update_in(cx, |w, _, cx| {
+        w.graphql_toggle(vec!["payment".into()], cx);
+    });
+    let text = doc_text(&view, cx, CREATE);
+    assert!(
+        text.contains("payment(id: \"\") {"),
+        "builder resumed from the skeleton: {text}"
+    );
+}
+
+#[cfg(feature = "graphql")]
+#[gpui::test]
+fn argument_values_are_typed_quoted_and_never_break_the_query(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "gql-args");
+    gql_with_schema(&view, cx, GQL_DOC);
+    view.update_in(cx, |w, _, cx| {
+        w.graphql_toggle(vec!["payment".into()], cx);
+        w.graphql_set_arg(vec!["payment".into()], "id".into(), "p1".into(), cx);
+    });
+    assert!(doc_text(&view, cx, CREATE).contains("payment(id: \"p1\")"));
+    view.update_in(cx, |w, _, cx| {
+        // a half-typed list literal would not parse: the query stays as it was
+        w.graphql_set_arg(vec!["payment".into()], "id".into(), "[".into(), cx);
+    });
+    assert!(doc_text(&view, cx, CREATE).contains("payment(id: \"p1\")"));
+    // typing `$pid` one key at a time leaves no half-named variables behind
+    for typed in ["$", "$p", "$pi", "$pid"] {
+        view.update_in(cx, |w, _, cx| {
+            w.graphql_set_arg(vec!["payment".into()], "id".into(), typed.into(), cx);
+        });
+    }
+    assert!(
+        !doc_text(&view, cx, CREATE).contains("json variables"),
+        "{}",
+        doc_text(&view, cx, CREATE)
+    );
+    // when the input loses focus the declared variable gets its key
+    view.update_in(cx, |w, _, cx| w.graphql_sync_variables_now(cx));
+    let text = doc_text(&view, cx, CREATE);
+    assert!(text.contains("query($pid: ID!)"), "{text}");
+    // the variable gets a json variables block with a placeholder, created in the same step
+    assert!(
+        text.contains("```json variables\n{\n  \"pid\": \"\"\n}\n```"),
+        "{text}"
+    );
+    // a value the user typed there is never replaced by a later edit
+    let edited = text.replace("\"pid\": \"\"", "\"pid\": \"p9\"");
+    set_doc_text(&view, cx, CREATE, edited);
+    view.update_in(cx, |w, _, cx| {
+        w.graphql_toggle(vec!["payments".into()], cx);
+    });
+    assert!(doc_text(&view, cx, CREATE).contains("\"pid\": \"p9\""));
+}
+
+#[cfg(feature = "graphql")]
+#[gpui::test]
+fn the_variables_table_edits_the_json_block(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "gql-vars-table");
+    let doc = format!("{GQL_DOC}\n```json variables\n{{\"code\": \"IN\", \"first\": 10}}\n```\n");
+    gql_with_schema(&view, cx, &doc);
+    view.update_in(cx, |w, _, cx| {
+        w.graphql.vars_mode = crate::graphql_vars::VarsMode::Table;
+        w.active_ui().unwrap().sub = crate::graphql_tab::SUBTAB;
+        w.graphql_vars_edit(cx, |t| crate::graphql_vars::set_value(t, 1, "25"));
+        w.graphql_vars_edit(cx, |t| crate::graphql_vars::rename(t, 0, "country"));
+        w.graphql_vars_edit(cx, crate::graphql_vars::add);
+    });
+    let v = view.clone();
+    cx.draw(
+        gpui::point(gpui::px(0.), gpui::px(0.)),
+        gpui::size(gpui::px(1400.), gpui::px(900.)),
+        move |_, _| v.clone(),
+    );
+    let text = doc_text(&view, cx, CREATE);
+    assert!(text.contains("\"country\": \"IN\""), "{text}");
+    assert!(text.contains("\"first\": 25"), "{text}");
+    assert!(text.contains("\"variable1\": \"\""), "{text}");
+    view.update_in(cx, |w, _, cx| {
+        w.graphql_vars_edit(cx, |t| crate::graphql_vars::remove(t, 0));
+    });
+    assert!(!doc_text(&view, cx, CREATE).contains("country"));
+}
+
+#[cfg(feature = "graphql")]
+#[gpui::test]
+fn the_variables_pane_height_is_dragged_and_clamped(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "gql-vars-height");
+    view.update_in(cx, |w, _, _| {
+        assert_eq!(w.graphql.vars_height(), 150.0);
+        w.graphql.vars_h = 300.0;
+        assert_eq!(w.graphql.vars_height(), 300.0);
+    });
+}
+
+#[cfg(feature = "graphql")]
+#[gpui::test]
+fn the_variable_button_swaps_a_required_value_for_a_variable_and_back(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "gql-var-button");
+    gql_with_schema(&view, cx, GQL_DOC);
+    view.update_in(cx, |w, _, cx| {
+        w.graphql_toggle(vec!["payment".into()], cx);
+    });
+    assert!(doc_text(&view, cx, CREATE).contains("payment(id: \"\")"));
+    view.update_in(cx, |w, _, cx| {
+        w.graphql_toggle_arg(vec!["payment".into()], "id".into(), cx);
+    });
+    let text = doc_text(&view, cx, CREATE);
+    assert!(
+        text.contains("payment(id: $id)"),
+        "the argument stays: {text}"
+    );
+    assert!(text.contains("query($id: ID!)"), "{text}");
+    assert!(
+        text.contains("\"id\": \"\""),
+        "variables block created: {text}"
+    );
+    view.update_in(cx, |w, _, cx| {
+        w.graphql_toggle_arg(vec!["payment".into()], "id".into(), cx);
+    });
+    let text = doc_text(&view, cx, CREATE);
+    assert!(
+        text.contains("payment(id: \"\")"),
+        "back to a plain value: {text}"
+    );
+}
+
+#[cfg(feature = "graphql")]
+#[gpui::test]
+fn checking_a_field_with_required_arguments_makes_a_valid_query(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "gql-required");
+    gql_with_schema(&view, cx, GQL_DOC);
+    view.update_in(cx, |w, _, cx| {
+        w.graphql_toggle(vec!["payments".into()], cx);
+        w.graphql_toggle(vec!["payment".into()], cx);
+    });
+    let text = doc_text(&view, cx, CREATE);
+    assert!(text.contains("payment(id: \"\")"), "{text}");
+    assert!(
+        !text.contains("json variables"),
+        "no variable was needed: {text}"
+    );
+}
+
+#[cfg(feature = "graphql")]
+#[gpui::test]
+fn the_builder_panel_draws_with_filter_and_expanded_fields(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "gql-panels");
+    gql_with_schema(&view, cx, GQL_DOC);
+    view.update_in(cx, |w, _, cx| {
+        w.active_ui().unwrap().sub = crate::graphql_tab::SUBTAB;
+        w.graphql.builder_open = true;
+        w.graphql_toggle(vec!["payment".into()], cx);
+        w.graphql.filter = "email".into();
+        w.graphql.expanded.insert("payment".into());
+    });
+    let v = view.clone();
+    cx.draw(
+        gpui::point(gpui::px(0.), gpui::px(0.)),
+        gpui::size(gpui::px(1400.), gpui::px(900.)),
+        move |_, _| v.clone(),
+    );
+}
+
+#[cfg(feature = "graphql")]
+#[gpui::test]
+fn saving_a_graphql_request_adds_requires(cx: &mut TestAppContext) {
+    let (view, cx, _root) = setup_with(cx, "payments-api", "gql-requires");
+    set_doc_text(&view, cx, CREATE, GQL_DOC.into());
+    view.update_in(cx, |w, _, cx| w.save_active(cx));
+    let text = doc_text(&view, cx, CREATE);
+    assert!(
+        text.starts_with("---\nrequires: [graphql]\nname: X\n---\n")
+            || text.contains("requires: [graphql]"),
+        "{text}"
+    );
+}

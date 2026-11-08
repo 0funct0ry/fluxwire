@@ -1,4 +1,5 @@
-//! Turn a parsed `http` block into an `HttpPlan` (SPEC §7.6, §9).
+//! Turn a parsed `http` block into an `HttpPlan` (SPEC §7.6, §9). Shared by every HTTP-based
+//! protocol (`fluxwire-http`, `fluxwire-graphql`).
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;

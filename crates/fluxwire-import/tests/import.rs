@@ -234,3 +234,67 @@ fn bad_input_is_a_parse_error() {
         assert!(matches!(e, fluxwire_import::ImportError::Parse(_)), "{s:?}");
     }
 }
+
+fn only_request(p: &ImportPlan) -> &str {
+    let r: Vec<_> = p
+        .files
+        .iter()
+        .filter(|f| f.kind == PlannedKind::Request)
+        .collect();
+    assert_eq!(r.len(), 1, "{r:?}");
+    &r[0].contents
+}
+
+fn assert_graphql_request(text: &str, query_has: &str) {
+    assert!(text.contains("requires: [graphql]"), "{text}");
+    assert!(text.contains("```graphql query\n"), "{text}");
+    assert!(text.contains(query_has), "{text}");
+    // the operation is not left in the http block as a JSON body
+    assert!(!text.contains("\"query\""), "{text}");
+    let doc = parse_with(text, FileKind::Request, &ProtocolRegistry::builtin());
+    assert!(
+        doc.diagnostics
+            .iter()
+            .all(|d| d.severity != Severity::Error),
+        "{:?}",
+        doc.diagnostics
+    );
+    assert!(is_canonical(text, FileKind::Request));
+}
+
+#[test]
+fn postman_graphql_body_becomes_a_graphql_request() {
+    let p = run(
+        Source::Postman,
+        "postman/graphql.postman_collection.json",
+        &Options::default(),
+    );
+    check_valid(&p);
+    let t = only_request(&p);
+    assert_graphql_request(t, "country(code: $code)");
+    assert!(
+        t.contains("```json variables\n{\n  \"code\": \"NO\"\n}\n```"),
+        "{t}"
+    );
+}
+
+#[test]
+fn insomnia_graphql_body_becomes_a_graphql_request() {
+    let p = run(
+        Source::Insomnia,
+        "insomnia/graphql.insomnia.json",
+        &Options::default(),
+    );
+    check_valid(&p);
+    assert_graphql_request(only_request(&p), "continents {");
+}
+
+#[test]
+fn hurl_graphql_body_becomes_a_graphql_request() {
+    let p = run(Source::Hurl, "hurl/graphql.hurl", &Options::default());
+    check_valid(&p);
+    let t = only_request(&p);
+    assert_graphql_request(t, "country(code: $code)");
+    assert!(t.contains("```json variables"), "{t}");
+    assert!(!t.contains("variables {"), "{t}");
+}

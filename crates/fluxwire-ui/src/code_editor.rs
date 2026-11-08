@@ -1142,6 +1142,7 @@ pub fn settings_key(lang: Lang) -> &'static str {
     match lang {
         Lang::Json => "json",
         Lang::Xml => "xml",
+        Lang::Graphql => "graphql",
         Lang::Yaml => "yaml",
         Lang::Ts => "ts",
         Lang::Js => "js",

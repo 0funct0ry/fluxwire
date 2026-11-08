@@ -1,20 +1,8 @@
 //! HTTP protocol engine (SPEC §9): `Protocol` implementation on hyper 1.x + rustls.
 
-mod auth;
-mod body;
-mod curl;
-mod engine;
-mod error;
-mod expect;
-mod fetch;
-mod history;
-pub mod oauth2;
-mod plan;
-mod script;
-mod tls;
-
 use std::sync::OnceLock;
 
+use fluxwire_httpcore::{curl, expect, history, script};
 use fluxwire_model::{Diagnostic, Edit, ExpectBlock, FluxDoc};
 use fluxwire_protocol::{
     CheckCtx, Event, ExecCtx, HistoryRecord, Interaction, Outcome, Plan, Protocol,
@@ -24,9 +12,7 @@ use fluxwire_vars::VarScope;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 
-pub use auth::{Auth, OAuth2Config};
-pub use fetch::get_text;
-pub use plan::HttpPlan;
+pub use fluxwire_httpcore::{Auth, HttpPlan, OAuth2Config, get_text, oauth2};
 
 pub struct HttpProtocol;
 
@@ -71,7 +57,7 @@ impl Protocol for HttpProtocol {
     }
 
     fn plan(&self, doc: &FluxDoc, scope: &VarScope) -> Result<Plan, Vec<Diagnostic>> {
-        let p = plan::plan(doc, scope)?;
+        let p = fluxwire_httpcore::plan(doc, scope)?;
         let label = format!("{} {}", p.method, p.url);
         let warnings = p.warnings.clone();
         let mut plan = Plan::new("http", label, p);
@@ -81,7 +67,7 @@ impl Protocol for HttpProtocol {
 
     fn execute(&self, plan: Plan, ctx: ExecCtx) -> BoxStream<'static, Event> {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        let guard = AbortOnDrop(tokio::spawn(engine::run(plan, ctx, tx)));
+        let guard = AbortOnDrop(tokio::spawn(fluxwire_httpcore::run(plan, ctx, tx)));
         futures::stream::unfold((rx, guard), |(mut rx, g)| async move {
             rx.recv().await.map(|e| (e, (rx, g)))
         })
@@ -152,7 +138,9 @@ impl Protocol for HttpProtocol {
         env: &fluxwire_protocol::EnvState,
     ) -> Option<fluxwire_protocol::TokenInfo> {
         match &plan.payload::<HttpPlan>()?.auth {
-            auth::Auth::OAuth2(cfg) => oauth2::cached_token(cfg, env).as_ref().map(Into::into),
+            fluxwire_httpcore::Auth::OAuth2(cfg) => {
+                oauth2::cached_token(cfg, env).as_ref().map(Into::into)
+            }
             _ => None,
         }
     }
@@ -168,7 +156,7 @@ impl Protocol for HttpProtocol {
             Result<fluxwire_protocol::TokenInfo, fluxwire_protocol::ExecError>,
         >,
     > {
-        let auth::Auth::OAuth2(cfg) = plan.payload::<HttpPlan>()?.auth.clone() else {
+        let fluxwire_httpcore::Auth::OAuth2(cfg) = plan.payload::<HttpPlan>()?.auth.clone() else {
             return None;
         };
         Some(Box::pin(async move {

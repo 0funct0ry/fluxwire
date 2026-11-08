@@ -203,3 +203,29 @@ fn env_list_and_completions() {
     assert!(String::from_utf8_lossy(&o.get_output().stdout).contains("ci"));
     fw().args(["completions", "bash"]).assert().code(0);
 }
+
+const GRAPHQL_FILE: &str = "---\nname: g\nrequires: [graphql]\n---\n\n```http\nPOST http://127.0.0.1:9/graphql\n```\n\n```graphql query\n{ hello }\n```\n";
+
+/// A build without the `graphql` feature opens and validates nothing it cannot run (SPEC §7.9).
+#[cfg(not(feature = "graphql"))]
+#[test]
+fn a_build_without_graphql_refuses_graphql_files_with_66() {
+    let d = collection("gql-off");
+    std::fs::write(d.join("a.flux.md"), GRAPHQL_FILE).unwrap();
+    fw().args(["validate", d.to_str().unwrap()])
+        .assert()
+        .code(66);
+    fw().args(["run", d.to_str().unwrap()]).assert().code(66);
+}
+
+/// With the feature the file is runnable: the failure is the closed port (exit 2), not 66.
+#[cfg(feature = "graphql")]
+#[test]
+fn a_graphql_build_validates_and_runs_graphql_files() {
+    let d = collection("gql-on");
+    std::fs::write(d.join("a.flux.md"), GRAPHQL_FILE).unwrap();
+    fw().args(["validate", d.to_str().unwrap()])
+        .assert()
+        .code(0);
+    fw().args(["run", d.to_str().unwrap()]).assert().code(2);
+}

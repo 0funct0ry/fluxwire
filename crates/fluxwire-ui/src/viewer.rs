@@ -485,6 +485,16 @@ pub struct BodyView {
     pub folds: Vec<u32>,
     pub hex: Option<Arc<LineText>>,
     pub image: Option<(ImageFormat, Arc<Vec<u8>>)>,
+    /// `data` / `errors` of a GraphQL-shaped JSON body.
+    pub gql: Option<GqlView>,
+}
+
+/// The split of a GraphQL response, ready for the viewer.
+#[derive(Clone, Debug)]
+pub struct GqlView {
+    pub data: Arc<LineText>,
+    pub errors: Arc<LineText>,
+    pub list: Vec<crate::gql_response::ResponseError>,
 }
 
 impl BodyView {
@@ -500,6 +510,7 @@ impl BodyView {
             folds: Vec::new(),
             hex: None,
             image: None,
+            gql: None,
         };
         if let BodyKind::Image(f) = kind {
             v.image = Some((f, Arc::new(bytes.clone())));
@@ -516,6 +527,32 @@ impl BodyView {
             let lt = LineText::new(p);
             v.folds = fold_regions(&lt);
             v.pretty = Some(Arc::new(lt));
+            if let Some(split) = crate::gql_response::split_response(&text) {
+                let errors = split
+                    .errors
+                    .iter()
+                    .map(|e| {
+                        let at = e
+                            .line_col
+                            .map(|(l, c)| format!("{l}:{c}  "))
+                            .unwrap_or_default();
+                        let path = if e.path.is_empty() {
+                            String::new()
+                        } else {
+                            format!("[{}]  ", e.path)
+                        };
+                        format!("{at}{path}{}", e.message)
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                v.gql = Some(GqlView {
+                    data: Arc::new(LineText::new(
+                        split.data.unwrap_or_else(|| "null".to_string()),
+                    )),
+                    errors: Arc::new(LineText::new(errors)),
+                    list: split.errors,
+                });
+            }
             v.raw = Some(Arc::new(LineText::new(text)));
         } else {
             let lt = Arc::new(LineText::new(text));
@@ -529,6 +566,18 @@ impl BodyView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn graphql_shaped_json_is_split_for_the_viewer() {
+        let body =
+            br#"{"data":{"a":1},"errors":[{"message":"bad","locations":[{"line":2,"column":3}]}]}"#;
+        let v = BodyView::build(body.to_vec(), body.len() as u64, Some("application/json"));
+        let g = v.gql.expect("split");
+        assert!(g.data.line(0).starts_with('{'));
+        assert_eq!(g.errors.line(0), "2:3  bad");
+        let plain = BodyView::build(b"{\"x\":1}".to_vec(), 7, Some("application/json"));
+        assert!(plain.gql.is_none());
+    }
 
     #[test]
     fn pretty_keeps_key_order_and_number_text() {
